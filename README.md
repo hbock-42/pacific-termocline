@@ -13,6 +13,9 @@ The project is split into two independent components:
   [ADR-0002](docs/planning/adr/0002-visualizer-language-choice.md).
 - **`termocline-format/`** — the file format the two share, and their only
   coupling ([ADR-0001](docs/planning/adr/0001-engine-visualizer-split.md)).
+- **`termocline-grid/`** — the shared 2D field and Arakawa C-grid geometry
+  types: indexing and staggering, no physics
+  ([ADR-0003](docs/planning/adr/0003-numerical-scheme.md)).
 
 The physics is not implemented yet: the crates are skeletons, and the equations
 land in Epics 01–04. The scientific model, architecture, and full backlog were
