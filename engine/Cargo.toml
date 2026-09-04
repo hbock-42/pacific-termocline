@@ -1,0 +1,19 @@
+[package]
+name = "engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Headless simulation core: runs a scenario forward in time and writes the ocean state to disk."
+
+[dependencies]
+termocline-format.workspace = true
+
+[[bin]]
+name = "termocline"
+path = "src/main.rs"
+
+[lib]
+name = "engine"
+path = "src/lib.rs"
