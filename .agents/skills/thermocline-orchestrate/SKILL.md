@@ -86,6 +86,12 @@ orca orchestration check --wait --types worker_done,escalation,question \
 5. On `worker_done`, take the merge lane below, then
    `orca orchestration worker-release --dispatch <d>` and refill to 4.
 
+**Order matters in cleanup.** Wait for `worker_done`, then release, then remove
+the worktree. Removing a worktree while its agent is still live kills the
+worker before it can report, and the dispatch is recorded `failed` even though
+the work merged fine — a lie in the record, and three consecutive failures
+circuit-break a task that was never broken.
+
 ## The merge lane
 
 One PR at a time, start to finish, before the next enters:
