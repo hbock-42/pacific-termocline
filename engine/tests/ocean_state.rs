@@ -21,6 +21,11 @@ const PACIFIC_MEAN_DEPTH_M: f64 = 150.0;
 /// Rayleigh damping `r`, in s⁻¹: a damping timescale of about two years, the
 /// order used for the linear equatorial-wave problem.
 const PACIFIC_DAMPING_PER_S: f64 = 1.0 / (2.0 * 365.0 * 86_400.0);
+/// The equatorial beta-plane gradient the engine ships, bound locally so the
+/// parameter sets below read as five values rather than five paths.
+const PACIFIC_BETA_PER_M_PER_S: f64 = engine::EQUATORIAL_BETA_PER_M_PER_S;
+/// The reference seawater density the engine ships, bound the same way.
+const PACIFIC_DENSITY_KG_PER_M3: f64 = engine::SEAWATER_REFERENCE_DENSITY_KG_PER_M3;
 
 /// The parameter set the derived-scale tests are anchored on.
 fn pacific_params() -> PhysicalParams {
@@ -28,8 +33,8 @@ fn pacific_params() -> PhysicalParams {
         PACIFIC_REDUCED_GRAVITY_M_PER_S2,
         PACIFIC_MEAN_DEPTH_M,
         PACIFIC_DAMPING_PER_S,
-        engine::EQUATORIAL_BETA_PER_M_PER_S,
-        engine::SEAWATER_REFERENCE_DENSITY_KG_PER_M3,
+        PACIFIC_BETA_PER_M_PER_S,
+        PACIFIC_DENSITY_KG_PER_M3,
     )
     .expect("the published equatorial-Pacific parameters are physical")
 }
@@ -74,10 +79,10 @@ fn the_rest_state_is_an_undisturbed_thermocline_at_its_mean_depth() {
     assert!(state.v().as_slice().iter().all(|&v| v == 0.0));
 
     assert_eq!(
-        state.total_thermocline_depth_m(&params, 2, 1),
+        state.total_thermocline_depth_m(params, 2, 1),
         Some(PACIFIC_MEAN_DEPTH_M)
     );
-    assert_eq!(state.total_thermocline_depth_m(&params, 3, 1), None);
+    assert_eq!(state.total_thermocline_depth_m(params, 3, 1), None);
 }
 
 #[test]
@@ -93,7 +98,7 @@ fn total_thermocline_depth_adds_the_anomaly_to_the_mean_depth() {
         .expect("(1, 0) is a cell center") = 20.0;
 
     assert_eq!(
-        state.total_thermocline_depth_m(&pacific_params(), 1, 0),
+        state.total_thermocline_depth_m(pacific_params(), 1, 0),
         Some(PACIFIC_MEAN_DEPTH_M + 20.0)
     );
 }
@@ -107,15 +112,12 @@ fn physical_parameters_are_stored_in_si_units_unchanged() {
         params.reduced_gravity_m_per_s2(),
         PACIFIC_REDUCED_GRAVITY_M_PER_S2
     );
-    assert_eq!(params.mean_depth_m(), PACIFIC_MEAN_DEPTH_M);
+    assert_eq!(params.mean_thermocline_depth_m(), PACIFIC_MEAN_DEPTH_M);
     assert_eq!(params.rayleigh_damping_per_s(), PACIFIC_DAMPING_PER_S);
-    assert_eq!(
-        params.beta_per_m_per_s(),
-        engine::EQUATORIAL_BETA_PER_M_PER_S
-    );
+    assert_eq!(params.beta_per_m_per_s(), PACIFIC_BETA_PER_M_PER_S);
     assert_eq!(
         params.reference_density_kg_per_m3(),
-        engine::SEAWATER_REFERENCE_DENSITY_KG_PER_M3
+        PACIFIC_DENSITY_KG_PER_M3
     );
 }
 
@@ -140,23 +142,6 @@ fn the_kelvin_wave_speed_matches_the_observed_equatorial_pacific_value() {
 }
 
 #[test]
-fn the_equatorial_deformation_radius_matches_the_published_scale() {
-    // `Le = √(c/β)` (CONTEXT.md). With c = 2.7386 m/s and β = 2.3×10⁻¹¹
-    // m⁻¹s⁻¹ that is √(1.1907×10¹¹) = 3.45×10⁵ m, and the equatorial
-    // deformation radius of the Pacific is quoted as about 350 km.
-    let radius_m = pacific_params().equatorial_deformation_radius_m();
-
-    // 10%: the published 350 km is a one-significant-figure scale estimate,
-    // and it depends on which baroclinic mode is quoted.
-    assert!(
-        (radius_m - 350.0e3).abs() < 0.10 * 350.0e3,
-        "Le = {radius_m} m is not the observed ~350 km"
-    );
-    let analytic = (7.5_f64.sqrt() / engine::EQUATORIAL_BETA_PER_M_PER_S).sqrt();
-    assert!((radius_m - analytic).abs() < 1e-12 * analytic);
-}
-
-#[test]
 fn unphysical_parameters_are_rejected_naming_the_value_and_the_bound() {
     // A scenario carrying a negative mean depth is invalid *input*, so it is a
     // `Result` with an actionable message, per CODING_STANDARDS.md
@@ -165,19 +150,19 @@ fn unphysical_parameters_are_rejected_naming_the_value_and_the_bound() {
         PACIFIC_REDUCED_GRAVITY_M_PER_S2,
         -150.0,
         PACIFIC_DAMPING_PER_S,
-        engine::EQUATORIAL_BETA_PER_M_PER_S,
-        engine::SEAWATER_REFERENCE_DENSITY_KG_PER_M3,
+        PACIFIC_BETA_PER_M_PER_S,
+        PACIFIC_DENSITY_KG_PER_M3,
     )
     .expect_err("a thermocline cannot sit at a negative mean depth");
     assert_eq!(
         err,
         PhysicalParamsError::NotPositive {
-            parameter: "mean_depth_m",
+            parameter: "mean_thermocline_depth_m",
             value: -150.0,
         }
     );
     let message = err.to_string();
-    assert!(message.contains("mean_depth_m"), "{message}");
+    assert!(message.contains("mean_thermocline_depth_m"), "{message}");
     assert!(message.contains("-150"), "{message}");
 
     for (reduced_gravity, mean_depth, damping, beta, density) in [
@@ -185,28 +170,28 @@ fn unphysical_parameters_are_rejected_naming_the_value_and_the_bound() {
             0.0,
             PACIFIC_MEAN_DEPTH_M,
             PACIFIC_DAMPING_PER_S,
-            engine::EQUATORIAL_BETA_PER_M_PER_S,
-            engine::SEAWATER_REFERENCE_DENSITY_KG_PER_M3,
+            PACIFIC_BETA_PER_M_PER_S,
+            PACIFIC_DENSITY_KG_PER_M3,
         ),
         (
             f64::NAN,
             PACIFIC_MEAN_DEPTH_M,
             PACIFIC_DAMPING_PER_S,
-            engine::EQUATORIAL_BETA_PER_M_PER_S,
-            engine::SEAWATER_REFERENCE_DENSITY_KG_PER_M3,
+            PACIFIC_BETA_PER_M_PER_S,
+            PACIFIC_DENSITY_KG_PER_M3,
         ),
         (
             PACIFIC_REDUCED_GRAVITY_M_PER_S2,
             PACIFIC_MEAN_DEPTH_M,
             PACIFIC_DAMPING_PER_S,
             0.0,
-            engine::SEAWATER_REFERENCE_DENSITY_KG_PER_M3,
+            PACIFIC_DENSITY_KG_PER_M3,
         ),
         (
             PACIFIC_REDUCED_GRAVITY_M_PER_S2,
             PACIFIC_MEAN_DEPTH_M,
             PACIFIC_DAMPING_PER_S,
-            engine::EQUATORIAL_BETA_PER_M_PER_S,
+            PACIFIC_BETA_PER_M_PER_S,
             0.0,
         ),
     ] {
@@ -220,8 +205,8 @@ fn unphysical_parameters_are_rejected_naming_the_value_and_the_bound() {
         PACIFIC_REDUCED_GRAVITY_M_PER_S2,
         PACIFIC_MEAN_DEPTH_M,
         -1.0e-8,
-        engine::EQUATORIAL_BETA_PER_M_PER_S,
-        engine::SEAWATER_REFERENCE_DENSITY_KG_PER_M3,
+        PACIFIC_BETA_PER_M_PER_S,
+        PACIFIC_DENSITY_KG_PER_M3,
     )
     .expect_err("negative damping would amplify rather than damp");
     assert_eq!(
@@ -241,8 +226,8 @@ fn zero_damping_is_admissible_because_the_undamped_limit_is_a_validation_target(
         PACIFIC_REDUCED_GRAVITY_M_PER_S2,
         PACIFIC_MEAN_DEPTH_M,
         0.0,
-        engine::EQUATORIAL_BETA_PER_M_PER_S,
-        engine::SEAWATER_REFERENCE_DENSITY_KG_PER_M3,
+        PACIFIC_BETA_PER_M_PER_S,
+        PACIFIC_DENSITY_KG_PER_M3,
     )
     .expect("the undamped limit is a physical configuration");
     assert_eq!(params.rayleigh_damping_per_s(), 0.0);

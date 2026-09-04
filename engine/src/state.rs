@@ -107,13 +107,24 @@ impl OceanState {
     #[must_use]
     pub fn total_thermocline_depth_m(
         &self,
-        params: &PhysicalParams,
+        params: PhysicalParams,
         i: usize,
         j: usize,
     ) -> Option<f64> {
         self.h
             .get(i, j)
-            .map(|anomaly_m| params.mean_depth_m() + anomaly_m)
+            .map(|anomaly_m| params.mean_thermocline_depth_m() + anomaly_m)
+    }
+
+    /// The three prognostic variables in a fixed order, for the operations
+    /// that treat the state as one vector rather than as three fields.
+    const fn components(&self) -> [&Field2D<f64>; 3] {
+        [&self.h, &self.u, &self.v]
+    }
+
+    /// The three prognostic variables in the same order, mutably.
+    fn components_mut(&mut self) -> [&mut Field2D<f64>; 3] {
+        [&mut self.h, &mut self.u, &mut self.v]
     }
 
     /// Panic unless `other` covers the same basin as `self`.
@@ -135,23 +146,17 @@ impl OceanState {
 impl StateVector for OceanState {
     fn assign(&mut self, source: &Self) {
         self.check_same_grid(source);
-        for (target, values) in [
-            (&mut self.h, source.h.as_slice()),
-            (&mut self.u, source.u.as_slice()),
-            (&mut self.v, source.v.as_slice()),
-        ] {
-            target.as_mut_slice().copy_from_slice(values);
+        let sources = source.components();
+        for (target, values) in self.components_mut().into_iter().zip(sources) {
+            target.as_mut_slice().copy_from_slice(values.as_slice());
         }
     }
 
     fn add_scaled(&mut self, factor: f64, other: &Self) {
         self.check_same_grid(other);
-        for (target, values) in [
-            (&mut self.h, other.h.as_slice()),
-            (&mut self.u, other.u.as_slice()),
-            (&mut self.v, other.v.as_slice()),
-        ] {
-            for (value, term) in target.as_mut_slice().iter_mut().zip(values) {
+        let others = other.components();
+        for (target, values) in self.components_mut().into_iter().zip(others) {
+            for (value, term) in target.as_mut_slice().iter_mut().zip(values.as_slice()) {
                 *value += factor * term;
             }
         }

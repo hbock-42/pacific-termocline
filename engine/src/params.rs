@@ -75,7 +75,7 @@ pub struct PhysicalParams {
     reduced_gravity_m_per_s2: f64,
     /// Mean thermocline depth `H`, in metres. The resting upper-layer
     /// thickness — a total depth, unlike the anomaly `h`.
-    mean_depth_m: f64,
+    mean_thermocline_depth_m: f64,
     /// Rayleigh damping coefficient `r`, in s⁻¹.
     rayleigh_damping_per_s: f64,
     /// Meridional gradient of the Coriolis parameter `β`, in m⁻¹s⁻¹.
@@ -100,19 +100,19 @@ impl PhysicalParams {
     /// failed and the value it carried.
     pub fn new(
         reduced_gravity_m_per_s2: f64,
-        mean_depth_m: f64,
+        mean_thermocline_depth_m: f64,
         rayleigh_damping_per_s: f64,
         beta_per_m_per_s: f64,
         reference_density_kg_per_m3: f64,
     ) -> Result<Self, PhysicalParamsError> {
         check_positive("reduced_gravity_m_per_s2", reduced_gravity_m_per_s2)?;
-        check_positive("mean_depth_m", mean_depth_m)?;
+        check_positive("mean_thermocline_depth_m", mean_thermocline_depth_m)?;
         check_non_negative("rayleigh_damping_per_s", rayleigh_damping_per_s)?;
         check_positive("beta_per_m_per_s", beta_per_m_per_s)?;
         check_positive("reference_density_kg_per_m3", reference_density_kg_per_m3)?;
         Ok(Self {
             reduced_gravity_m_per_s2,
-            mean_depth_m,
+            mean_thermocline_depth_m,
             rayleigh_damping_per_s,
             beta_per_m_per_s,
             reference_density_kg_per_m3,
@@ -127,8 +127,8 @@ impl PhysicalParams {
 
     /// Mean thermocline depth `H`, in metres.
     #[must_use]
-    pub const fn mean_depth_m(self) -> f64 {
-        self.mean_depth_m
+    pub const fn mean_thermocline_depth_m(self) -> f64 {
+        self.mean_thermocline_depth_m
     }
 
     /// Rayleigh damping coefficient `r`, in s⁻¹.
@@ -156,16 +156,7 @@ impl PhysicalParams {
     /// at construction, so the square root is real.
     #[must_use]
     pub fn kelvin_wave_speed_m_per_s(self) -> f64 {
-        (self.reduced_gravity_m_per_s2 * self.mean_depth_m).sqrt()
-    }
-
-    /// Equatorial deformation radius `Le = √(c/β)`, in metres.
-    ///
-    /// The meridional scale over which equatorial waves decay away from the
-    /// equator (`CONTEXT.md`).
-    #[must_use]
-    pub fn equatorial_deformation_radius_m(self) -> f64 {
-        (self.kelvin_wave_speed_m_per_s() / self.beta_per_m_per_s).sqrt()
+        (self.reduced_gravity_m_per_s2 * self.mean_thermocline_depth_m).sqrt()
     }
 }
 
