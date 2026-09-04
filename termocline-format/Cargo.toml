@@ -1,0 +1,10 @@
+[package]
+name = "termocline-format"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "On-disk format shared by the engine and the visualizer: JSON header plus binary frames."
+
+[dependencies]
