@@ -5,11 +5,27 @@
 //! forward in time, and writes the resulting ocean state through
 //! [`termocline_format`].
 //!
-//! The physics lands in Epics 01–04; this crate is currently a placeholder.
+//! The physics lands in Epics 01–04; so far the crate carries the time
+//! integrator, the prognostic [`OceanState`] and the [`PhysicalParams`] the
+//! equations are written in terms of.
+
+// The acceptance criterion of T-02.1 is that every field states its unit; the
+// lint is what keeps that true as the crate grows.
+#![warn(missing_docs)]
 
 pub mod integrator;
+pub mod params;
+pub mod state;
 
 pub use integrator::{Rk4, StateVector};
+
+/// Re-exported so a scenario, the solver and its tests name one set of
+/// physical parameters and one state type.
+pub use params::{
+    PhysicalParams, PhysicalParamsError, EQUATORIAL_BETA_PER_M_PER_S,
+    SEAWATER_REFERENCE_DENSITY_KG_PER_M3,
+};
+pub use state::OceanState;
 
 /// Re-exported so binaries and the visualizer agree on one format version.
 pub use termocline_format::FORMAT_VERSION;
