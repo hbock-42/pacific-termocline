@@ -65,7 +65,9 @@ orca orchestration worker-start --task <t> --worktree new-top-level \
 ```
 
    The worker prompt names the ticket, its issue number, and the
-   `thermocline-mr` skill.
+   `thermocline-mr` skill. `--name` becomes the worktree's branch, prefixed by
+   the owner (`hbock-42/t-01-2-rk4-integrator`), so pass the ticket id in the
+   name and let that branch stand — squash-merge makes it ephemeral anyway.
 
 3. Wait on the mailbox — never a sleep/poll loop:
 
@@ -95,6 +97,22 @@ One PR at a time, start to finish, before the next enters:
    what landed since. Hand it back: re-dispatch that ticket once with the
    failure as context. That is a rebase failure, not one of the worker's two
    attempts.
+
+Rebase in **your own clone**, never in the worker's worktree — its agent may
+still be live, and two writers in one checkout is a race you will not enjoy
+debugging:
+
+```
+git fetch origin && git checkout -B lane-rebase origin/<branch>
+git rebase main
+git push --force-with-lease origin lane-rebase:<branch>
+```
+
+`Cargo.lock` is the conflict you will actually hit, because every wave that
+adds a dependency rewrites it. It is generated, so never hand-merge it: take
+`main`'s copy (`git checkout --ours Cargo.lock`), finish the rebase, then
+`cargo check --workspace` to regenerate it against the rebased tree and amend
+it into the commit. Run the full gate locally before force-pushing.
 
 The ruleset requires branches be up to date, so a stale PR cannot merge even
 if you try. Let that be the backstop, not the plan.
