@@ -9,6 +9,7 @@ description = "Headless simulation core: runs a scenario forward in time and wri
 
 [dependencies]
 termocline-format.workspace = true
+termocline-grid.workspace = true
 
 [[bin]]
 name = "termocline"
