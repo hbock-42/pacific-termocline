@@ -98,11 +98,15 @@ fn the_safety_factor_is_the_documented_one() {
     // Pinned so that changing the margin is a deliberate, reviewed edit rather
     // than a side effect. It is dimensionless and strictly inside (0, 1]: a
     // factor above 1 would put the returned `dt` past the stability boundary.
-    assert!(
-        CFL_SAFETY_FACTOR > 0.0 && CFL_SAFETY_FACTOR <= 1.0,
-        "safety factor {CFL_SAFETY_FACTOR} must lie in (0, 1]: zero would stop every run dead, \
-         and anything above 1 would push dt past the stability boundary"
-    );
+    // A compile-time assertion, since both sides are constants: the bound can
+    // never be violated at run time without the build failing first.
+    const {
+        assert!(
+            CFL_SAFETY_FACTOR > 0.0 && CFL_SAFETY_FACTOR <= 1.0,
+            "the safety factor must lie in (0, 1]: zero would stop every run dead, and anything \
+             above 1 would push dt past the stability boundary"
+        );
+    }
     assert_eq!(CFL_SAFETY_FACTOR, 0.8);
 }
 
