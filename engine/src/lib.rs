@@ -49,13 +49,14 @@ mod tests {
     }
 
     #[test]
-    fn an_unstable_timestep_is_refused_before_a_run_starts() {
-        // The engine's guard against silently producing garbage: a one-day
-        // step on a 100 km grid carrying 2 m/s waves is far past the CFL
-        // bound, and the scenario is rejected rather than adjusted.
-        let spacing = crate::Spacing::new(100_000.0, 100_000.0).expect("positive spacing");
-        let wave_speed = crate::WaveSpeed::new(2.0).expect("positive wave speed");
-        assert!(crate::check_timestep(86_400.0, spacing, wave_speed).is_err());
+    fn workspace_links_the_numerics_crate() {
+        // The engine takes the CFL bound from `termocline-numerics` rather
+        // than keeping a second copy of the formula. What the check does with
+        // an unsafe timestep is covered in `tests/cfl_timestep.rs`.
+        assert_eq!(
+            crate::CFL_SAFETY_FACTOR,
+            termocline_numerics::CFL_SAFETY_FACTOR
+        );
     }
 
     #[test]

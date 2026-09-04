@@ -22,6 +22,10 @@ fn basin() -> (Spacing, WaveSpeed) {
 /// The grid-scale mode of the centred-difference gravity-wave operator, from
 /// the derivation in the numerics acceptance tests:
 /// `ω = c · 2 · √(1/dx² + 1/dy²)`.
+///
+/// Deliberately written out here rather than taken from `termocline-numerics`:
+/// this is the analytic system the test integrates, and a test that asked the
+/// code under review for it could not catch the code getting it wrong.
 fn fastest_mode_rad_per_s(spacing: Spacing, wave_speed: WaveSpeed) -> f64 {
     let dx_m = spacing.dx_m();
     let dy_m = spacing.dy_m();
@@ -110,7 +114,7 @@ fn the_safety_factor_leaves_real_margin_below_the_stability_boundary() {
     // The accepted timestep sits strictly inside the stability region, so
     // scaling it back up by more than the margin must cross the boundary.
     // With a safety factor of 0.8 the raw bound is dt/0.8, and 1.2× the raw
-    // bound is unambiguously unstable: |R(i·1.2·2√2)| ≈ 3.3 per step, so forty
+    // bound is unambiguously unstable: |R(i·1.2·2√2)| ≈ 3.2 per step, so forty
     // steps grow the mode by twenty orders of magnitude while staying inside
     // `f64`'s range.
     let (spacing, wave_speed) = basin();
@@ -124,5 +128,20 @@ fn the_safety_factor_leaves_real_margin_below_the_stability_boundary() {
     assert!(
         check_timestep(raw_bound_s * 1.2, spacing, wave_speed).is_err(),
         "and the check must refuse it"
+    );
+}
+
+#[test]
+fn the_refusal_message_reads_as_something_a_user_can_act_on() {
+    // The whole point of the check is a message that says what to do next, so
+    // the exact wording is pinned rather than left to drift.
+    let (spacing, wave_speed) = basin();
+    let message = check_timestep(86_400.0, spacing, wave_speed)
+        .expect_err("a one-day step is unstable here")
+        .to_string();
+    assert_eq!(
+        message,
+        "dt is 86400 s, past the CFL-stable maximum of 40000 s for this grid spacing and wave \
+         speed; the run would go unstable. Set dt to at most 40000 s, or coarsen the grid"
     );
 }

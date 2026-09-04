@@ -57,8 +57,10 @@ pub const RK4_IMAGINARY_AXIS_LIMIT: f64 = 2.0 * std::f64::consts::SQRT_2;
 /// fifth clear of the boundary — the customary margin in ocean models, and
 /// small enough that a run is bounded by physics rather than by the margin.
 ///
-/// It is a policy number, not a physical constant: a scenario that wants more
-/// accuracy asks for a smaller `dt`, which is always allowed.
+/// It is a project policy number chosen in T-01.3, not a measured physical
+/// constant and not a value taken from the literature — there is nothing to
+/// cite but this comment. A scenario that wants more margin asks for a smaller
+/// `dt`, which is always allowed.
 pub const CFL_SAFETY_FACTOR: f64 = 0.8;
 
 /// Why a timestep or a wave speed could not be accepted.
@@ -106,15 +108,33 @@ impl fmt::Display for CflError {
                 max_stable_s,
             } => write!(
                 f,
-                "dt is {requested_s} s, past the CFL-stable maximum of {max_stable_s} s for this \
-                 grid spacing and wave speed; the run would go unstable. Set dt to at most \
-                 {max_stable_s} s, or refine the wave speed or coarsen the grid"
+                "dt is {requested_s} s, past the CFL-stable maximum of {} s for this grid \
+                 spacing and wave speed; the run would go unstable. Set dt to at most {} s, or \
+                 coarsen the grid",
+                suggestable_bound_s(*max_stable_s),
+                suggestable_bound_s(*max_stable_s)
             ),
         }
     }
 }
 
 impl std::error::Error for CflError {}
+
+/// Steps per second the suggested bound is rounded to — a millisecond.
+///
+/// The exact bound is a quotient of square roots, so it prints as something
+/// like `40000.00000000001 s`. Telling a user to "set dt to at most
+/// 40000.00000000001 s" is not actionable, so the message rounds *down* to
+/// the millisecond: the suggestion stays inside the stability region, which
+/// rounding to nearest would not guarantee.
+const SUGGESTION_STEPS_PER_S: f64 = 1_000.0;
+
+/// The CFL bound rounded down to the millisecond, for a message a user can act
+/// on. The un-rounded bound stays in [`CflError::TimestepExceedsCfl`] for
+/// callers that want the exact number.
+fn suggestable_bound_s(max_stable_s: f64) -> f64 {
+    (max_stable_s * SUGGESTION_STEPS_PER_S).floor() / SUGGESTION_STEPS_PER_S
+}
 
 /// The fastest signal speed the grid has to carry, in metres per second.
 ///

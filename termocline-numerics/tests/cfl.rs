@@ -99,8 +99,9 @@ fn the_safety_factor_is_the_documented_one() {
     // than a side effect. It is dimensionless and strictly inside (0, 1]: a
     // factor above 1 would put the returned `dt` past the stability boundary.
     assert!(
-        (0.0..=1.0).contains(&CFL_SAFETY_FACTOR),
-        "safety factor {CFL_SAFETY_FACTOR} must be a margin, not an amplifier"
+        CFL_SAFETY_FACTOR > 0.0 && CFL_SAFETY_FACTOR <= 1.0,
+        "safety factor {CFL_SAFETY_FACTOR} must lie in (0, 1]: zero would stop every run dead, \
+         and anything above 1 would push dt past the stability boundary"
     );
     assert_eq!(CFL_SAFETY_FACTOR, 0.8);
 }
@@ -123,7 +124,11 @@ fn the_formula_uses_both_axes_when_the_spacing_is_anisotropic() {
     // 20 000 s; one that looked only at the larger, 40 000 s. Both are wrong,
     // and this case separates them.
     let dt_s = max_stable_dt(spacing(100_000.0, 50_000.0), wave_speed(2.0));
-    assert_close(dt_s, 25_298.221_281_347_04, "100 km by 50 km grid");
+    assert_close(
+        dt_s,
+        40_000.0 * (2.0_f64 / 5.0).sqrt(),
+        "100 km by 50 km grid",
+    );
 }
 
 #[test]
@@ -173,32 +178,40 @@ fn the_returned_timestep_is_the_safety_factor_times_the_raw_stability_bound() {
 fn a_timestep_past_the_cfl_bound_is_refused_with_the_value_and_the_bound() {
     let grid_spacing = spacing(100_000.0, 100_000.0);
     let c = wave_speed(2.0);
-    let max_s = max_stable_dt(grid_spacing, c); // 40 000 s, worked out above.
     let requested_s = 90_000.0;
 
     let err = termocline_numerics::check_timestep(requested_s, grid_spacing, c)
         .expect_err("90 000 s is more than twice the CFL-stable maximum");
-    assert_eq!(
-        err,
-        CflError::TimestepExceedsCfl {
-            requested_s,
-            max_stable_s: max_s,
-        }
-    );
+
+    // The bound the error reports is the hand-worked 40 000 s of
+    // `the_formula_matches_the_hand_worked_isotropic_case`, not whatever the
+    // code happens to return.
+    let CflError::TimestepExceedsCfl {
+        requested_s: reported_s,
+        max_stable_s,
+    } = err
+    else {
+        panic!("expected a CFL refusal, got {err:?}");
+    };
+    assert_eq!(reported_s, requested_s);
+    assert_close(max_stable_s, 40_000.0, "the bound the refusal reports");
 
     // Actionable per CODING_STANDARDS.md: the message names the offending
-    // value and the bound it violated, and there is no silent clamping — the
-    // call fails rather than substituting `max_s`.
+    // value and the bound it violated, in a form a user can type back into a
+    // scenario. There is no silent clamping — the call fails rather than
+    // substituting the bound.
     let message = err.to_string();
-    assert!(message.contains("90000"), "{message}");
-    assert!(message.contains("40000"), "{message}");
+    assert!(message.contains("90000 s"), "{message}");
+    assert!(message.contains("40000 s"), "{message}");
 }
 
 #[test]
 fn a_timestep_inside_the_cfl_bound_is_accepted_up_to_the_bound_itself() {
     let grid_spacing = spacing(100_000.0, 100_000.0);
     let c = wave_speed(2.0);
-    let max_s = max_stable_dt(grid_spacing, c);
+    // 40 000 s is the hand-worked bound for this grid and wave speed; the
+    // check must accept it, and everything below it.
+    let max_s = 40_000.0;
 
     assert_eq!(
         termocline_numerics::check_timestep(max_s, grid_spacing, c),
@@ -207,6 +220,10 @@ fn a_timestep_inside_the_cfl_bound_is_accepted_up_to_the_bound_itself() {
     assert_eq!(
         termocline_numerics::check_timestep(max_s / 10.0, grid_spacing, c),
         Ok(())
+    );
+    assert!(
+        termocline_numerics::check_timestep(max_s * 1.001, grid_spacing, c).is_err(),
+        "a tenth of a percent past the bound is still past the bound"
     );
 }
 
