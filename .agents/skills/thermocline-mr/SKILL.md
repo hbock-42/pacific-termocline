@@ -85,7 +85,10 @@ suggestion.
 
 ## 6. Open the pull request
 
-Branch `t-<epic>.<n>-<slug>`, one squashed-intent commit, then:
+Work on the branch you are already on when a worktree was created for this
+ticket — orca names it `<owner>/<name>`, and that name wins. Only when you
+started from `main` yourself, create `t-<epic>.<n>-<slug>`. Either way the
+branch is ephemeral: `main` takes one squashed commit.
 
 ```
 gh pr create --title "T-<epic>.<n> — <ticket title>" --body "Closes #<n>

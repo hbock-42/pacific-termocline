@@ -65,7 +65,9 @@ orca orchestration worker-start --task <t> --worktree new-top-level \
 ```
 
    The worker prompt names the ticket, its issue number, and the
-   `thermocline-mr` skill.
+   `thermocline-mr` skill. `--name` becomes the worktree's branch, prefixed by
+   the owner (`hbock-42/t-01-2-rk4-integrator`), so pass the ticket id in the
+   name and let that branch stand — squash-merge makes it ephemeral anyway.
 
 3. Wait on the mailbox — never a sleep/poll loop:
 
