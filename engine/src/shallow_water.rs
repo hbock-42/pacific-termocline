@@ -1,21 +1,41 @@
 //! The right-hand side of the linear 1.5-layer shallow-water equations.
 //!
 //! The equations are the linear ones of `docs/planning/01-scientific-model.md`.
-//! This module owns two of their terms — the pressure gradient `−g'·∇h` in the
-//! momentum equations, the divergence `−H·(∂u/∂x + ∂v/∂y)` in the `h` equation
-//! — plus the surface stress that makes the wind-stress argument of
+//! This module owns three of their terms — the pressure gradient `−g'·∇h` in
+//! the momentum equations, the divergence `−H·(∂u/∂x + ∂v/∂y)` in the `h`
+//! equation, and the Rayleigh damping `−r` on all three variables — plus the
+//! surface stress that makes the wind-stress argument of
 //! [`shallow_water_rhs`] mean something:
 //!
 //! ```text
-//! ∂u/∂t = −g'·∂h/∂x + τx/(ρ₀·H)
-//! ∂v/∂t = −g'·∂h/∂y + τy/(ρ₀·H)
-//! ∂h/∂t = −H·(∂u/∂x + ∂v/∂y)
+//! ∂u/∂t = −g'·∂h/∂x + τx/(ρ₀·H) − r·u
+//! ∂v/∂t = −g'·∂h/∂y + τy/(ρ₀·H) − r·v
+//! ∂h/∂t = −H·(∂u/∂x + ∂v/∂y)    − r·h
 //! ```
 //!
-//! The Coriolis terms (T-02.2) and the Rayleigh damping (T-02.4) fold into the
-//! same evaluation later; nothing else belongs here. In particular the v1 core
-//! is linear (CODING_STANDARDS.md § Scope guards): the divergence carries the
-//! *mean* depth `H`, never the total `H + h`, and there is no advection.
+//! The Coriolis terms (T-02.2) fold into the same evaluation later; nothing
+//! else belongs here. In particular the v1 core is linear
+//! (CODING_STANDARDS.md § Scope guards): the divergence carries the *mean*
+//! depth `H`, never the total `H + h`, and there is no advection.
+//!
+//! Damping every prognostic variable at the same rate `r` is what makes the
+//! decay a property of the whole basin rather than of one variable: it turns
+//! the system into `ẋ = (L − r)·x`, where `L` is the conservative
+//! pressure-gradient and continuity pair. Wherever `L` is skew in the discrete
+//! energy `E = (g'/2)·Σh² + (H/2)·Σ(u² + v²)` it contributes nothing to it, so
+//! `Ė = −2·r·E` and an unforced perturbation relaxes monotonically to the rest
+//! state however the waves redistribute it — the acceptance criterion of
+//! T-02.4.
+//!
+//! That skewness is a summation by parts whose boundary term is `h·u` at the
+//! walls, so the identity is exact only while the wall faces carry no
+//! velocity. This module cannot promise that: it zeroes the *pressure
+//! gradient* on a wall, which leaves a wall velocity to decay at `−r` rather
+//! than forcing it to zero, and until Epic 04 gives the boundary a condition
+//! of its own the wind stress can put one there. A basin whose walls start and
+//! stay at rest — the unforced perturbation the criterion is about — is inside
+//! the guarantee; a wind-driven one is not, and its energy budget is Epic 04's
+//! to close.
 //!
 //! The spatial derivatives come from `termocline-numerics`, which is where the
 //! C-grid neighbour arithmetic lives. Two consequences are worth stating,
@@ -113,6 +133,9 @@ impl ShallowWaterRhs {
             wind_stress.tau_y_pa(),
             layer_mass_kg_per_m2,
         );
+        let damping_per_s = self.params.rayleigh_damping_per_s();
+        subtract_damping(tendency.u_mut(), state.u(), damping_per_s);
+        subtract_damping(tendency.v_mut(), state.v(), damping_per_s);
 
         // Continuity: both halves of the divergence land on the cell centers,
         // where `h` lives.
@@ -130,6 +153,7 @@ impl ShallowWaterRhs {
         for (rate, (zonal, meridional)) in thickness_rate.zip(divergence) {
             *rate = minus_mean_depth_m * (zonal + meridional);
         }
+        subtract_damping(tendency.h_mut(), state.h(), damping_per_s);
     }
 
     /// Panic unless `grid` is the basin this evaluator was built for.
@@ -159,11 +183,34 @@ fn turn_gradient_into_acceleration(
     }
 }
 
+/// Subtract the Rayleigh damping `r·anomaly` from a tendency that already
+/// holds the rest of its equation's terms.
+///
+/// Pointwise, and applied at every point of the field including the basin's
+/// walls: damping is a property of the water at a point rather than of a
+/// difference stencil, so unlike the pressure gradient it has no boundary gap.
+/// `anomaly` and `tendency` are at the same staggering — this is `−r·u` on the
+/// east/west faces, `−r·v` on the north/south faces, `−r·h` at cell centers —
+/// so there is nothing to interpolate.
+fn subtract_damping(
+    tendency: &mut Field2D<f64>,
+    anomaly: &Field2D<f64>,
+    rayleigh_damping_per_s: f64,
+) {
+    for (rate, value) in tendency
+        .as_mut_slice()
+        .iter_mut()
+        .zip(anomaly.as_slice().iter())
+    {
+        *rate -= rayleigh_damping_per_s * value;
+    }
+}
+
 /// The time derivative of `state` under `wind_stress`, as a freshly allocated
 /// tendency.
 ///
-/// The named deliverable of T-02.3, and the convenient form for a test or a
-/// one-off evaluation. It allocates a state and an evaluator per call, so the
+/// The named deliverable of T-02.3 and T-02.4, and the convenient form for a
+/// test or a one-off evaluation. It allocates a state and an evaluator per call, so the
 /// time loop uses [`ShallowWaterRhs::evaluate`] instead
 /// (CODING_STANDARDS.md § Performance).
 ///
