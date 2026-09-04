@@ -1,6 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["engine", "termocline-format", "termocline-grid", "visualizer"]
+members = [
+    "engine",
+    "termocline-format",
+    "termocline-grid",
+    "termocline-numerics",
+    "visualizer",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,3 +18,4 @@ repository = "https://github.com/hbock-42/pacific-termocline"
 [workspace.dependencies]
 termocline-format = { path = "termocline-format" }
 termocline-grid = { path = "termocline-grid" }
+termocline-numerics = { path = "termocline-numerics" }

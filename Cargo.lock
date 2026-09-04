@@ -19,6 +19,13 @@ name = "termocline-grid"
 version = "0.1.0"
 
 [[package]]
+name = "termocline-numerics"
+version = "0.1.0"
+dependencies = [
+ "termocline-grid",
+]
+
+[[package]]
 name = "visualizer"
 version = "0.1.0"
 dependencies = [
