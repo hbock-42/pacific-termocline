@@ -12,6 +12,9 @@ use crate::{FormatError, GridSpec, Variable};
 /// from the header rather than from the frame.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Frame {
+    /// Written as `t`, the name the format gives it; `_s` states the unit on
+    /// the Rust side.
+    #[serde(rename = "t")]
     t_s: f64,
     h: Vec<f64>,
     u: Vec<f64>,
@@ -71,7 +74,12 @@ impl Frame {
         Ok(())
     }
 
-    /// The field of `variable`, row-major.
+    /// The field of `variable`, row-major. The per-variable accessors below
+    /// are the same buffers under the names the model uses; this one is for
+    /// code that walks [`Variable::ALL`] rather than naming a field.
+    ///
+    /// Units and staggering of each field come from [`Variable::unit`] and
+    /// [`Variable::staggering`], which the header also writes out.
     #[must_use]
     pub fn field(&self, variable: Variable) -> &[f64] {
         match variable {
@@ -89,31 +97,31 @@ impl Frame {
         self.t_s
     }
 
-    /// Thermocline depth anomaly `h`, in metres, at cell centers.
+    /// Thermocline depth anomaly `h`.
     #[must_use]
     pub fn h(&self) -> &[f64] {
         &self.h
     }
 
-    /// Zonal current anomaly `u`, in m s^-1, at cell east/west faces.
+    /// Zonal current anomaly `u`.
     #[must_use]
     pub fn u(&self) -> &[f64] {
         &self.u
     }
 
-    /// Meridional current anomaly `v`, in m s^-1, at cell north/south faces.
+    /// Meridional current anomaly `v`.
     #[must_use]
     pub fn v(&self) -> &[f64] {
         &self.v
     }
 
-    /// Zonal wind stress `τx`, in N m^-2, where `u` lives.
+    /// Zonal wind stress `τx`.
     #[must_use]
     pub fn tau_x(&self) -> &[f64] {
         &self.tau_x
     }
 
-    /// Meridional wind stress `τy`, in N m^-2, where `v` lives.
+    /// Meridional wind stress `τy`.
     #[must_use]
     pub fn tau_y(&self) -> &[f64] {
         &self.tau_y

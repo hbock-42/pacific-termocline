@@ -6,6 +6,15 @@
 //! [`Frame`]s, one per saved timestep. It depends on neither simulation logic
 //! nor UI code, so both sides can share it without sharing anything else.
 //!
+//! # Reading the header losslessly
+//!
+//! `serde_json`'s default number parser is fast rather than exact: it can land
+//! one ULP away from the `f64` that was written, which would silently perturb
+//! a run's physical parameters. Any crate that reads a [`RunHeader`] back must
+//! enable `serde_json`'s `float_roundtrip` feature; the round-trip test here
+//! fails without it, and cargo's feature unification then carries it to every
+//! reader in the workspace.
+//!
 //! The types here are data and nothing else: they carry no solver, and they do
 //! not choose an encoding. The header is JSON and the frames are `bincode`
 //! because the *writer* (T-05.2) and *reader* (T-05.3) say so; every type in

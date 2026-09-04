@@ -26,14 +26,16 @@ fn grid() -> GridSpec {
 }
 
 fn header() -> RunHeader {
-    // Scenario values, not physical constants: they exist to be round-tripped,
-    // and are deliberately not round numbers so a truncating encoder shows up.
+    // Scenario values, not physical constants: they exist to be round-tripped.
+    // JSON carries floats as decimal text, so the fixture leans on the cases
+    // where that is least obviously lossless — a negative zero, a subnormal,
+    // and the extremes of f64 — rather than on tidy decimals.
     let params = PhysicalParams {
-        mean_depth_m: 150.25,
-        reduced_gravity_m_per_s2: 0.0304,
-        beta_per_m_per_s: 2.3e-11,
-        rayleigh_damping_per_s: 1.0e-7,
-        reference_density_kg_per_m3: 1025.5,
+        mean_depth_m: -0.0,
+        reduced_gravity_m_per_s2: f64::MIN_POSITIVE / 2.0,
+        beta_per_m_per_s: f64::MAX,
+        rayleigh_damping_per_s: f64::MIN,
+        reference_density_kg_per_m3: 1.234_567_890_123_456_7e-9,
     };
     RunHeader::new(
         grid(),
@@ -99,6 +101,29 @@ fn header_survives_a_json_round_trip_bit_for_bit() {
     let reencoded = serde_json::to_string(&decoded).expect("the header is serializable");
     assert_eq!(json, reencoded);
     assert_eq!(original, decoded);
+
+    // `PartialEq` on f64 treats 0.0 and -0.0 as equal, so the params are also
+    // compared as bit patterns: JSON's decimal text is where a sign or a low
+    // bit would quietly go missing.
+    let written = original.physical_params;
+    let read = decoded.physical_params;
+    assert_bit_identical(
+        "physical_params",
+        &[
+            written.mean_depth_m,
+            written.reduced_gravity_m_per_s2,
+            written.beta_per_m_per_s,
+            written.rayleigh_damping_per_s,
+            written.reference_density_kg_per_m3,
+        ],
+        &[
+            read.mean_depth_m,
+            read.reduced_gravity_m_per_s2,
+            read.beta_per_m_per_s,
+            read.rayleigh_damping_per_s,
+            read.reference_density_kg_per_m3,
+        ],
+    );
 }
 
 #[test]
@@ -120,6 +145,34 @@ fn a_written_header_is_self_describing() {
         .collect();
     // Units of h, u, v, tau_x, tau_y from 01-scientific-model.md.
     assert_eq!(units, ["m", "m s^-1", "m s^-1", "N m^-2", "N m^-2"]);
+
+    let symbols: Vec<&str> = json["variables"]
+        .as_array()
+        .expect("variables is a list")
+        .iter()
+        .map(|v| {
+            v["symbol"]
+                .as_str()
+                .expect("each variable states its symbol")
+        })
+        .collect();
+    assert_eq!(symbols, ["h", "u", "v", "tau_x", "tau_y"]);
+}
+
+#[test]
+fn a_frame_is_written_under_the_field_names_the_format_specifies() {
+    // The frame's fields are named for the model's symbols, and its time is
+    // `t` — the unit lives in the Rust name and in the header, not on the
+    // wire, so a reader in another language finds what it was promised.
+    let json = serde_json::to_value(frame()).expect("the frame is serializable");
+    let mut keys: Vec<&str> = json
+        .as_object()
+        .expect("a frame is a record")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["h", "t", "tau_x", "tau_y", "u", "v"]);
 }
 
 #[test]
@@ -192,6 +245,24 @@ fn a_frame_that_does_not_fit_the_grid_is_rejected_by_name() {
 #[test]
 fn a_basin_with_no_cells_is_rejected() {
     let err = GridSpec::new(0, NY, extent()).expect_err("a basin needs at least one column");
+    let message = err.to_string();
+    assert!(message.contains("nx is 0"), "{message}");
+}
+
+#[test]
+fn a_header_claiming_an_empty_basin_is_rejected_on_the_way_in() {
+    // A truncated or hand-edited header is invalid input, not a broken
+    // invariant, so reading one back returns an error rather than panicking
+    // the first time something asks the grid for a field length.
+    let json = serde_json::to_string(&header()).expect("the header is serializable");
+    let corrupted = json.replace("\"nx\":3", "\"nx\":0");
+    assert_ne!(
+        json, corrupted,
+        "the fixture must actually name a cell count"
+    );
+
+    let err = serde_json::from_str::<RunHeader>(&corrupted)
+        .expect_err("a basin with no columns is not a grid");
     let message = err.to_string();
     assert!(message.contains("nx is 0"), "{message}");
 }

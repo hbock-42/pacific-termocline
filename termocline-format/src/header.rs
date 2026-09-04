@@ -43,11 +43,35 @@ impl BasinExtent {
 
 /// The grid a run was computed on: how many cells, and what stretch of ocean
 /// they cover.
+///
+/// A `GridSpec` always describes a basin with at least one cell on each axis,
+/// however it was obtained: reading one back from a header runs the same check
+/// [`GridSpec::new`] does, so a truncated or hand-edited file fails at the
+/// `serde` call with a message rather than panicking later on.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "GridSpecFields")]
 pub struct GridSpec {
     nx: usize,
     ny: usize,
     extent: BasinExtent,
+}
+
+/// The wire shape of a [`GridSpec`], deserialized before the cell counts have
+/// been checked. Serialization goes straight from `GridSpec`, whose derive
+/// produces these same three fields.
+#[derive(Deserialize)]
+struct GridSpecFields {
+    nx: usize,
+    ny: usize,
+    extent: BasinExtent,
+}
+
+impl TryFrom<GridSpecFields> for GridSpec {
+    type Error = FormatError;
+
+    fn try_from(fields: GridSpecFields) -> Result<Self, Self::Error> {
+        Self::new(fields.nx, fields.ny, fields.extent)
+    }
 }
 
 impl GridSpec {
