@@ -1,0 +1,11 @@
+[package]
+name = "termocline-numerics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Finite-difference operators on the Arakawa C-grid: staggered derivatives and interpolation, no physics."
+
+[dependencies]
+termocline-grid.workspace = true
