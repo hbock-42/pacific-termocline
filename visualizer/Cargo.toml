@@ -1,0 +1,19 @@
+[package]
+name = "visualizer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Reads the engine's output files and renders them. Never touches the physics."
+
+[dependencies]
+termocline-format.workspace = true
+
+[[bin]]
+name = "termocline-viz"
+path = "src/main.rs"
+
+[lib]
+name = "visualizer"
+path = "src/lib.rs"
