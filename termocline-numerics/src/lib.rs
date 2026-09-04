@@ -19,7 +19,17 @@
 //! rule points at, and it is confined to the four private writers below so
 //! that no caller has to repeat it.
 //!
+//! The same metric information answers a second question — how long a step the
+//! scheme may take before it goes unstable — so the CFL bound lives here too,
+//! in [`cfl`], next to the [`Spacing`] it is derived from.
+//!
 //! [ADR-0003]: ../../docs/planning/adr/0003-numerical-scheme.md
+
+pub mod cfl;
+
+pub use cfl::{
+    check_timestep, max_stable_dt, CflError, WaveSpeed, CFL_SAFETY_FACTOR, RK4_IMAGINARY_AXIS_LIMIT,
+};
 
 use std::fmt;
 use termocline_grid::{Axis, Field2D, Grid, Staggering};
