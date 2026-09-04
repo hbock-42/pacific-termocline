@@ -7,6 +7,10 @@
 //!
 //! The physics lands in Epics 01–04; this crate is currently a placeholder.
 
+pub mod integrator;
+
+pub use integrator::{Rk4, StateVector};
+
 /// Re-exported so binaries and the visualizer agree on one format version.
 pub use termocline_format::FORMAT_VERSION;
 
