@@ -34,11 +34,29 @@ pub use termocline_format::FORMAT_VERSION;
 /// definition of what a grid cell is and where each variable sits on it.
 pub use termocline_grid::{Field2D, Grid, Staggering, H_STAGGERING, U_STAGGERING, V_STAGGERING};
 
+/// Re-exported so a scenario, the solver and the CLI all reach the same CFL
+/// bound: [`check_timestep`] is the runtime check a run passes before its
+/// first step, and it refuses an unstable timestep rather than clamping it.
+pub use termocline_numerics::{
+    check_timestep, max_stable_dt, CflError, Spacing, WaveSpeed, CFL_SAFETY_FACTOR,
+};
+
 #[cfg(test)]
 mod tests {
     #[test]
     fn workspace_links_the_format_crate() {
         assert_eq!(crate::FORMAT_VERSION, termocline_format::FORMAT_VERSION);
+    }
+
+    #[test]
+    fn workspace_links_the_numerics_crate() {
+        // The engine takes the CFL bound from `termocline-numerics` rather
+        // than keeping a second copy of the formula. What the check does with
+        // an unsafe timestep is covered in `tests/cfl_timestep.rs`.
+        assert_eq!(
+            crate::CFL_SAFETY_FACTOR,
+            termocline_numerics::CFL_SAFETY_FACTOR
+        );
     }
 
     #[test]
