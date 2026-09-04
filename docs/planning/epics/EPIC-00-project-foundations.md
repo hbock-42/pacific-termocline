@@ -2,7 +2,7 @@
 
 ## Goal
 Stand up the repository structure, tooling, and CI so that every later epic
-lands in a working, testable, lint-clean workspace from its first MR.
+lands in a working, testable, lint-clean workspace from its first ticket.
 
 ## Scope
 Cargo workspace layout, shared crates, CI, licensing/contribution basics.
@@ -39,7 +39,7 @@ Epic 01 / Epic 08.
 ### T-00.3: License and contribution basics
 - **Description:** Add a license file (user to confirm which — default
   MIT/Apache-2.0 dual, standard for Rust projects, if no preference given)
-  and a minimal `CONTRIBUTING.md` describing the epic/MR workflow this repo
+  and a minimal `CONTRIBUTING.md` describing the epic/ticket workflow this repo
   follows (link back to `docs/planning/`).
 - **Deliverable:** `LICENSE-MIT`, `LICENSE-APACHE`, `CONTRIBUTING.md`.
 - **Acceptance criteria:** files present, referenced from root `README.md`.
@@ -58,3 +58,26 @@ Epic 01 / Epic 08.
   - C-grid staggering offsets for `h`, `u`, `v` are explicit named
     constants/types, not magic numbers, so Epic 01/02 code reads clearly.
 - **Depends on:** T-00.1.
+
+### T-00.5: Autonomous pipeline smoke test and merge gates
+- **Description:** Close the bootstrap loop described in
+  [ADR-0005](../adr/0005-autonomous-implementation-pipeline.md). Required
+  status checks match by check *name*, which does not exist until CI has run
+  at least once, so the gates cannot be applied before T-00.2 lands. This
+  ticket runs one ticket end-to-end through the autonomous path **with a human
+  watching**, then turns the gates on.
+  - Confirm a worker agent in an orca worktree runs unattended — in
+    particular that it never blocks on an interactive permission prompt, which
+    would stall the worker silently and surface only as a coordinator timeout.
+  - Apply the `main` ruleset: require a pull request (0 approvals), require the
+    `ci` status check, require branches up to date (`strict`), block force
+    pushes and deletions, **no bypass actors**.
+  - Enable auto-merge and delete-branch-on-merge on the repository.
+- **Deliverable:** A protected `main`, a verified worker round-trip, and a note
+  in the ticket recording how the permission question was resolved.
+- **Acceptance criteria:**
+  - A deliberately-red PR cannot be merged, including by the repo owner
+    (verifies no bypass actors).
+  - A green PR merges without human action.
+  - Autonomous waves are cleared to begin at T-00.3.
+- **Depends on:** T-00.1, T-00.2.

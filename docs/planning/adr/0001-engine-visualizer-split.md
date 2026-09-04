@@ -29,5 +29,5 @@ library and not (in v1) a live IPC/network connection.
 - Costs: no live "watch the simulation run" experience in v1 — you run the
   engine, then open the result. This is acceptable per the vision doc; live
   streaming is an explicit future epic (Epic 10 includes an optional
-  streaming MR flagged as stretch) if the file-based workflow proves too
+  streaming ticket flagged as stretch) if the file-based workflow proves too
   slow to iterate with.

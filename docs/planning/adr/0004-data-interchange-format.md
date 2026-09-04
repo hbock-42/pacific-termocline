@@ -39,4 +39,4 @@ same struct definitions — no hand-written parsing on either end.
   so later changes don't silently break old runs or require a "does this
   file work with this build" guessing game.
 - NetCDF interop (for interchange with real oceanographic tools/data) is
-  explicitly deferred — an optional future MR, not a v1 requirement.
+  explicitly deferred — an optional future ticket, not a v1 requirement.
