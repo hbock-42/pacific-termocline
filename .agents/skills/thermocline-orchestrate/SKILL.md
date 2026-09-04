@@ -65,7 +65,11 @@ orca orchestration worker-start --task <t> --worktree new-top-level \
 ```
 
    The worker prompt names the ticket, its issue number, and the
-   `thermocline-mr` skill. `--name` becomes the worktree's branch, prefixed by
+   `thermocline-mr` skill, and tells it **not to send heartbeats** — send only
+   `worker_done`, `escalation` or `question`. Every inbox message pokes the
+   coordinator's terminal, and a heartbeat carries nothing `worker-list`
+   cannot already tell you; a wave of heartbeating workers is pure noise in
+   the human's input. `--name` becomes the worktree's branch, prefixed by
    the owner (`hbock-42/t-01-2-rk4-integrator`), so pass the ticket id in the
    name and let that branch stand — squash-merge makes it ephemeral anyway.
 
