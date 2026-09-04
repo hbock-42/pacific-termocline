@@ -13,12 +13,14 @@
 // lint is what keeps that true as the crate grows.
 #![warn(missing_docs)]
 
+pub mod coriolis;
 pub mod integrator;
 pub mod params;
 pub mod shallow_water;
 pub mod state;
 pub mod wind;
 
+pub use coriolis::{BetaPlane, BetaPlaneError, CoriolisTerm};
 pub use integrator::{Rk4, StateVector};
 
 /// Re-exported so a scenario, the solver and its tests name one set of
@@ -44,7 +46,7 @@ pub use termocline_grid::{Field2D, Grid, Staggering, H_STAGGERING, U_STAGGERING,
 /// [`Spacing`] is the one cell-spacing type both the bound and the operators
 /// are stated in.
 pub use termocline_numerics::{
-    check_timestep, max_stable_dt, CflError, Spacing, WaveSpeed, CFL_SAFETY_FACTOR,
+    check_timestep, max_stable_dt, CflError, Spacing, SpacingError, WaveSpeed, CFL_SAFETY_FACTOR,
 };
 
 /// Re-exported so the right-hand side differentiates with the same C-grid
