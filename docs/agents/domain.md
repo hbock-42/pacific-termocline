@@ -4,11 +4,13 @@ How the engineering skills should consume this repo's domain documentation when 
 
 ## Before exploring, read these
 
-- **`CONTEXT.md`** at the repo root, if it exists.
+- **`CONTEXT.md`** at the repo root: the domain glossary. Physics terms carry
+  their symbols; `h` is a depth *anomaly*, not a total depth, and mistaking the
+  two is the error this glossary exists to prevent.
 - **`docs/planning/adr/`**: read ADRs that touch the area you're about to work in. This repo keeps its ADRs under `docs/planning/` alongside the vision/scope and scientific-model docs, not at the more common `docs/adr/` — don't create a second ADR directory at `docs/adr/`, and don't propose moving these.
 - **`docs/planning/00-vision-and-scope.md`** and **`docs/planning/01-scientific-model.md`**: background on what's being built and the physics being modeled. Useful context even though they aren't `CONTEXT.md`/ADR-shaped.
 
-If `CONTEXT.md` doesn't exist, **proceed silently**. Don't flag its absence; don't suggest creating it upfront. The `/domain-modeling` skill (reached via `/grill-with-docs` and `/improve-codebase-architecture`) creates it lazily when terms or decisions actually get resolved — pointed at `docs/planning/adr/` for ADRs, not the default `docs/adr/`.
+`CONTEXT.md` is a glossary and nothing else — no implementation detail, no spec. Numerical-method vocabulary (C-grid, RK4, CFL) belongs to ADR-0003, not here. Extend it through `/domain-modeling` (reached via `/grill-with-docs` and `/improve-codebase-architecture`) as terms get resolved, pointing at `docs/planning/adr/` for ADRs, not the default `docs/adr/`.
 
 ## File structure
 
@@ -16,7 +18,8 @@ Single-context repo (this repo, and most repos):
 
 ```
 /
-├── CONTEXT.md                          ← created lazily by /domain-modeling
+├── CONTEXT.md                          ← domain glossary
+├── CODING_STANDARDS.md                 ← read by /code-review's Standards axis
 ├── docs/planning/adr/                  ← existing ADRs live here
 │   ├── 0001-engine-visualizer-split.md
 │   ├── 0002-visualizer-language-choice.md
