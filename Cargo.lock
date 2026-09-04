@@ -7,10 +7,15 @@ name = "engine"
 version = "0.1.0"
 dependencies = [
  "termocline-format",
+ "termocline-grid",
 ]
 
 [[package]]
 name = "termocline-format"
+version = "0.1.0"
+
+[[package]]
+name = "termocline-grid"
 version = "0.1.0"
 
 [[package]]
