@@ -17,34 +17,19 @@
 //! u equation and `−f·u` in the v equation. Neither product is collocated on
 //! the Arakawa C-grid of [ADR-0003]: `u` lives on east/west faces and `v` on
 //! north/south faces, so each has to be interpolated onto the other's points.
-//! The centred four-point average of the four opposite-face values surrounding
-//! a point lands exactly on that point, and is therefore second-order accurate
-//! with no one-sided guess anywhere in the interior.
+//! That move is `termocline-numerics`' job, not this module's — the physics
+//! here calls [`CGridOperators::face_y_to_face_x`] and its twin and never does
+//! neighbour arithmetic of its own.
 //!
 //! [ADR-0003]: ../../docs/planning/adr/0003-numerical-scheme.md
 
 use std::fmt;
 
 use termocline_grid::{Field2D, Grid, Staggering, U_STAGGERING, V_STAGGERING};
-use termocline_numerics::Spacing;
+use termocline_numerics::{CGridOperators, Spacing};
 
 use crate::params::PhysicalParams;
 use crate::state::OceanState;
-
-/// Weight each of the four surrounding points carries in the centred average
-/// that moves a velocity from its own faces onto the other component's.
-const FOUR_POINT_AVERAGE_WEIGHT: f64 = 0.25;
-
-/// Tendency written on a face that lies on the closed basin's wall.
-///
-/// A stated contract, not a quiet substitution: the basin is closed on all
-/// four sides (`docs/planning/01-scientific-model.md`), so the velocity normal
-/// to a wall is zero and does not evolve. Writing zero rather than skipping
-/// the point also means a reused tendency buffer cannot leak a previous
-/// stage's value into a wall. Epic 04 owns the boundary conditions proper;
-/// until then this matches what `termocline-numerics` writes on the same
-/// faces.
-const WALL_TENDENCY: f64 = 0.0;
 
 /// Why a beta-plane could not be built.
 #[derive(Debug, Clone, PartialEq)]
@@ -164,89 +149,68 @@ impl BetaPlane {
 /// The Coriolis contribution to the momentum equations over one basin.
 ///
 /// Built once per run and applied at every right-hand-side evaluation, so it
-/// allocates nothing: [`CoriolisTerm::add_to_tendency`] reads a state and adds
-/// into a caller-owned tendency buffer (CODING_STANDARDS.md § Performance).
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// allocates nothing per call: the two interpolation buffers are allocated
+/// here and reused across steps (CODING_STANDARDS.md § Performance).
+#[derive(Debug, Clone, PartialEq)]
 pub struct CoriolisTerm {
     grid: Grid,
     plane: BetaPlane,
+    operators: CGridOperators,
+    /// `v` interpolated onto the east/west faces, where the u equation needs
+    /// it. Reused every call; never read before it is written.
+    v_on_u_faces: Field2D<f64>,
+    /// `u` interpolated onto the north/south faces, where the v equation needs
+    /// it.
+    u_on_v_faces: Field2D<f64>,
 }
 
 impl CoriolisTerm {
-    /// The Coriolis term for `grid` on `plane`.
+    /// The Coriolis term for `grid` at `spacing`, on `plane`.
     #[must_use]
-    pub const fn new(grid: Grid, plane: BetaPlane) -> Self {
-        Self { grid, plane }
-    }
-
-    /// The beta-plane this term rotates on.
-    #[must_use]
-    pub const fn plane(&self) -> BetaPlane {
-        self.plane
+    pub fn new(grid: Grid, spacing: Spacing, plane: BetaPlane) -> Self {
+        Self {
+            grid,
+            plane,
+            operators: CGridOperators::new(grid, spacing),
+            v_on_u_faces: grid.allocate(U_STAGGERING, 0.0),
+            u_on_v_faces: grid.allocate(V_STAGGERING, 0.0),
+        }
     }
 
     /// Add `+f·v` to the zonal tendency and `−f·u` to the meridional one.
     ///
-    /// Both products are formed at the point they are needed: `v` is averaged
-    /// over the four north/south faces around each east/west face, and `u`
-    /// over the four east/west faces around each north/south face. The four
-    /// walls of the closed basin are set to [`WALL_TENDENCY`] rather than
-    /// interpolated, since a wall has faces on one side only.
+    /// Each velocity is first moved onto the other component's faces by the
+    /// C-grid four-point average, then multiplied by the `f` of the row it
+    /// landed on — cell-center rows for the u equation, north/south-face rows
+    /// for the v equation.
     ///
-    /// `tendency` is added to, not overwritten: the Coriolis term is one
-    /// contribution among the pressure gradient, the wind stress and the
-    /// Rayleigh damping. The thermocline tendency is untouched — rotation does
-    /// not appear in the continuity equation.
+    /// `tendency` is added to, never overwritten, at every point including the
+    /// closed basin's four walls: a wall carries no interpolated velocity (the
+    /// operators leave it at zero, since it has cells on one side only), so it
+    /// receives an exactly-zero contribution rather than an assignment that
+    /// would discard what the pressure-gradient, wind-stress or damping terms
+    /// had already written there. The thermocline tendency is untouched —
+    /// rotation does not appear in the continuity equation.
     ///
     /// # Panics
     /// If either state's fields do not have the shapes this term's grid asks
     /// for. A mis-shaped buffer means the calling code is wrong, which is what
     /// panics are for (CODING_STANDARDS.md § Correctness and failure).
-    pub fn add_to_tendency(&self, state: &OceanState, tendency: &mut OceanState) {
+    pub fn add_to_tendency(&mut self, state: &OceanState, tendency: &mut OceanState) {
         self.check_grid("state", state);
         self.check_grid("tendency", tendency);
-        self.add_zonal_tendency(state.v(), tendency.u_mut());
-        self.add_meridional_tendency(state.u(), tendency.v_mut());
-    }
 
-    /// `∂u/∂t += +f·v̄`, with `v̄` the four north/south faces around each
-    /// east/west face.
-    fn add_zonal_tendency(&self, v: &Field2D<f64>, du: &mut Field2D<f64>) {
-        let (nx, ny) = (self.grid.nx(), self.grid.ny());
-        for j in 0..ny {
-            let f_per_s = self.plane.coriolis_at_row_per_s(U_STAGGERING, j);
-            *at_mut(du, 0, j) = WALL_TENDENCY;
-            for i in 1..nx {
-                // The east/west face (i, j) is flanked by the cells i−1 and i,
-                // each of which carries a southern face at j and a northern
-                // one at j+1.
-                let mean_v_m_per_s = FOUR_POINT_AVERAGE_WEIGHT
-                    * (at(v, i - 1, j) + at(v, i, j) + at(v, i - 1, j + 1) + at(v, i, j + 1));
-                *at_mut(du, i, j) += f_per_s * mean_v_m_per_s;
-            }
-            *at_mut(du, nx, j) = WALL_TENDENCY;
-        }
-    }
+        self.operators
+            .face_y_to_face_x(state.v(), &mut self.v_on_u_faces);
+        self.operators
+            .face_x_to_face_y(state.u(), &mut self.u_on_v_faces);
 
-    /// `∂v/∂t += −f·ū`, with `ū` the four east/west faces around each
-    /// north/south face.
-    fn add_meridional_tendency(&self, u: &Field2D<f64>, dv: &mut Field2D<f64>) {
-        let (nx, ny) = (self.grid.nx(), self.grid.ny());
-        for i in 0..nx {
-            *at_mut(dv, i, 0) = WALL_TENDENCY;
-            *at_mut(dv, i, ny) = WALL_TENDENCY;
-        }
-        for j in 1..ny {
-            let f_per_s = self.plane.coriolis_at_row_per_s(V_STAGGERING, j);
-            for i in 0..nx {
-                // The north/south face (i, j) is flanked by the cells j−1 and
-                // j, each of which carries a western face at i and an eastern
-                // one at i+1.
-                let mean_u_m_per_s = FOUR_POINT_AVERAGE_WEIGHT
-                    * (at(u, i, j - 1) + at(u, i + 1, j - 1) + at(u, i, j) + at(u, i + 1, j));
-                *at_mut(dv, i, j) -= f_per_s * mean_u_m_per_s;
-            }
-        }
+        accumulate_rows(tendency.u_mut(), &self.v_on_u_faces, |j| {
+            self.plane.coriolis_at_row_per_s(U_STAGGERING, j)
+        });
+        accumulate_rows(tendency.v_mut(), &self.u_on_v_faces, |j| {
+            -self.plane.coriolis_at_row_per_s(V_STAGGERING, j)
+        });
     }
 
     /// Panic unless `state` covers the same basin as this term.
@@ -260,16 +224,26 @@ impl CoriolisTerm {
     }
 }
 
-/// The value at `(i, j)`, which the grid check has already proved is present.
-fn at(field: &Field2D<f64>, i: usize, j: usize) -> f64 {
-    *field
-        .get(i, j)
-        .expect("grid checked on entry, so this point exists")
-}
-
-/// Mutable access to `(i, j)`, likewise already proved present.
-fn at_mut(field: &mut Field2D<f64>, i: usize, j: usize) -> &mut f64 {
-    field
-        .get_mut(i, j)
-        .expect("grid checked on entry, so this point exists")
+/// `tendency += gain(j) · velocity` at every point, with `gain` evaluated once
+/// per row because `f` depends on `y` alone.
+///
+/// Both fields are at the same staggering, so this is a pointwise loop: the
+/// staggered neighbour arithmetic all happened in `termocline-numerics`.
+fn accumulate_rows(
+    tendency: &mut Field2D<f64>,
+    velocity: &Field2D<f64>,
+    gain_per_s: impl Fn(usize) -> f64,
+) {
+    let points_per_row = tendency.nx();
+    for (j, row) in tendency
+        .as_mut_slice()
+        .chunks_exact_mut(points_per_row)
+        .enumerate()
+    {
+        let gain = gain_per_s(j);
+        let velocities = &velocity.as_slice()[j * points_per_row..][..points_per_row];
+        for (rate, velocity_m_per_s) in row.iter_mut().zip(velocities) {
+            *rate += gain * velocity_m_per_s;
+        }
+    }
 }

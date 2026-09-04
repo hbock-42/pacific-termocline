@@ -52,7 +52,10 @@ const BASIN_LY_M: f64 = 5.0e6;
 
 /// Relative tolerance for a result that is a handful of `f64` operations away
 /// from the hand-computed value: four additions, one multiplication by 0.25
-/// and one by `f`, so a few units in the last place. `8·ε ≈ 1.8e-15`.
+/// and one by `f`, so a few units in the last place. `8·ε ≈ 1.8e-15` of the
+/// expected magnitude — every expectation below is non-zero, so a relative
+/// bound is well defined and the exact zeros are asserted with `assert_eq!`
+/// instead.
 const FEW_ULPS: f64 = 8.0 * f64::EPSILON;
 
 fn pacific_params() -> PhysicalParams {
@@ -68,7 +71,11 @@ fn pacific_params() -> PhysicalParams {
 
 /// Assert `actual` matches `expected` to within `FEW_ULPS` relative error.
 fn assert_close(actual: f64, expected: f64, what: &str) {
-    let tolerance = FEW_ULPS * expected.abs().max(1.0);
+    assert!(
+        expected != 0.0,
+        "{what}: a relative bound needs a non-zero expectation"
+    );
+    let tolerance = FEW_ULPS * expected.abs();
     assert!(
         (actual - expected).abs() <= tolerance,
         "{what}: got {actual:e}, expected {expected:e} (tolerance {tolerance:e})"
@@ -158,7 +165,7 @@ fn small_basin() -> (Grid, CoriolisTerm) {
     let grid = Grid::new(3, 3).expect("a 3x3 basin is non-degenerate");
     let spacing = Spacing::new(1.0e6, 1.0e6).expect("a 1000 km cell is positive");
     let plane = BetaPlane::centered_on_equator(pacific_params(), spacing, grid);
-    (grid, CoriolisTerm::new(grid, plane))
+    (grid, CoriolisTerm::new(grid, spacing, plane))
 }
 
 fn set(field: &mut Field2D<f64>, i: usize, j: usize, value: f64) {
@@ -176,7 +183,7 @@ fn the_zonal_tendency_is_a_hand_computed_four_point_average_of_v() {
     // points around it are (0,2), (1,2), (0,3) and (1,3); set them to
     // 1, 2, 3 and 4 m/s, so their average is (1+2+3+4)/4 = 2.5 m/s and
     //     ∂u/∂t = +f·v̄ = 2.3×10⁻⁵ × 2.5 = 5.75×10⁻⁵ m/s².
-    let (grid, coriolis) = small_basin();
+    let (grid, mut coriolis) = small_basin();
     let mut state = OceanState::at_rest(grid);
     set(state.v_mut(), 0, 2, 1.0);
     set(state.v_mut(), 1, 2, 2.0);
@@ -202,7 +209,7 @@ fn the_meridional_tendency_is_a_hand_computed_four_point_average_of_u() {
     //     ∂v/∂t = −f·ū = −1.15×10⁻⁵ × 4 = −4.6×10⁻⁵ m/s².
     // The sign is the physical one: eastward flow north of the equator is
     // deflected to the right, i.e. southward.
-    let (grid, coriolis) = small_basin();
+    let (grid, mut coriolis) = small_basin();
     let mut state = OceanState::at_rest(grid);
     set(state.u_mut(), 1, 1, 1.0);
     set(state.u_mut(), 2, 1, 3.0);
@@ -225,7 +232,7 @@ fn eastward_flow_is_deflected_right_in_the_north_left_in_the_south_and_not_at_al
     let grid = Grid::new(3, 4).expect("a 3x4 basin is non-degenerate");
     let spacing = Spacing::new(1.0e6, 1.0e6).expect("a 1000 km cell is positive");
     let plane = BetaPlane::centered_on_equator(pacific_params(), spacing, grid);
-    let coriolis = CoriolisTerm::new(grid, plane);
+    let mut coriolis = CoriolisTerm::new(grid, spacing, plane);
 
     let mut state = OceanState::at_rest(grid);
     state.u_mut().as_mut_slice().fill(1.0);
@@ -257,7 +264,7 @@ fn eastward_flow_is_deflected_right_in_the_north_left_in_the_south_and_not_at_al
 #[test]
 fn the_rest_state_has_no_coriolis_tendency() {
     // `f·0 = 0`: an ocean at rest stays at rest under rotation alone.
-    let (grid, coriolis) = small_basin();
+    let (grid, mut coriolis) = small_basin();
     let state = OceanState::at_rest(grid);
     let mut tendency = OceanState::at_rest(grid);
     coriolis.add_to_tendency(&state, &mut tendency);
@@ -265,32 +272,58 @@ fn the_rest_state_has_no_coriolis_tendency() {
 }
 
 #[test]
-fn the_closed_basin_walls_carry_no_coriolis_tendency() {
+fn the_closed_basin_walls_receive_no_coriolis_contribution_and_keep_what_was_there() {
     // The basin is closed on all four sides (01-scientific-model.md), so the
-    // normal velocity on a wall does not evolve: the western and eastern u
-    // faces and the southern and northern v faces are left untouched.
-    let (grid, coriolis) = small_basin();
+    // velocity normal to a wall is zero and rotation cannot accelerate it: the
+    // western and eastern u faces and the southern and northern v faces get an
+    // exactly-zero contribution.
+    //
+    // "Zero contribution" is not "set to zero". Coriolis is one term among the
+    // pressure gradient, the wind stress and the damping, so a wall value one
+    // of those already wrote must survive — otherwise the result would depend
+    // on the order the terms are applied. The marker below is what a previous
+    // contribution would have left behind.
+    const MARKER_M_PER_S2: f64 = 7.0;
+
+    let (grid, mut coriolis) = small_basin();
     let mut state = OceanState::at_rest(grid);
     state.u_mut().as_mut_slice().fill(1.0);
     state.v_mut().as_mut_slice().fill(1.0);
 
     let mut tendency = OceanState::at_rest(grid);
+    for j in 0..tendency.u().ny() {
+        set(tendency.u_mut(), 0, j, MARKER_M_PER_S2);
+        set(tendency.u_mut(), grid.nx(), j, MARKER_M_PER_S2);
+    }
+    for i in 0..tendency.v().nx() {
+        set(tendency.v_mut(), i, 0, MARKER_M_PER_S2);
+        set(tendency.v_mut(), i, grid.ny(), MARKER_M_PER_S2);
+    }
+
     coriolis.add_to_tendency(&state, &mut tendency);
 
     for j in 0..tendency.u().ny() {
-        assert_eq!(at(tendency.u(), 0, j), 0.0, "western wall at j = {j}");
+        assert_eq!(
+            at(tendency.u(), 0, j),
+            MARKER_M_PER_S2,
+            "western wall, j = {j}"
+        );
         assert_eq!(
             at(tendency.u(), grid.nx(), j),
-            0.0,
-            "eastern wall at j = {j}"
+            MARKER_M_PER_S2,
+            "eastern wall, j = {j}"
         );
     }
     for i in 0..tendency.v().nx() {
-        assert_eq!(at(tendency.v(), i, 0), 0.0, "southern wall at i = {i}");
+        assert_eq!(
+            at(tendency.v(), i, 0),
+            MARKER_M_PER_S2,
+            "southern wall, i = {i}"
+        );
         assert_eq!(
             at(tendency.v(), i, grid.ny()),
-            0.0,
-            "northern wall at i = {i}"
+            MARKER_M_PER_S2,
+            "northern wall, i = {i}"
         );
     }
 }
@@ -300,7 +333,7 @@ fn the_term_accumulates_into_the_tendency_rather_than_overwriting_it() {
     // The Coriolis term is one contribution among several (pressure gradient,
     // friction, wind stress), so applying it twice must double it rather than
     // replace what a previous contribution wrote.
-    let (grid, coriolis) = small_basin();
+    let (grid, mut coriolis) = small_basin();
     let mut state = OceanState::at_rest(grid);
     set(state.v_mut(), 0, 2, 1.0);
     set(state.v_mut(), 1, 2, 2.0);
@@ -348,7 +381,7 @@ fn largest_coriolis_error(cells: usize) -> f64 {
     let southern_edge_y_m = -0.5 * BASIN_LY_M;
     let plane = BetaPlane::new(pacific_params(), spacing, southern_edge_y_m)
         .expect("a finite southern edge");
-    let coriolis = CoriolisTerm::new(grid, plane);
+    let mut coriolis = CoriolisTerm::new(grid, spacing, plane);
 
     // Sample the same analytic field at the u points and at the v points.
     let mut state = OceanState::at_rest(grid);

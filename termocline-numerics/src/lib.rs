@@ -230,6 +230,73 @@ impl CGridOperators {
         });
     }
 
+    /// A north/south-face field interpolated onto the east/west faces.
+    ///
+    /// The four north/south faces surrounding an east/west face are the
+    /// southern and northern faces of the two cells flanking it, and their
+    /// average is centred exactly on it: a centred average along x followed by
+    /// one along y, so second order on both axes. This is the interpolation
+    /// the Coriolis term needs to form `f·v` where `u` lives.
+    ///
+    /// The western and eastern boundary faces have a cell on one side only and
+    /// carry [`BOUNDARY_FACE`], exactly as in
+    /// [`CGridOperators::center_to_face_x`].
+    ///
+    /// # Panics
+    /// If either field's shape does not match [`CGridOperators::grid`].
+    pub fn face_y_to_face_x(&self, ns_face: &Field2D<f64>, ew_face: &mut Field2D<f64>) {
+        self.check_shape(
+            "north/south-face input",
+            ns_face,
+            Staggering::NorthSouthFace,
+        );
+        self.check_shape("east/west-face output", ew_face, Staggering::EastWestFace);
+        let (nx, ny) = (self.grid.nx(), self.grid.ny());
+        for j in 0..ny {
+            *at_mut(ew_face, 0, j) = BOUNDARY_FACE;
+            for i in 1..nx {
+                *at_mut(ew_face, i, j) = FOUR_POINT_AVERAGE_WEIGHT
+                    * (at(ns_face, i - 1, j)
+                        + at(ns_face, i, j)
+                        + at(ns_face, i - 1, j + 1)
+                        + at(ns_face, i, j + 1));
+            }
+            *at_mut(ew_face, nx, j) = BOUNDARY_FACE;
+        }
+    }
+
+    /// An east/west-face field interpolated onto the north/south faces.
+    ///
+    /// The meridional twin of [`CGridOperators::face_y_to_face_x`], including
+    /// its treatment of the two boundary lines — here the southern and
+    /// northern ones. This is the interpolation the Coriolis term needs to
+    /// form `f·u` where `v` lives.
+    ///
+    /// # Panics
+    /// If either field's shape does not match [`CGridOperators::grid`].
+    pub fn face_x_to_face_y(&self, ew_face: &Field2D<f64>, ns_face: &mut Field2D<f64>) {
+        self.check_shape("east/west-face input", ew_face, Staggering::EastWestFace);
+        self.check_shape(
+            "north/south-face output",
+            ns_face,
+            Staggering::NorthSouthFace,
+        );
+        let (nx, ny) = (self.grid.nx(), self.grid.ny());
+        for i in 0..nx {
+            *at_mut(ns_face, i, 0) = BOUNDARY_FACE;
+            *at_mut(ns_face, i, ny) = BOUNDARY_FACE;
+        }
+        for j in 1..ny {
+            for i in 0..nx {
+                *at_mut(ns_face, i, j) = FOUR_POINT_AVERAGE_WEIGHT
+                    * (at(ew_face, i, j - 1)
+                        + at(ew_face, i + 1, j - 1)
+                        + at(ew_face, i, j)
+                        + at(ew_face, i + 1, j));
+            }
+        }
+    }
+
     /// Fill an east/west-face field from the pair of centers flanking each
     /// interior face, zeroing the two boundary lines.
     fn write_x_faces(
@@ -315,6 +382,10 @@ impl CGridOperators {
 
 /// Weight each of the two neighbours carries in a centred two-point average.
 const AVERAGE_WEIGHT: f64 = 0.5;
+/// Weight each of the four neighbours carries when a value moves between the
+/// two face staggerings: a centred average along x composed with one along y,
+/// so the square of [`AVERAGE_WEIGHT`].
+const FOUR_POINT_AVERAGE_WEIGHT: f64 = AVERAGE_WEIGHT * AVERAGE_WEIGHT;
 /// What a center→face operator writes on the basin's boundary faces, which
 /// have a cell on one side only.
 ///

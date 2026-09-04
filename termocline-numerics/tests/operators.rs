@@ -639,3 +639,97 @@ fn an_input_field_of_the_wrong_shape_is_a_bug_and_panics() {
     let mut face = grid.allocate(U_STAGGERING, 0.0_f64);
     ops.ddx_center_to_face(&not_a_center_field, &mut face);
 }
+
+// --- The face↔face averages the Coriolis term needs (T-02.2). ---
+
+/// Leading remainder of the four-point average that moves a value between the
+/// two face staggerings. It is a centred average along x composed with one
+/// along y, and for `f = sin(kx·x)·sin(ky·y)` both remainders are
+/// proportional to `−f`, so they add rather than partly cancelling.
+fn four_point_average_remainder(spacing: Spacing) -> f64 {
+    average_remainder_x(spacing) + average_remainder_y(spacing)
+}
+
+#[test]
+fn face_to_face_interpolation_converges_at_second_order() {
+    assert_second_order(|n| {
+        let (grid, spacing, ops) = basin(n);
+
+        let expected_u = sample(grid, spacing, U_STAGGERING, f);
+        let v = sample(grid, spacing, V_STAGGERING, f);
+        let mut on_u = grid.allocate(U_STAGGERING, 0.0_f64);
+        ops.face_y_to_face_x(&v, &mut on_u);
+
+        let expected_v = sample(grid, spacing, V_STAGGERING, f);
+        let u = sample(grid, spacing, U_STAGGERING, f);
+        let mut on_v = grid.allocate(V_STAGGERING, 0.0_f64);
+        ops.face_x_to_face_y(&u, &mut on_v);
+
+        max_error(&on_u, &expected_u, interior_x_faces(n)).max(max_error(
+            &on_v,
+            &expected_v,
+            interior_y_faces(n),
+        ))
+    });
+}
+
+#[test]
+fn every_face_to_face_error_matches_the_analytic_truncation_remainder() {
+    assert_error_matches_remainder(
+        "face_y_to_face_x",
+        V_STAGGERING,
+        U_STAGGERING,
+        f,
+        f,
+        four_point_average_remainder,
+        CGridOperators::face_y_to_face_x,
+    );
+    assert_error_matches_remainder(
+        "face_x_to_face_y",
+        U_STAGGERING,
+        V_STAGGERING,
+        f,
+        f,
+        four_point_average_remainder,
+        CGridOperators::face_x_to_face_y,
+    );
+}
+
+#[test]
+fn the_face_to_face_averages_reset_the_boundary_lines_they_do_not_compute() {
+    // Same contract as the center→face operators: a boundary face has a cell
+    // on one side only, so it carries zero rather than a one-sided guess, and
+    // a reused buffer cannot leak a previous value into it.
+    let (grid, _spacing, ops) = basin(4);
+
+    let mut on_u = grid.allocate(U_STAGGERING, f64::NAN);
+    let v = grid.allocate(V_STAGGERING, 1.0_f64);
+    ops.face_y_to_face_x(&v, &mut on_u);
+    for j in 0..on_u.ny() {
+        assert_eq!(on_u.get(0, j), Some(&0.0), "western boundary at j = {j}");
+        assert_eq!(
+            on_u.get(grid.nx(), j),
+            Some(&0.0),
+            "eastern boundary at j = {j}"
+        );
+        for i in 1..grid.nx() {
+            // Averaging a constant field must reproduce the constant.
+            assert_eq!(on_u.get(i, j), Some(&1.0), "interior face at ({i}, {j})");
+        }
+    }
+
+    let mut on_v = grid.allocate(V_STAGGERING, f64::NAN);
+    let u = grid.allocate(U_STAGGERING, 1.0_f64);
+    ops.face_x_to_face_y(&u, &mut on_v);
+    for i in 0..on_v.nx() {
+        assert_eq!(on_v.get(i, 0), Some(&0.0), "southern boundary at i = {i}");
+        assert_eq!(
+            on_v.get(i, grid.ny()),
+            Some(&0.0),
+            "northern boundary at i = {i}"
+        );
+        for j in 1..grid.ny() {
+            assert_eq!(on_v.get(i, j), Some(&1.0), "interior face at ({i}, {j})");
+        }
+    }
+}
