@@ -15,7 +15,9 @@
 
 pub mod integrator;
 pub mod params;
+pub mod shallow_water;
 pub mod state;
+pub mod wind;
 
 pub use integrator::{Rk4, StateVector};
 
@@ -25,7 +27,9 @@ pub use params::{
     PhysicalParams, PhysicalParamsError, EQUATORIAL_BETA_PER_M_PER_S,
     SEAWATER_REFERENCE_DENSITY_KG_PER_M3,
 };
+pub use shallow_water::{shallow_water_rhs, ShallowWaterRhs};
 pub use state::OceanState;
+pub use wind::WindStress;
 
 /// Re-exported so binaries and the visualizer agree on one format version.
 pub use termocline_format::FORMAT_VERSION;
@@ -37,9 +41,15 @@ pub use termocline_grid::{Field2D, Grid, Staggering, H_STAGGERING, U_STAGGERING,
 /// Re-exported so a scenario, the solver and the CLI all reach the same CFL
 /// bound: [`check_timestep`] is the runtime check a run passes before its
 /// first step, and it refuses an unstable timestep rather than clamping it.
+/// [`Spacing`] is the one cell-spacing type both the bound and the operators
+/// are stated in.
 pub use termocline_numerics::{
     check_timestep, max_stable_dt, CflError, Spacing, WaveSpeed, CFL_SAFETY_FACTOR,
 };
+
+/// Re-exported so the right-hand side differentiates with the same C-grid
+/// operators the numerics crate defines, rather than open-coding stencils.
+pub use termocline_numerics::CGridOperators;
 
 #[cfg(test)]
 mod tests {

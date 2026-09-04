@@ -106,6 +106,12 @@ impl CGridOperators {
         Self { grid, spacing }
     }
 
+    /// The basin shape these operators are built for.
+    #[must_use]
+    pub const fn grid(&self) -> Grid {
+        self.grid
+    }
+
     /// `∂/∂x` of a cell-centered field, written to an east/west-face field.
     ///
     /// The face between two cells is exactly the midpoint of their centers, so
