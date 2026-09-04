@@ -1,0 +1,20 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Engine output (runs are reproducible from their scenario config)
+/runs/
+*.termocline
+
+# OS / editor cruft
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Vendored agent skills: restored with `npx skills` from skills-lock.json.
+# Project-owned skills (thermocline-*) are NOT restorable and are tracked.
+.agents/skills/*
+!.agents/skills/thermocline-*
+.claude/skills/*
+!.claude/skills/thermocline-*
