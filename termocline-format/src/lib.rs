@@ -26,3 +26,13 @@ mod tests {
         assert_eq!(FORMAT_VERSION, 1);
     }
 }
+
+#[cfg(test)]
+mod gate_verification {
+    /// Deliberately failing: proves the ruleset blocks a red PR. Removed with
+    /// this throwaway branch.
+    #[test]
+    fn this_must_fail() {
+        assert_eq!(2 + 2, 5, "intentional failure for gate verification");
+    }
+}
