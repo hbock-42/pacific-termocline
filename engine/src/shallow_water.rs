@@ -44,8 +44,6 @@ use crate::wind::WindStress;
 /// allocating convenience wrapper for tests and one-off evaluation.
 #[derive(Debug, Clone)]
 pub struct ShallowWaterRhs {
-    /// Shape of the basin this evaluator is sized for.
-    grid: Grid,
     /// Physical parameters `(g', H, r, β, ρ₀)` of the ocean being integrated.
     params: PhysicalParams,
     /// The C-grid derivative operators at this basin's cell spacing.
@@ -61,7 +59,6 @@ impl ShallowWaterRhs {
     #[must_use]
     pub fn new(grid: Grid, spacing: Spacing, params: PhysicalParams) -> Self {
         Self {
-            grid,
             params,
             operators: CGridOperators::new(grid, spacing),
             zonal_divergence_per_s: grid.allocate(H_STAGGERING, 0.0),
@@ -99,20 +96,20 @@ impl ShallowWaterRhs {
             .ddx_center_to_face(state.h(), tendency.u_mut());
         self.operators
             .ddy_center_to_face(state.h(), tendency.v_mut());
-        let minus_g_prime = -self.params.reduced_gravity_m_per_s2();
+        let minus_g_prime_m_per_s2 = -self.params.reduced_gravity_m_per_s2();
         // Mass of the upper layer per unit area, in kg/m²: the `ρ₀·H` a
         // surface stress in Pa is divided by to become an acceleration.
         let layer_mass_kg_per_m2 =
             self.params.reference_density_kg_per_m3() * self.params.mean_thermocline_depth_m();
-        accelerate(
+        turn_gradient_into_acceleration(
             tendency.u_mut(),
-            minus_g_prime,
+            minus_g_prime_m_per_s2,
             wind_stress.tau_x_pa(),
             layer_mass_kg_per_m2,
         );
-        accelerate(
+        turn_gradient_into_acceleration(
             tendency.v_mut(),
-            minus_g_prime,
+            minus_g_prime_m_per_s2,
             wind_stress.tau_y_pa(),
             layer_mass_kg_per_m2,
         );
@@ -138,23 +135,27 @@ impl ShallowWaterRhs {
     /// Panic unless `grid` is the basin this evaluator was built for.
     fn check_grid(&self, role: &str, grid: Grid) {
         assert!(
-            grid == self.grid,
+            grid == self.operators.grid(),
             "{role} covers {grid:?}, but this right-hand side was built for {:?}",
-            self.grid
+            self.operators.grid()
         );
     }
 }
 
-/// Turn a gradient of `h` already sitting in `rate` into the acceleration
+/// Overwrite a gradient of `h`, in m/m, with the acceleration it produces:
 /// `−g'·∂h/∂· + τ/(ρ₀·H)`, in m/s².
-fn accelerate(
-    rate: &mut Field2D<f64>,
-    minus_g_prime: f64,
+///
+/// In-place because the gradient operators write straight into the tendency
+/// buffer, which is where the acceleration has to end up; `field` therefore
+/// arrives holding a gradient and leaves holding an acceleration.
+fn turn_gradient_into_acceleration(
+    field: &mut Field2D<f64>,
+    minus_g_prime_m_per_s2: f64,
     stress_pa: &Field2D<f64>,
     layer_mass_kg_per_m2: f64,
 ) {
-    for (acceleration, stress) in rate.as_mut_slice().iter_mut().zip(stress_pa.as_slice()) {
-        *acceleration = minus_g_prime * *acceleration + stress / layer_mass_kg_per_m2;
+    for (value, stress) in field.as_mut_slice().iter_mut().zip(stress_pa.as_slice()) {
+        *value = minus_g_prime_m_per_s2 * *value + stress / layer_mass_kg_per_m2;
     }
 }
 

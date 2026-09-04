@@ -199,10 +199,11 @@ fn assert_second_order(measure: impl Fn(usize) -> f64) {
 
 // --- Acceptance criterion: a Gaussian bump accelerates the flow outward. ---
 
-/// Cells across the basin of the small test grid the acceptance criterion asks
-/// for. Odd, so the bump can sit on the center of the middle cell and no face
-/// falls exactly on its crest.
-const BUMP_GRID_CELLS: usize = 9;
+/// Cells across the small test grid the acceptance criterion asks for, and the
+/// basin every non-convergence test below runs on. Odd, so the Gaussian bump
+/// can sit on the center of the middle cell and no face falls exactly on its
+/// crest.
+const SMALL_BASIN_CELLS: usize = 9;
 /// `e`-folding width of the bump, in cell widths. Two cells is wide enough for
 /// the centred difference to see a smooth hill and narrow enough that the bump
 /// decays well inside the basin.
@@ -215,7 +216,7 @@ fn a_gaussian_bump_accelerates_the_current_outward() {
     // hill, so east of the crest (`∂h/∂x < 0`) the flow accelerates eastward
     // and west of it westward. Both signs are read from the analytic gradient
     // of the bump, `∂h/∂x = −2(x−x₀)/L²·h`, not from the code.
-    let (grid, spacing) = basin(BUMP_GRID_CELLS);
+    let (grid, spacing) = basin(SMALL_BASIN_CELLS);
     let crest = crest_position_m(spacing);
     let mut state = OceanState::at_rest(grid);
     *state.h_mut() = sample(grid, spacing, H_STAGGERING, |x_m, y_m| {
@@ -262,8 +263,8 @@ fn crest_position_m(spacing: Spacing) -> (f64, f64) {
     position_m(
         spacing,
         H_STAGGERING,
-        BUMP_GRID_CELLS / 2,
-        BUMP_GRID_CELLS / 2,
+        SMALL_BASIN_CELLS / 2,
+        SMALL_BASIN_CELLS / 2,
     )
 }
 
@@ -357,7 +358,7 @@ fn a_uniform_wind_stress_accelerates_the_current_by_tau_over_rho_h() {
     // equations reduce to the body force a surface stress exerts on a layer of
     // thickness `H`: `∂u/∂t = τx/(ρ₀·H)` (Gill, ch. 9). Easterly stress
     // (`τx < 0`) must therefore drive a westward current.
-    let (grid, spacing) = basin(BUMP_GRID_CELLS);
+    let (grid, spacing) = basin(SMALL_BASIN_CELLS);
     let params = pacific_params();
     let state = OceanState::at_rest(grid);
     let wind = WindStress::uniform(grid, TRADE_WIND_STRESS_X_PA, TRADE_WIND_STRESS_Y_PA);
@@ -389,7 +390,7 @@ fn a_calm_ocean_at_rest_stays_at_rest() {
     // Every term of this ticket's right-hand side is linear and homogeneous in
     // the state except the wind stress, so the rest state with no wind is a
     // fixed point — exactly, since every product involved has a zero factor.
-    let (grid, spacing) = basin(BUMP_GRID_CELLS);
+    let (grid, spacing) = basin(SMALL_BASIN_CELLS);
     let state = OceanState::at_rest(grid);
 
     let tendency = shallow_water_rhs(&state, pacific_params(), spacing, &WindStress::calm(grid));
@@ -402,7 +403,7 @@ fn the_tendency_carries_the_staggering_of_the_state_it_came_from() {
     // A tendency is an `OceanState` of per-second units, so `∂h/∂t` sits at
     // cell centers with `h`, and each acceleration on the face its velocity
     // lives on — which is what lets RK4 combine the two (T-01.2).
-    let (grid, spacing) = basin(BUMP_GRID_CELLS);
+    let (grid, spacing) = basin(SMALL_BASIN_CELLS);
     let state = OceanState::at_rest(grid);
 
     let tendency = shallow_water_rhs(&state, pacific_params(), spacing, &WindStress::calm(grid));
@@ -427,8 +428,15 @@ fn a_reused_evaluator_writes_every_point_of_its_output() {
     // The time loop reuses one output buffer across steps and stages
     // (CODING_STANDARDS.md § Performance), so a right-hand side that left any
     // point untouched would leak the previous stage's tendency into this one.
-    // Seeding the buffer with a value no term can produce catches that.
-    let (grid, spacing) = basin(BUMP_GRID_CELLS);
+    // Seeding the buffer with NaN catches that: an unwritten point stays NaN,
+    // and NaN survives every later arithmetic operation.
+    //
+    // This is an equivalence check between the two entry points and a check
+    // that every point is written — not a check of the values, which the
+    // analytic tests above own. The finiteness assertion is what makes it fail
+    // on a missed point, since `NaN != NaN` would also make the comparison
+    // below fail for the wrong reason.
+    let (grid, spacing) = basin(SMALL_BASIN_CELLS);
     let params = pacific_params();
     let crest = crest_position_m(spacing);
     let mut state = OceanState::at_rest(grid);
@@ -446,5 +454,59 @@ fn a_reused_evaluator_writes_every_point_of_its_output() {
 
     evaluator.evaluate(&state, &wind, &mut tendency);
 
+    for rates in [
+        tendency.h().as_slice(),
+        tendency.u().as_slice(),
+        tendency.v().as_slice(),
+    ] {
+        assert!(
+            rates.iter().all(|rate| rate.is_finite()),
+            "a point of the seeded buffer was left unwritten"
+        );
+    }
     assert_eq!(tendency, expected);
+}
+
+#[test]
+fn the_basin_walls_carry_the_wind_stress_alone() {
+    // A center→face difference needs a cell on either side, so the four
+    // boundary faces have no pressure gradient to speak of and the operators
+    // write zero there (T-01.1). The acceleration left on a wall is therefore
+    // exactly the surface stress term, until Epic 04 gives the boundary a
+    // condition of its own — a documented contract of the right-hand side, so
+    // it is asserted rather than left to prose.
+    let (grid, spacing) = basin(SMALL_BASIN_CELLS);
+    let params = pacific_params();
+    let crest = crest_position_m(spacing);
+    let mut state = OceanState::at_rest(grid);
+    *state.h_mut() = sample(grid, spacing, H_STAGGERING, |x_m, y_m| {
+        gaussian_bump_m(spacing, crest, x_m, y_m)
+    });
+    let wind = WindStress::uniform(grid, TRADE_WIND_STRESS_X_PA, TRADE_WIND_STRESS_Y_PA);
+
+    let tendency = shallow_water_rhs(&state, params, spacing, &wind);
+
+    let layer_mass_kg_per_m2 =
+        params.reference_density_kg_per_m3() * params.mean_thermocline_depth_m();
+    let expected_u_m_per_s2 = TRADE_WIND_STRESS_X_PA / layer_mass_kg_per_m2;
+    let expected_v_m_per_s2 = TRADE_WIND_STRESS_Y_PA / layer_mass_kg_per_m2;
+
+    for j in 0..tendency.u().ny() {
+        for i in [0, tendency.u().nx() - 1] {
+            let rate = *tendency.u().get(i, j).expect("in-bounds");
+            assert!(
+                (rate - expected_u_m_per_s2).abs() <= ROUNDING_TOLERANCE * expected_u_m_per_s2.abs(),
+                "west/east wall face ({i}, {j}): expected {expected_u_m_per_s2} m/s², got {rate} m/s²"
+            );
+        }
+    }
+    for j in [0, tendency.v().ny() - 1] {
+        for i in 0..tendency.v().nx() {
+            let rate = *tendency.v().get(i, j).expect("in-bounds");
+            assert!(
+                (rate - expected_v_m_per_s2).abs() <= ROUNDING_TOLERANCE * expected_v_m_per_s2.abs(),
+                "south/north wall face ({i}, {j}): expected {expected_v_m_per_s2} m/s², got {rate} m/s²"
+            );
+        }
+    }
 }
