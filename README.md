@@ -14,11 +14,11 @@ The project is split into two independent components:
 
 Neither directory exists yet. **This repository is currently in the planning
 phase.** Before any code is written, the scientific model, architecture, and
-full backlog of epics/MRs are being specified under `docs/planning/`.
+full backlog of epics/tickets are being specified under `docs/planning/`.
 
 ## Where to start reading
 
 1. [`docs/planning/00-vision-and-scope.md`](docs/planning/00-vision-and-scope.md) — what we're building and why.
 2. [`docs/planning/01-scientific-model.md`](docs/planning/01-scientific-model.md) — the physics and equations being simulated.
 3. [`docs/planning/adr/`](docs/planning/adr/) — key architecture decisions.
-4. [`docs/planning/epics/`](docs/planning/epics/) — the full backlog, epic by epic, each broken into MR-sized tickets.
+4. [`docs/planning/epics/`](docs/planning/epics/) — the full backlog, epic by epic, each broken into ticket-sized units of work.

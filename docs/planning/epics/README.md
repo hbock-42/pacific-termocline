@@ -1,6 +1,17 @@
 # Backlog — Epics
 
-Each epic file lists its MRs (merge-request-sized tickets) with a
+> **⚠️ Frozen — historical record.**
+>
+> These files record how the backlog was originally specified. They are **not**
+> updated as work proceeds and they do not track status. Every ticket here has
+> been created as a GitHub issue, and **the GitHub issues are authoritative**:
+> agents and humans read tickets from GitHub, never from these files. See
+> [ADR-0005](../adr/0005-autonomous-implementation-pipeline.md).
+>
+> Tickets were renamed from `MR-XX.Y` to `T-XX.Y` before freezing, so the
+> identifiers here match the issue titles.
+
+Each epic file lists its tickets (merge-request-sized units of work) with a
 description, deliverable, acceptance criteria, and dependencies. Rough
 delivery order (later epics may reorder once the engine is minimally
 running, but dependencies below are hard):

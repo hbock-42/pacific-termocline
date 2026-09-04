@@ -48,8 +48,8 @@ The simulation should let a user:
 ## Process for this repo
 
 Per explicit instruction: **no simulation or app code is written until the
-epics and their MRs are specified.** Each epic in `docs/planning/epics/`
-lists the MRs (merge-request-sized units of work) needed to deliver it, with
+epics and their tickets are specified.** Each epic in `docs/planning/epics/`
+lists the tickets (merge-request-sized units of work) needed to deliver it, with
 a description, deliverable, and acceptance criteria for each. Development
 starts at Epic 00 and proceeds roughly in order, though later epics may be
 reprioritized once the engine is minimally running.

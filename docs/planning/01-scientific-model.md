@@ -46,7 +46,7 @@ Where:
 These are linear shallow-water equations forced by wind stress — the
 textbook equatorial-wave / adjustment problem. Nonlinear advection terms are
 explicitly **out of scope for v1** (Epic 02 ships the linear model; a
-nonlinear-advection MR is a clearly separated, optional follow-up once the
+nonlinear-advection ticket is a clearly separated, optional follow-up once the
 linear core is validated).
 
 ## Wind forcing (the alizés)

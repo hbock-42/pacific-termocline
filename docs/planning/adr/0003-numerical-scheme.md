@@ -36,4 +36,4 @@ complexity.
   evaluating spatial derivatives.
 - Timestep `dt` is bounded by the CFL condition for the fastest wave speed
   `c = √(g'H)`; the engine computes and enforces a safe `dt` from the grid
-  spacing rather than trusting a user-supplied one blindly (see Epic 01 MRs).
+  spacing rather than trusting a user-supplied one blindly (see the Epic 01 tickets).
