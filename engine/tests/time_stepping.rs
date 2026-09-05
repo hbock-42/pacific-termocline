@@ -60,7 +60,7 @@ use std::cell::RefCell;
 
 use engine::{
     max_stable_dt, step, BetaPlane, CflError, Field2D, Grid, OceanState, PhysicalParams, Solver,
-    SolverError, Spacing, Staggering, WaveSpeed, WindStress, H_STAGGERING,
+    SolverError, Spacing, Staggering, WaveSpeed, WindStress, H_STAGGERING, U_STAGGERING,
 };
 
 /// Reduced gravity `g'` of the equatorial Pacific's first baroclinic mode, in
@@ -219,6 +219,7 @@ fn one_step_of_a_uniform_thermocline_anomaly_is_the_rk4_amplification_polynomial
 
     let mut state = OceanState::at_rest(grid);
     state.h_mut().as_mut_slice().fill(H_AMPLITUDE_M);
+    let calm = WindStress::calm(grid);
 
     let advanced = step(
         &state,
@@ -226,7 +227,7 @@ fn one_step_of_a_uniform_thermocline_anomaly_is_the_rk4_amplification_polynomial
         params,
         spacing,
         equatorial_plane(params, spacing, grid),
-        &WindStress::calm(grid),
+        |_t_s| &calm,
     )
     .expect("the CFL-safe timestep is admissible");
 
@@ -246,6 +247,64 @@ fn one_step_of_a_uniform_thermocline_anomaly_is_the_rk4_amplification_polynomial
 /// Cells across the basin the uniform-state checks run on. Coarse on purpose:
 /// the state has no spatial structure, so resolution buys nothing.
 const UNIFORM_BASIN_CELLS: usize = 4;
+
+/// Timestep of the pressure-gradient check, in seconds; see
+/// [`PRESSURE_GRADIENT_TOLERANCE`].
+const PRESSURE_GRADIENT_STEP_S: f64 = 100.0;
+
+/// Relative tolerance on the leading-order acceleration `u(dt) = −g'·∂h/∂x·dt`.
+///
+/// From a basin at rest in `u` and `v`, the next term is `(dt²/2)·ü` with
+/// `ü = −g'·∂ḣ/∂x = g'·H·∂²(∂u/∂x + ∂v/∂y)/∂x²`, i.e. a relative correction of
+/// order `(c·k·dt)²/2` for the mode below. Its wavenumber is `k = π/Lx`, so
+/// `c·k·dt = 2.74 × 3.14×10⁻⁷ × 100 = 8.6×10⁻⁵` and the correction is
+/// `3.7×10⁻⁹`. A bound of 1e-6 clears that by two orders of magnitude and
+/// still fails by six if the term is missing or mis-signed.
+const PRESSURE_GRADIENT_TOLERANCE: f64 = 1.0e-6;
+
+#[test]
+fn a_step_accelerates_a_thermocline_slope_down_its_own_gradient() {
+    // The other end-to-end single step: a basin whose only anomaly is a slope
+    // in `h`. All three of the momentum equation's other terms are zero at
+    // rest, so the whole of the initial acceleration is `−g'·∂h/∂x`, and the
+    // C-grid difference of `A·cos(k·x)` at cell centers is exactly
+    // `−A·(2/dx)·sin(k·dx/2)·sin(k·x_face)` at the face between them — the
+    // discrete derivative of the mode, written out from the stencil rather
+    // than measured.
+    let (grid, spacing) = basin(CORIOLIS_BASIN_CELLS, CORIOLIS_BASIN_CELLS);
+    let params = pacific_params(0.0);
+    let mut state = gravest_zonal_mode(grid, spacing);
+
+    let mut solver = solver_for(grid, spacing, params, PRESSURE_GRADIENT_STEP_S);
+    let calm = WindStress::calm(grid);
+    solver.step(&mut state, 0.0, |_t_s| &calm);
+
+    let wavenumber_per_m = std::f64::consts::PI / BASIN_LX_M;
+    let dx_m = spacing.dx_m();
+    let slope_amplitude_per_m = H_AMPLITUDE_M * 2.0 / dx_m * (0.5 * wavenumber_per_m * dx_m).sin();
+    for j in 0..state.u().ny() {
+        // The two wall faces have a cell on one side only, so the operators
+        // leave the gradient at zero there (T-01.1) and the wall stays at rest.
+        for i in 1..state.u().nx() - 1 {
+            let x_m = i as f64 * dx_m;
+            let expected_m_per_s = params.reduced_gravity_m_per_s2()
+                * slope_amplitude_per_m
+                * (wavenumber_per_m * x_m).sin()
+                * PRESSURE_GRADIENT_STEP_S;
+            assert!(
+                (state.u().get(i, j).expect("in-bounds point") - expected_m_per_s).abs()
+                    <= PRESSURE_GRADIENT_TOLERANCE * expected_m_per_s.abs(),
+                "u at ({i}, {j}): expected {expected_m_per_s} m/s, got {} m/s",
+                state.u().get(i, j).expect("in-bounds point")
+            );
+        }
+    }
+    // The walls really are still at rest, exactly.
+    for j in 0..state.u().ny() {
+        assert_eq!(state.u().get(0, j), Some(&0.0));
+        assert_eq!(state.u().get(state.u().nx() - 1, j), Some(&0.0));
+    }
+}
 
 // --- The Coriolis term reaches the step. ---
 
@@ -286,11 +345,13 @@ fn a_step_rotates_a_meridional_current_into_a_zonal_one() {
     let calm = WindStress::calm(grid);
     solver.step(&mut state, 0.0, |_t_s| &calm);
 
-    let southern_edge_y_m = -0.5 * BASIN_LY_M;
     for j in 0..state.u().ny() {
-        // The cell-center row `j` sits half a cell north of the cell's southern
-        // face, which is where `u` is staggered in y.
-        let y_m = southern_edge_y_m + (j as f64 + 0.5) * spacing.dy_m();
+        // Measured from the equator, which the basin straddles symmetrically,
+        // rather than from its southwest corner. Where the `u` row sits within
+        // its cell is the grid's business, not this test's
+        // (CODING_STANDARDS.md § Scope guards).
+        let (_, y_from_corner_m) = position_m(spacing, U_STAGGERING, 0, j);
+        let y_m = y_from_corner_m - 0.5 * BASIN_LY_M;
         let expected_m_per_s = BETA_PER_M_PER_S * y_m * V_AMPLITUDE_M_PER_S * CORIOLIS_STEP_S;
         // The two wall faces have a cell on one side only, so they carry no
         // interpolated `v` and stay at rest (T-01.1); the interior is what
@@ -642,6 +703,11 @@ fn a_timestep_that_cannot_resolve_the_basins_rotation_is_refused() {
     // limit `2√2` — with the same safety factor the CFL bound holds back —
     // allows at most 0.8·2√2/5.75×10⁻⁵ = 3.94×10⁴ s, well under the CFL
     // bound's 1.15×10⁵ s.
+    //
+    // `CFL_SAFETY_FACTOR` is read from the crate rather than written out
+    // because the claim under test is that the *same* margin governs both
+    // bounds; its value is pinned independently by T-01.3's own tests. `2√2`
+    // is RK4's imaginary-axis limit, written out from Hairer & Wanner.
     let largest_coriolis_per_s = BETA_PER_M_PER_S * WIDE_BASIN_LY_M / 2.0;
     let rotation_bound_s =
         engine::CFL_SAFETY_FACTOR * 2.0 * std::f64::consts::SQRT_2 / largest_coriolis_per_s;
@@ -714,7 +780,7 @@ fn the_convenience_step_is_the_same_computation_as_the_reusable_solver() {
     let trade_winds = WindStress::uniform(grid, TRADE_WIND_STRESS_X_PA, TRADE_WIND_STRESS_Y_PA);
     let initial = gravest_zonal_mode(grid, spacing);
 
-    let wrapped = step(&initial, dt_s, params, spacing, plane, &trade_winds)
+    let wrapped = step(&initial, dt_s, params, spacing, plane, |_t_s| &trade_winds)
         .expect("the CFL-safe timestep is admissible");
 
     let mut stepped = initial.clone();

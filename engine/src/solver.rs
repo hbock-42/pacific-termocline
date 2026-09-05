@@ -52,9 +52,11 @@
 //! period at the northern wall is 30 hours, and a run at that step amplifies
 //! by a factor of 70 per step at the wall. This is the first module that
 //! sees both terms at once, so it is the first that can check both, and it
-//! refuses a timestep either bound rejects.
+//! refuses a timestep either bound rejects. [ADR-0007] records that decision
+//! and the alternatives weighed against it.
 //!
 //! [ADR-0003]: ../../docs/planning/adr/0003-numerical-scheme.md
+//! [ADR-0007]: ../../docs/planning/adr/0007-rotation-timestep-bound.md
 
 use termocline_grid::Grid;
 
@@ -240,30 +242,34 @@ impl Solver {
     }
 }
 
-/// `state` advanced by one step of `dt_s` seconds under a constant
-/// `wind_stress`, as a freshly allocated state.
+/// `state` advanced by one step of `dt_s` seconds from time zero, as a freshly
+/// allocated state.
 ///
 /// The named deliverable of T-02.5, and the convenient form for a test or a
 /// one-off step. It allocates a solver and a state per call, so a time loop
 /// builds one [`Solver`] and steps it instead (CODING_STANDARDS.md
 /// § Performance).
 ///
-/// The stress is constant, so no start time is needed: every stage of the step
-/// sees the same forcing.
+/// `wind_stress_at` is [`Solver::step`]'s, and is sampled at the same four
+/// stage times — measured from zero, since a one-off step has no run behind it
+/// to place it in.
 ///
 /// # Errors
 /// The errors of [`Solver::new`]: a timestep that is not a finite, positive
 /// duration, or one past either the gravity-wave or the rotation bound.
-pub fn step(
+pub fn step<'w, W>(
     state: &OceanState,
     dt_s: f64,
     params: PhysicalParams,
     spacing: Spacing,
     plane: BetaPlane,
-    wind_stress: &WindStress,
-) -> Result<OceanState, SolverError> {
+    wind_stress_at: W,
+) -> Result<OceanState, SolverError>
+where
+    W: Fn(f64) -> &'w WindStress,
+{
     let mut solver = Solver::new(state.grid(), spacing, params, plane, dt_s)?;
     let mut advanced = state.clone();
-    solver.step(&mut advanced, 0.0, |_t_s| wind_stress);
+    solver.step(&mut advanced, 0.0, wind_stress_at);
     Ok(advanced)
 }
