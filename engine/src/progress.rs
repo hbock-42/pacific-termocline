@@ -290,12 +290,12 @@ impl ProgressReport {
             self.steps_done,
             self.total_steps,
             self.model_time_s / SECONDS_PER_DAY,
-            duration(self.elapsed),
+            human_duration(self.elapsed),
         );
         // A finished run has an elapsed time, not an estimate; a run that has
         // taken no step yet has neither.
         if let Some(eta) = self.eta().filter(|eta| !eta.is_zero()) {
-            let _ = write!(line, " | eta {}", duration(eta));
+            let _ = write!(line, " | eta {}", human_duration(eta));
         }
         if let Some(rate) = self.steps_per_s() {
             let _ = write!(line, " | {rate:.0} steps/s");
@@ -307,10 +307,16 @@ impl ProgressReport {
 /// Seconds in a day, for rendering model time.
 const SECONDS_PER_DAY: f64 = 86_400.0;
 
-/// `duration` as a short human string: seconds under a minute, minutes and
+/// `elapsed` as a short human string: seconds under a minute, minutes and
 /// seconds above it.
-fn duration(duration: Duration) -> String {
-    let total_s = duration.as_secs_f64();
+///
+/// Rounded to tenths of a second *before* it is split into minutes and
+/// seconds, because rounding afterwards renders 119.97 s as "1 m 60.0 s": the
+/// seconds field rounds up past the minute the floor had already taken out of
+/// it.
+fn human_duration(elapsed: Duration) -> String {
+    let tenths = (elapsed.as_secs_f64() * 10.0).round();
+    let total_s = tenths / 10.0;
     if total_s < 60.0 {
         return format!("{total_s:.1} s");
     }
@@ -526,6 +532,12 @@ impl<W: Write> RunObserver for RunProgress<W> {
     }
 
     fn frame_written(&mut self, index: u64, t_s: f64) {
+        // The verbosity is checked before the message is built, so a run that
+        // is not logging frames allocates nothing per frame
+        // (CODING_STANDARDS.md § *Performance*).
+        if !self.verbosity.prints(LogLevel::Debug) {
+            return;
+        }
         self.log(
             LogLevel::Debug,
             &format!("event=frame_written index={index} t_s={t_s}"),
@@ -535,12 +547,18 @@ impl<W: Write> RunObserver for RunProgress<W> {
     fn run_finished(&mut self, report: &RunReport) {
         let elapsed = self.started.elapsed();
         let steps = report.steps_taken();
-        self.finish(&ProgressReport::new(
-            steps,
-            steps,
-            steps as f64 * self.schedule.map_or(0.0, OutputSchedule::dt_s),
-            elapsed,
-        ));
+        // Without a schedule there is no model time to report, and a progress
+        // line that stated one anyway would state a wrong one; the log line
+        // below still says the run finished
+        // (CODING_STANDARDS.md § *No silent clamping*).
+        if let Some(schedule) = self.schedule {
+            self.finish(&ProgressReport::new(
+                steps,
+                steps,
+                schedule.model_time_at_step(steps),
+                elapsed,
+            ));
+        }
         self.log(
             LogLevel::Info,
             &format!(

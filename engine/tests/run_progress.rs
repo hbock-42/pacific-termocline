@@ -148,6 +148,35 @@ fn a_progress_line_names_the_percent_the_model_time_the_wall_time_and_the_eta() 
     assert_no_control_characters(&line, "a rendered progress line");
 }
 
+#[test]
+fn a_wall_time_just_short_of_a_minute_is_not_rendered_as_sixty_seconds() {
+    // 119.97 s is 1 m 59.97 s, which is "1 m 60.0 s" if the seconds are
+    // rounded after the minutes have been floored — a time that does not exist.
+    // Both the elapsed time and the ETA go through the same rendering, so the
+    // report below has 119.97 s of each: a run half done in that time has that
+    // much left.
+    let half = FULL_RUN_STEPS / 2;
+    let report = ProgressReport::new(
+        half,
+        FULL_RUN_STEPS,
+        half as f64 * EXAMPLE_DT_S,
+        Duration::from_secs_f64(119.97),
+    );
+
+    let line = report.render();
+
+    assert!(
+        !line.contains("60.0 s"),
+        "a minute is 60 s, so a seconds field never reaches it; it said: {line}"
+    );
+    assert_eq!(
+        line.matches("2 m 00.0 s").count(),
+        2,
+        "119.97 s rounds to two minutes, for the elapsed time and the ETA alike; \
+         it said: {line}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The cadence
 // ---------------------------------------------------------------------------

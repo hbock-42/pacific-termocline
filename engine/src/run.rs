@@ -239,7 +239,7 @@ pub fn run_scenario_observed(
     observer.run_started(description, schedule);
     let mut frames_written = 0;
     for step in 0..=schedule.total_steps() {
-        let t_s = step as f64 * schedule.dt_s();
+        let t_s = schedule.model_time_at_step(step);
         if schedule.writes_at_step(step) {
             stress.sample(basin, &wind, t_s);
             writer.append(t_s, &state, &stress)?;
@@ -251,7 +251,7 @@ pub fn run_scenario_observed(
             // The step just taken is `step + 1` of the run, and it reached the
             // model time of the *next* iteration — which is what the observer
             // reports, so the time on screen is the time the state is at.
-            observer.step_taken(step + 1, t_s + schedule.dt_s());
+            observer.step_taken(step + 1, schedule.model_time_at_step(step + 1));
         }
     }
     writer.finish()?;

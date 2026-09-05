@@ -53,7 +53,7 @@ pub use run::{
 /// Re-exported so the `run` command and its tests name one progress reporter:
 /// [`progress::RunObserver`] is what a run tells, and [`progress::RunProgress`]
 /// the reporter that turns it into a progress line and structured logs.
-pub use progress::{ProgressReport, ProgressStyle, RunObserver, RunProgress, Verbosity};
+pub use progress::{LogLevel, ProgressReport, ProgressStyle, RunObserver, RunProgress, Verbosity};
 
 pub use run_writer::{OutputSchedule, OutputScheduleError, RunWriteError, RunWriter};
 

@@ -248,6 +248,17 @@ impl OutputSchedule {
         self.total_steps / self.every_n_steps + 1
     }
 
+    /// Model time the state after `step` steps sits at, in seconds.
+    ///
+    /// The product `step · dt` rather than an accumulator advanced once per
+    /// step, so the time a frame records and the time a progress line reports
+    /// carry one rounding rather than one per step (see
+    /// [`crate::run`] § *The loop*).
+    #[must_use]
+    pub fn model_time_at_step(self, step: u64) -> f64 {
+        step as f64 * self.dt_s
+    }
+
     /// Whether the state after `step` steps is one of the saved ones.
     #[must_use]
     pub const fn writes_at_step(self, step: u64) -> bool {
