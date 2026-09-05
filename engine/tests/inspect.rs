@@ -19,9 +19,8 @@
 //! status and the two streams are the real ones.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{self, Command};
-use std::sync::atomic::{AtomicU32, Ordering};
 
 use engine::{
     inspect_run, render_header, BetaPlane, Grid, OceanState, OutputSchedule, PhysicalParams,
@@ -29,6 +28,14 @@ use engine::{
     SEAWATER_REFERENCE_DENSITY_KG_PER_M3,
 };
 use termocline_format::{BasinExtent, GridSpec, RunHeader, FRAME_FILE_NAME};
+
+mod common;
+
+use common::ScratchDir;
+
+/// This file's ticket, which labels the directories it leaves in the system
+/// temp directory.
+const TICKET: &str = "t064";
 
 /// Reduced gravity `g'` of the equatorial Pacific's first baroclinic mode, in
 /// m/s². Standard value for the 1.5-layer model (Gill, *Atmosphere–Ocean
@@ -190,33 +197,6 @@ fn write_run_to_files(dir: &Path) {
         .expect("the run wrote every frame it promised");
 }
 
-/// A directory under the system temp directory, removed when the test ends.
-struct ScratchDir {
-    path: PathBuf,
-}
-
-impl ScratchDir {
-    fn new(name: &str) -> Self {
-        static COUNTER: AtomicU32 = AtomicU32::new(0);
-        let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("termocline-t064-{name}-{}-{unique}", process::id()));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).expect("the system temp directory is writable");
-        Self { path }
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for ScratchDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
-
 /// The `inspect` subcommand of the engine binary, run on `directory`.
 fn run_cli(directory: &Path) -> process::Output {
     Command::new(env!("CARGO_BIN_EXE_termocline"))
@@ -248,7 +228,7 @@ fn the_rendered_header_matches_the_run_that_was_written() {
 
 #[test]
 fn inspecting_a_run_directory_reports_its_header() {
-    let scratch = ScratchDir::new("directory");
+    let scratch = ScratchDir::new(TICKET, "directory");
     write_run_to_files(scratch.path());
 
     let summary = inspect_run(scratch.path()).expect("the run directory holds a readable run");
@@ -258,7 +238,7 @@ fn inspecting_a_run_directory_reports_its_header() {
 
 #[test]
 fn the_command_prints_the_summary_and_succeeds() {
-    let scratch = ScratchDir::new("cli");
+    let scratch = ScratchDir::new(TICKET, "cli");
     write_run_to_files(scratch.path());
 
     let output = run_cli(scratch.path());
@@ -280,7 +260,7 @@ fn a_run_whose_frames_are_unreadable_still_reports_its_header() {
     // visualizer, including a run a crash cut short. The header is on disk
     // from the run's first moment, so inspecting it must not depend on the
     // frames beside it decoding.
-    let scratch = ScratchDir::new("truncated");
+    let scratch = ScratchDir::new(TICKET, "truncated");
     write_run_to_files(scratch.path());
     fs::write(scratch.path().join(FRAME_FILE_NAME), b"not a frame")
         .expect("the scratch directory is writable");
@@ -295,7 +275,7 @@ fn a_run_missing_its_frame_file_is_an_actionable_error() {
     // The command reads runs through `RunReader`, which opens both of a run's
     // files (ADR-0004). A directory holding only a header is half a run, so it
     // is refused by name rather than reported as if it were whole.
-    let scratch = ScratchDir::new("no-frames");
+    let scratch = ScratchDir::new(TICKET, "no-frames");
     write_run_to_files(scratch.path());
     let frames = scratch.path().join(FRAME_FILE_NAME);
     fs::remove_file(&frames).expect("the run wrote a frame file");
@@ -315,7 +295,7 @@ fn a_run_missing_its_frame_file_is_an_actionable_error() {
 
 #[test]
 fn a_missing_run_directory_is_an_actionable_error() {
-    let scratch = ScratchDir::new("missing");
+    let scratch = ScratchDir::new(TICKET, "missing");
     let absent = scratch.path().join("no-such-run");
 
     let output = run_cli(&absent);

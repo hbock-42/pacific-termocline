@@ -12,8 +12,8 @@
 //! forcing that drives it — steady, seasonal, or a burst stacked on either —
 //! the [`Scenario`] that names all of those in one TOML file, and the
 //! [`RunWriter`] that saves the result at a configurable output cadence; and,
-//! on the CLI side, the `inspect` command that reports a written run's header
-//! back to a terminal.
+//! on the CLI side, the scenario runner behind `run` and the `inspect` command
+//! that reports a written run's header back to a terminal.
 
 // The acceptance criterion of T-02.1 is that every field states its unit; the
 // lint is what keeps that true as the crate grows.
@@ -26,6 +26,7 @@ pub mod forcing;
 pub mod inspect;
 pub mod integrator;
 pub mod params;
+pub mod run;
 pub mod run_writer;
 pub mod scenario;
 pub mod shallow_water;
@@ -38,6 +39,12 @@ pub use integrator::{Rk4, StateVector};
 /// Re-exported so the `inspect` command and its tests name one rendering of a
 /// run's header.
 pub use inspect::{inspect_run, render_header};
+
+/// Re-exported so the `run` command, its tests and any other caller name one
+/// scenario runner: [`run::run_scenario_file`] is the whole command — load,
+/// run, write — and [`run::run_scenario`] the same run from a scenario already
+/// in hand.
+pub use run::{run_scenario, run_scenario_file, RunError, RunReport};
 
 pub use run_writer::{OutputSchedule, OutputScheduleError, RunWriteError, RunWriter};
 
