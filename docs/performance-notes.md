@@ -7,7 +7,7 @@ it — a rayon-parallel inner loop (T-10.3) and an `f32` field layout
 (T-10.4) — can cite a profile rather than an intuition, which
 [CODING_STANDARDS.md](../CODING_STANDARDS.md) § *Performance* requires of them.
 
-It now carries three measurements rather than one. Everything before
+It now carries four measurements rather than one. Everything before
 [*After T-10.5: the sampled field is cached*](#after-t-105-the-sampled-field-is-cached)
 is T-10.2's baseline, taken with the solver, the right-hand side, the Coriolis
 term and the integrator exactly as T-07.4 left them and nothing optimised at
@@ -16,8 +16,10 @@ is the same two instruments run again after the ticket that baseline provoked,
 and it is where the current decomposition of a timestep is. Both are kept,
 because the point of a before is to be compared with an after.
 [*After T-10.3: parallelising the sweeps does not pay*](#after-t-103-parallelising-the-sweeps-does-not-pay)
-is the third, and it is a negative result: it is kept so that nobody spends the
-ticket again.
+is the third and
+[*After T-10.4: `f32` field storage is measured and rejected*](#after-t-104-f32-field-storage-is-measured-and-rejected)
+the fourth, and both are negative results: they are kept so that nobody spends
+either ticket again.
 
 ## The finding
 
@@ -527,6 +529,13 @@ perf record -F 999 -g -p $! -- sleep 15      # Linux
 for n in 1 2 4 10; do RAYON_NUM_THREADS=$n cargo run --release --example profile; done
 for n in 1 2 4 10; do RAYON_NUM_THREADS=$n cargo run --release -p termocline-grid \
     --example sweep_scaling; done
+
+# what halving the width of a field buys the sweep over it (T-10.4)
+cargo run --release -p termocline-grid --example width_scaling
+
+# and what it costs: Epic 07's suite, tolerances untouched, over an engine
+# whose prognostic states are stored at f32
+cargo test -p engine --features f32-storage-probe --no-fail-fast
 ```
 
 The `profiling` cargo profile is release code plus the debug info a sampler
@@ -702,3 +711,191 @@ attacks the quantity both instruments above say is actually being paid for —
 traffic — by halving the width of every field, rather than adding claimants to
 a bus that has just been measured saturating at four. The case for it is
 stronger than it was, and it is stronger *because* of this measurement.
+
+## After T-10.4: `f32` field storage is measured and rejected
+
+T-10.4 is the ticket every section above has been arming. Its case was as
+strong as a performance case gets: the section before this one measured the
+engine's kernels as *bandwidth-bound* rather than arithmetic-bound, and a
+bandwidth-bound computation is exactly the one that pays for the width of its
+data. Halving that width should have been worth about `2×` on the 97% of a
+step the two evaluators and the RK4 stage algebra now hold.
+
+It is rejected, and not on the performance. **The prize is real and it is
+about what was predicted; the accuracy cost is a validated Epic 07 tolerance,
+and seven more derived budgets besides.**
+
+### What was measured, and with what
+
+Two instruments, because the ticket is two questions.
+
+**The prize** — `termocline-grid/examples/width_scaling.rs`. It holds the
+kernel fixed and varies the width: `c = a + b` over three arrays for one flop,
+the shape of every kernel in the term table above, at the engine's own
+320 × 100 and up the same size ladder T-10.3's thread scaling used. It is a
+*ceiling*: no boundary handling, no interpolation, no scratch, nothing but
+streaming.
+
+**The cost** — `engine/src/precision.rs`, behind the non-default
+`f32-storage-probe` feature. It stores every prognostic state at `f32` and
+leaves the arithmetic at `f64`, which is precisely what the ticket asks for
+("`f32` for the bulk grid data while keeping `f64` accumulation where precision
+matters"), and it is an *exact* emulation of that rather than an approximation
+of it: an `f32` widens to an `f64` losslessly, the arithmetic between two
+stores is `f64` in both worlds, and rounding at every store leaves the field
+holding the bits an `f32` field would hold. With the feature off the rounding
+is not cheap, it is absent — the body is compiled out — so the engine that
+ships is the engine `cargo test` validates, and `engine/tests/f32_field_storage.rs`
+guards that.
+
+The point of a probe rather than a rewrite is that it re-runs **Epic 07's own
+suite**, at the narrower width, with **not one tolerance touched**. A rewrite
+would have taken the solver, the two evaluators, the operators, the forcing and
+every test with it, and would have had to be believed before it could be
+measured. The probe is measured first.
+
+### The prize: about `2×`, as predicted
+
+`cargo run --release --example width_scaling`, on the machine of *What was
+measured, and on what* above:
+
+| field | `f64` | `f32` | narrowing |
+|---|---|---|---|
+| 320 × 100 — *the engine's 0.5° basin* | 0.1959 ns/pt | 0.1003 ns/pt | **1.95×** |
+| 640 × 200 | 0.1954 ns/pt | 0.0975 ns/pt | 2.00× |
+| 1 280 × 400 | 0.2643 ns/pt | 0.0984 ns/pt | 2.69× |
+| 2 560 × 800 | 0.3171 ns/pt | 0.1722 ns/pt | 1.84× |
+| 5 120 × 1 600 | 0.3295 ns/pt | 0.1703 ns/pt | 1.94× |
+
+**Halving the width halves the time, at every size including the engine's.**
+That is the signature of a computation paying for traffic — a sweep doing one
+flop per point does not get twice as fast because its operands got narrower
+unless the operands were what it was waiting for. It is also the cleanest
+confirmation yet of the baseline note's *bandwidth-bound* reading, taken by an
+instrument that has nothing to do with the one that reading came from.
+
+Read it as a ceiling, not as a speed-up. The engine's kernels interpolate,
+handle boundaries and touch scratch, and the wind sampling and the run around
+the loop do not narrow at all. What a narrowed engine would actually get is at
+most this, on at most 97% of a step.
+
+### The cost: eight derived budgets, one of them Epic 07's
+
+`cargo test -p engine --features f32-storage-probe --no-fail-fast`. Thirteen
+tests fail. Five of them are the probe's own reach rather than the engine's
+accuracy — `tests/step_profile.rs` and `tests/wind_stress_cache.rs` compare the
+solver against hand-built reference steppers (`StepProfiler`, `UncachedStepper`)
+that sit outside `solver::integrate` and so are not narrowed with it, and a
+bit-identity assertion between a narrowed path and a wide one can only fail.
+They are named here so the count below is the honest one.
+
+The other **eight are the measurement**, and every one of them is a bound
+somebody derived:
+
+| suite | what it asserts | budget | at `f32` |
+|---|---|---|---|
+| **T-07.4** `steady_wind_tilt` | the tilt error falls at the predicted second-order ratio `0.2523` | ±4.465×10⁻³ | **0.2372** — 3.4× the budget |
+| **T-07.4** `steady_wind_tilt` | a steady closed basin holds no net thermocline anomaly | 4.159×10⁻⁹ of the tilt | **1.677×10⁻⁸** — 4.0× |
+| T-04.2 `no_normal_flow` | a closed, undamped basin leaks no volume through its coasts | 467.0 m³ | **1 285 225 m³** — 2 752× |
+| T-02.4 `rayleigh_damping` | `exp(−r·t)` is reached at RK4's fourth order | order 4 ± 0.15 | **order 2.06** |
+| T-02.4 `rayleigh_damping` | `Ė = −2·r·E` holds the whole way down | 10⁻⁶ relative | **1.005×10⁻⁶** at step 236 |
+| T-03.2 `seasonal_wind` | a linear core generates no harmonics of the annual line | 10⁻⁹ of the line | **1.1×10⁻⁸** — 11× |
+| T-03.3 `wind_burst` | a burst superposes exactly on the trades | 10⁻¹⁰ of the tilt | **43.136696 m against 43.136726 m** — the seventh figure, where the budget allows the eleventh |
+| T-01.2 `time_stepping` | one step of a uniform `h` is RK4's amplification polynomial | 10⁻¹⁴ relative | **8.0×10⁻⁸** — 8×10⁶ |
+
+The Epic 07 row is the one that closes the ticket, and how it fails is worth
+spelling out, because the *point* check passed.
+
+**T-07.4's headline comparison — the settled tilt against the analytic damped
+closed form — passes at `f32`.** It lands at 2.489×10⁻⁵ of the tilt against
+its 2.5092×10⁻⁵ budget, marginally *closer* to the continuous solution than the
+`f64` run's 2.5076×10⁻⁵. That is not the change being harmless. It is the
+`f32` run having drifted 1.9×10⁻⁷ off the discrete closed form it used to sit
+on: its departure *moved* by 1.9×10⁻⁷ of the tilt, about 120× the 1.6×10⁻⁹ of
+margin the budget leaves, and it moved in the direction that happened to be
+toward the continuous one. A bound is passed by an error of
+any size below it, and `docs/validation-report.md` says so in as many words:
+*"the point checks are bounds, and are generous by design"*.
+
+**What catches it is the rate.** The same file's convergence test halves the
+cell width and requires the departure to fall by the ratio the two closed forms
+predict — the check the validation report keeps precisely so that a passed
+bound is not mistaken for a validated run. At `f64` the measured and predicted
+ratios agree to ten significant figures. At `f32` the fine run's error is no
+longer the discretisation's, it is the round-off floor, so 2.489×10⁻⁵ becomes
+5.905×10⁻⁶ where 6.28×10⁻⁶ was predicted: a ratio of 0.2372 against 0.2523,
+outside the budget by 3.4×. **CODING_STANDARDS.md § *Convergence over point
+checks* is what fails here, and it is what it is there for.**
+
+### Why the arithmetic that predicted a bigger failure was wrong
+
+Worth recording, because it is the estimate anyone re-arguing this ticket will
+reach for first. T-07.4's tolerance carries a round-off term written as one
+rounding per cell per step, none cancelling: `steps·N·ε`, which is 2.0×10⁻¹¹
+of the tilt at `f64` and would be 1.1×10⁻² at `f32` — four hundred times the
+whole tolerance. The measured departure is 2.5×10⁻⁵.
+
+The bound is not wrong, it is worst-case by construction, and the reason the
+run is nowhere near it is the physics: the channel is *damped*, so a rounding
+made at step `n` has decayed by `e^{−r·(N−n)·dt}` by the end. Round-off does
+not accumulate over 1 500 steps in a system that relaxes; it reaches a floor
+set by the damping time. So the point check survives — and the convergence
+check, which is a statement about that floor rather than about the total, does
+not. Any future argument from `steps·N·ε` should expect to be off by three
+orders of magnitude in a damped run, and should not conclude anything from
+that in either direction.
+
+### What the probe does not narrow, and which way it points
+
+The probe rounds where a *state* is stored: the prognostic state, RK4's stage
+state, and its four stage tendencies. A real `f32` field layout would also
+narrow the divergence scratch of `ShallowWaterRhs`, the two interpolation
+buffers of `CoriolisTerm`, the sampled `WindStressField`, and the gradient
+written into the tendency before being turned into an acceleration in place.
+
+Every one of those is a rounding not performed here, so the eight failures
+above are a **lower bound** on what a narrowed engine would do. That is the
+direction that settles the question: a lower bound already 3.4× outside an
+Epic 07 budget is not recoverable by implementing the change more carefully.
+
+### What this closes, and what it does not
+
+**T-10.4 is closed as measured-and-rejected**, on its own acceptance criterion:
+*"if made, Epic 07 validation tests still pass within a re-justified
+tolerance"*. They do not pass, and re-justifying the tolerance is not on the
+table — AGENTS.md § *Never move the goalposts*, and a suite that is green
+because a budget was widened to fit a faster engine is worse than a red one.
+The deliverable is therefore its other branch, *"a documented decision not to
+make it"*, and this section is it.
+
+Nothing about the shipped engine changes, and `cargo bench -p engine` on this
+branch says so rather than asserting it: `rhs_evaluation` 17.930 µs at 160 × 50
+and 69.671 µs at 320 × 100, `scenario_run` 38.401 ms and 150.73 ms — the same
+figures as T-10.3's `main` column above (68.87 µs, 150.72 ms, 39.00 ms) to
+within their intervals. The probe costs nothing because with the feature off it
+is not there.
+
+**It does not close narrowing as such; it prices it.** What the measurement
+rejects is `f32` *everywhere the state lives*, which is what the ticket
+proposed. Three narrower things are untouched by it and would each need their
+own measurement:
+
+- **Output, not state.** `termocline-format` already writes what a visualizer
+  reads; nothing in Epic 07 is asserted about a frame's width. That is a format
+  ticket, not a solver one.
+- **A mixed layout.** The failures cluster on quantities that are *exact
+  identities* of the discrete scheme — volume, superposition, the amplification
+  polynomial — rather than on quantities that are already approximations.
+  A layout narrowing only the fields no identity is written in would have to
+  name which those are, and Epic 07 currently says: fewer than one might hope.
+- **Compensated accumulation.** The RK4 stage algebra is 30% of a step and one
+  multiply-add per element. Whether a narrow field with a Kahan-summed
+  accumulator recovers the convergence rate is a real question, and this
+  measurement does not answer it. It is also a considerably larger change than
+  the one that was just rejected, and it should be argued from a profile of its
+  own.
+
+**And it does not close the machine question**, which every section of this
+note carries: these are one laptop's figures, and the 1.95× ceiling in
+particular is a property of one memory system. The instrument is committed and
+the command is below.

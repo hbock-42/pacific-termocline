@@ -222,6 +222,12 @@ impl StateVector for OceanState {
                 *value += factor * term;
             }
         }
+        // The accumulation above is the `f64` arithmetic of the scheme; this
+        // is the *store* that follows it, and it is where T-10.4's probe
+        // narrows a field. Nothing happens here in a shipped build — the body
+        // is compiled out — so the width question is asked without the engine
+        // carrying an answer to it (`crate::precision`).
+        crate::precision::narrow_stored_state(self);
     }
 }
 

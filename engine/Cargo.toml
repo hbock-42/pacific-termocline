@@ -7,6 +7,15 @@ license.workspace = true
 repository.workspace = true
 description = "Headless simulation core: runs a scenario forward in time and writes the ocean state to disk."
 
+[features]
+# T-10.4's instrument, and nothing else: it stores every prognostic state at
+# `f32` so that Epic 07's validation suite can be re-run at the width the
+# ticket proposes, with none of its tolerances touched. Off in every build the
+# project produces, and enabled by no target here — `engine/src/precision.rs`
+# says what it emulates and `docs/performance-notes.md` reports what it
+# measured. Turning it on makes the engine unscientific on purpose.
+f32-storage-probe = []
+
 [dependencies]
 bincode = { version = "2", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }

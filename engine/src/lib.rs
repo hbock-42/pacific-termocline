@@ -15,13 +15,15 @@
 //! on the CLI side, the scenario runner behind `run` and the `inspect` command
 //! that reports a written run's header back to a terminal.
 //!
-//! [`benchmark`] and [`profiling`] are the odd ones out: they compute nothing
-//! the simulation needs. [`benchmark`] holds the workloads `benches/` measures
-//! (`docs/benchmarks.md`), and [`profiling`] the instrument that says where a
-//! timestep's time goes (`docs/performance-notes.md`). Both are modules of the
-//! library rather than helpers local to a `benches/` or `examples/` target, so
-//! that a test can assert on them — which for a measurement is the difference
-//! between a number and a claim.
+//! [`benchmark`], [`profiling`] and [`precision`] are the odd ones out: they
+//! compute nothing the simulation needs. [`benchmark`] holds the workloads
+//! `benches/` measures (`docs/benchmarks.md`), [`profiling`] the instrument
+//! that says where a timestep's time goes, and [`precision`] the one that says
+//! what storing the fields at a narrower width would do to the answer (both
+//! `docs/performance-notes.md`). All three are modules of the library rather
+//! than helpers local to a `benches/` or `examples/` target, so that a test
+//! can assert on them — which for a measurement is the difference between a
+//! number and a claim.
 
 // The acceptance criterion of T-02.1 is that every field states its unit; the
 // lint is what keeps that true as the crate grows.
@@ -35,6 +37,7 @@ pub mod forcing;
 pub mod inspect;
 pub mod integrator;
 pub mod params;
+pub mod precision;
 pub mod profiling;
 pub mod progress;
 pub mod run;
@@ -75,6 +78,7 @@ pub use params::{
     PhysicalParams, PhysicalParamsError, EQUATORIAL_BETA_PER_M_PER_S,
     SEAWATER_REFERENCE_DENSITY_KG_PER_M3,
 };
+pub use precision::{StorageWidth, FIELD_STORAGE};
 pub use shallow_water::{shallow_water_rhs, ShallowWaterRhs};
 
 pub use solver::{check_rotation_timestep, step, RotationLimitError, Solver, SolverError};
