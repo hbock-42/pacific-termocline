@@ -384,8 +384,17 @@ struct FaceField<'a> {
 impl<'a> FaceField<'a> {
     /// `variable`'s field of `frame`, which must already have been validated
     /// against the grid `cells` describes.
+    ///
+    /// # Panics
+    /// If `frame` does not carry `variable`. Only the two wind-stress
+    /// components are read here and every frame carries both
+    /// ([`Variable::LINEAR_CORE`]), so an absent one means this code asked for
+    /// the wrong variable rather than that the run is short of a field.
     fn of(cells: Grid, frame: &'a Frame, variable: Variable) -> Self {
-        Self::at(cells, frame.field(variable), variable.staggering())
+        let values = frame
+            .field(variable)
+            .expect("every frame carries the variables of the linear core");
+        Self::at(cells, values, variable.staggering())
     }
 
     /// `values`, read as a field staggered at `staggering` over `cells`.

@@ -2,7 +2,7 @@
 
 ## Status
 Accepted, revisitable. Amended by
-[ADR-0010](0010-reading-runs-from-older-format-versions.md), which decides what
+[ADR-0011](0011-reading-runs-from-older-format-versions.md), which decides what
 a reader does with a run from an older `format_version` — the question this
 ADR's versioning left open.
 
