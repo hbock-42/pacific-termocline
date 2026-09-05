@@ -135,6 +135,20 @@ impl BetaPlane {
         self.southern_edge_y_m + (j as f64 + offset_in_cells) * self.dy_m
     }
 
+    /// The largest `|f|` any row of `grid` carries, in s⁻¹.
+    ///
+    /// `f = β·y` is largest in magnitude at whichever of the basin's two
+    /// meridional boundaries lies further from the equator, and those are
+    /// north/south-face rows — the outermost `v` rows, `0` and `ny`. It is the
+    /// fastest rotation the scheme has to resolve, which is what makes it a
+    /// bound on the timestep (see [`Solver`](crate::Solver)).
+    #[must_use]
+    pub fn largest_coriolis_magnitude_per_s(self, grid: Grid) -> f64 {
+        let southern = self.coriolis_at_row_per_s(V_STAGGERING, 0).abs();
+        let northern = self.coriolis_at_row_per_s(V_STAGGERING, grid.ny()).abs();
+        southern.max(northern)
+    }
+
     /// The Coriolis parameter `f = β·y`, in s⁻¹, on the row `j` of a field at
     /// `staggering`.
     ///
