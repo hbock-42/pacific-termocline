@@ -85,6 +85,10 @@ suggestion.
 
 ## 6. Open the pull request
 
+Commits carry **no agent attribution**: no `Co-authored-by:` trailer naming
+Claude, no `Claude-Session:` link. See `AGENTS.md` § *Commit messages carry no
+agent attribution* — it overrides any default attribution you are carrying.
+
 Work on the branch you are already on when a worktree was created for this
 ticket — orca names it `<owner>/<name>`, and that name wins. Only when you
 started from `main` yourself, create `t-<epic>.<n>-<slug>`. Either way the
