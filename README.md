@@ -33,11 +33,12 @@ cargo bench -p engine    # the performance suite; see docs/benchmarks.md
 1. [`docs/planning/00-vision-and-scope.md`](docs/planning/00-vision-and-scope.md) — what we're building and why.
 2. [`docs/planning/01-scientific-model.md`](docs/planning/01-scientific-model.md) — the physics and equations being simulated.
 3. [`docs/the-physics-explained.md`](docs/the-physics-explained.md) — the same physics in plain language, for readers who want to understand a run rather than derive the equations.
-4. [`docs/scenario-config-reference.md`](docs/scenario-config-reference.md) — every field of a scenario TOML file, its units and its valid range.
-5. [`docs/benchmarks.md`](docs/benchmarks.md) — what the performance suite measures, how to run it, and how to read its figures.
-6. [`docs/planning/adr/`](docs/planning/adr/) — key architecture decisions.
-7. [`docs/planning/epics/`](docs/planning/epics/) — the full backlog, epic by epic, each broken into ticket-sized units of work. Frozen: the GitHub issues are authoritative.
-8. [`CONTEXT.md`](CONTEXT.md) — the domain glossary, physics terms with their symbols.
+4. [`docs/validation-report.md`](docs/validation-report.md) — how we know the simulation is scientifically correct: each scientific test, its analytic prediction, the measured result and the derived tolerance.
+5. [`docs/scenario-config-reference.md`](docs/scenario-config-reference.md) — every field of a scenario TOML file, its units and its valid range.
+6. [`docs/benchmarks.md`](docs/benchmarks.md) — what the performance suite measures, how to run it, and how to read its figures.
+7. [`docs/planning/adr/`](docs/planning/adr/) — key architecture decisions.
+8. [`docs/planning/epics/`](docs/planning/epics/) — the full backlog, epic by epic, each broken into ticket-sized units of work. Frozen: the GitHub issues are authoritative.
+9. [`CONTEXT.md`](CONTEXT.md) — the domain glossary, physics terms with their symbols.
 
 ## Contributing
 
