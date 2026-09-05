@@ -388,8 +388,12 @@ resolution_deg = 0.0
     )
     .to_string();
     assert!(
-        message.contains("resolution_deg") && message.contains('0'),
+        message.contains("resolution_deg is 0"),
         "the message should name the resolution it rejected, got: {message}"
+    );
+    assert!(
+        message.contains("greater than 0"),
+        "the message should name the bound it violated, got: {message}"
     );
 }
 
@@ -422,7 +426,10 @@ resolution_deg = 0.3
 }
 
 #[test]
-fn a_basin_narrower_than_one_cell_is_rejected() {
+fn a_basin_narrower_than_one_cell_is_rejected_by_name() {
+    // Longitude is counted eastward from the western boundary, so two equal
+    // meridians are a basin of zero width rather than one wrapped around the
+    // whole planet.
     let message = error_from(
         "[basin]
 western_longitude_deg = 120.0
@@ -434,9 +441,66 @@ resolution_deg = 0.5
     )
     .to_string();
     assert!(
-        !message.is_empty(),
-        "a zero-width basin still has to say something"
+        message.contains("longitude"),
+        "the message should say which axis has no cells, got: {message}"
     );
+    assert!(
+        message.contains('0') && message.contains("0.5"),
+        "the message should name the span and the cell it is shorter than, got: {message}"
+    );
+}
+
+#[test]
+fn a_resolution_finer_than_the_grid_can_index_is_rejected_by_name() {
+    // A cell of 1e-300 degrees asks for 1.6e302 cells across the Pacific. The
+    // count has to come back as an error naming it, not as a saturated index
+    // and an allocation nobody can serve.
+    let error = BasinBounds::new(120.0, -80.0, -25.0, 25.0, 1e-300)
+        .expect_err("no machine indexes that many cells");
+    assert!(matches!(
+        error,
+        BasinBoundsError::MoreCellsThanCanBeIndexed { .. }
+    ));
+    let message = error.to_string();
+    assert!(
+        message.contains("1e-300") || message.contains("0.000"),
+        "the message should name the resolution that asked for them, got: {message}"
+    );
+}
+
+#[test]
+fn a_basin_stated_in_round_degrees_is_never_refused_for_rounding() {
+    // The whole-number-of-cells check has to tolerate the binary
+    // representation of decimal degrees at every resolution it is offered, not
+    // just at the ~1e3 cells of the default basin: these are all exact
+    // divisions on paper.
+    for (span_deg, resolution_deg) in [
+        (160.0, 0.5),
+        (160.0, 0.1),
+        (160.0, 0.01),
+        (160.0, 0.001),
+        (60.0, 0.3),
+        (0.9, 0.3),
+    ] {
+        let bounds = BasinBounds::new(
+            0.0,
+            span_deg,
+            -0.5 * span_deg,
+            0.5 * span_deg,
+            resolution_deg,
+        )
+        .unwrap_or_else(|error| {
+            panic!("{span_deg} degrees in cells of {resolution_deg} is a basin: {error}")
+        });
+        // The count itself is exact even where `nx·resolution` is not: 3 × 0.3
+        // is 0.8999… in binary, which is why the check is on whole cells and
+        // not on a reconstructed span.
+        assert_eq!(
+            bounds.basin().grid().nx(),
+            (span_deg / resolution_deg).round() as usize,
+            "{span_deg} degrees at {resolution_deg} should be exactly its cells"
+        );
+    }
 }
 
 #[test]

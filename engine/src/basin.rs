@@ -8,7 +8,7 @@
 //! equations of `docs/planning/01-scientific-model.md` are written in; it is
 //! what the forcing, the rotation and the solver read.
 //!
-//! The projection between them is one multiplication, [`METRES_PER_DEGREE_OF_ARC_M`],
+//! The projection between them is one multiplication, [`METRES_PER_DEGREE_OF_ARC`],
 //! because the model is an equatorial beta-plane: `f = β·y` is a linearization
 //! about `φ = 0`, and on that plane a degree of longitude and a degree of
 //! latitude are the same degree of arc. Anything more faithful — converging
@@ -25,7 +25,7 @@
 
 use std::fmt;
 
-use termocline_grid::{Grid, Staggering};
+use termocline_grid::{Axis, Grid, Staggering};
 use termocline_numerics::Spacing;
 
 /// Meridional position of the row `j` of a field at `staggering`, in metres
@@ -135,8 +135,10 @@ impl Basin {
     /// The idealized configuration the Epic 02 and 03 tests run in, and the
     /// one [`BetaPlane::centered_on_equator`](crate::BetaPlane::centered_on_equator)
     /// assumes: the equatorial waveguide is centred on the basin, so no wave
-    /// is trapped against a wall. The real Pacific's truncation arrives with
-    /// T-04.1.
+    /// is trapped against a wall. A scenario file names a real truncation
+    /// instead ([`BasinBounds`]), which is symmetric about the equator only if
+    /// its two latitudes are; this constructor is for the tests that want the
+    /// symmetry without stating a geography.
     #[must_use]
     pub fn centered_on_equator(grid: Grid, spacing: Spacing) -> Self {
         Self {
@@ -215,7 +217,7 @@ fn check_finite(parameter: &'static str, value_m: f64) -> Result<(), BasinError>
 /// the geometry and the rotation describe the same planet.
 pub const EARTH_MEAN_RADIUS_M: f64 = 6_371_008.8;
 
-/// One degree of arc at Earth's mean radius, in metres: `R·π/180`.
+/// Metres per degree of arc at Earth's mean radius: `R·π/180`.
 ///
 /// The model is an equatorial beta-plane — a linearization about `φ = 0`
 /// (`CONTEXT.md`, *Beta-plane*) — so a degree of longitude and a degree of
@@ -223,7 +225,7 @@ pub const EARTH_MEAN_RADIUS_M: f64 = 6_371_008.8;
 /// is this one multiplication. The `cos(φ)` convergence of the meridians is
 /// exactly the term the beta-plane approximation drops; reintroducing it here
 /// would place the grid on a geometry the equations are not solved on.
-pub const METRES_PER_DEGREE_OF_ARC_M: f64 = EARTH_MEAN_RADIUS_M * std::f64::consts::PI / 180.0;
+pub const METRES_PER_DEGREE_OF_ARC: f64 = EARTH_MEAN_RADIUS_M * std::f64::consts::PI / 180.0;
 
 /// Western boundary of the default basin, in degrees east: the Maritime
 /// Continent edge of the Pacific (`CONTEXT.md`, *Basin*).
@@ -252,14 +254,24 @@ const FULL_TURN_DEG: f64 = 360.0;
 /// The pole, in degrees of latitude: the bound a latitude may not exceed.
 const POLE_LATITUDE_DEG: f64 = 90.0;
 
-/// How far a cell count may sit from a whole number and still be one.
+/// The most cells an axis may hold: the largest count a `usize` index can
+/// address, as the `f64` the cell count is computed as. Beyond it the cast to
+/// `usize` would saturate, turning an absurd resolution into a plausible-
+/// looking grid rather than into an error.
+const MAX_CELLS_PER_AXIS: f64 = usize::MAX as f64;
+
+/// How far a cell count may sit from a whole number and still be one, as a
+/// fraction of the count itself.
 ///
 /// Bounds are written in decimal degrees, which are not exact in binary, so
 /// `span/resolution` for a basin that *is* a whole number of cells lands a few
-/// ulp off it — about 1e-13 cells at the ~1e3 cells of a basin. This bound is
-/// four orders of magnitude looser than that slack and eleven orders tighter
-/// than the smallest mis-specification worth catching: 1e-9 of a half-degree
-/// cell is 56 µm.
+/// ulp off it: a relative error of order the machine epsilon, 2.2e-16, however
+/// many cells there are. This bound is seven orders of magnitude looser than
+/// that slack — so a basin stated in round degrees is never refused, at any
+/// resolution — and still far tighter than any mis-specification worth
+/// catching: 1e-9 of a cell of half a degree is 56 µm. Relative rather than
+/// absolute precisely so the two ends of that sentence stay true together as
+/// the cell count grows.
 const WHOLE_CELL_TOLERANCE: f64 = 1e-9;
 
 /// Why a set of basin bounds is not a basin.
@@ -298,19 +310,31 @@ pub enum BasinBoundsError {
     /// An axis of the basin was shorter than one cell — including the zero
     /// span of two boundaries at the same place.
     AxisShorterThanACell {
-        /// Which span it was: `"longitude"` or `"latitude"`.
-        axis: &'static str,
+        /// The axis that is too short.
+        axis: Axis,
         /// The span supplied, in degrees.
         span_deg: f64,
         /// The resolution supplied, in degrees.
         resolution_deg: f64,
     },
+    /// An axis of the basin held more cells than a machine can index — a
+    /// resolution so fine that the count does not fit in a `usize`.
+    MoreCellsThanCanBeIndexed {
+        /// The axis with too many cells.
+        axis: Axis,
+        /// The span supplied, in degrees.
+        span_deg: f64,
+        /// The resolution supplied, in degrees.
+        resolution_deg: f64,
+        /// The number of cells the two of them ask for.
+        cells: f64,
+    },
     /// An axis of the basin was not a whole number of cells. Refused rather
     /// than rounded: rounding it would silently run a basin nobody asked for
     /// (CODING_STANDARDS.md § *No silent clamping*).
     SpanNotAWholeNumberOfCells {
-        /// Which span it was: `"longitude"` or `"latitude"`.
-        axis: &'static str,
+        /// The axis that does not divide.
+        axis: Axis,
         /// The span supplied, in degrees.
         span_deg: f64,
         /// The resolution supplied, in degrees.
@@ -345,14 +369,26 @@ impl fmt::Display for BasinBoundsError {
                 f,
                 "resolution_deg is {value_deg}; it must be finite and greater than 0"
             ),
+            Self::MoreCellsThanCanBeIndexed {
+                axis,
+                span_deg,
+                resolution_deg,
+                cells,
+            } => write!(
+                f,
+                "the basin spans {span_deg} degrees of {} in cells of resolution_deg \
+                 {resolution_deg}, which is {cells} cells: more than can be indexed",
+                degrees_of(*axis)
+            ),
             Self::AxisShorterThanACell {
                 axis,
                 span_deg,
                 resolution_deg,
             } => write!(
                 f,
-                "the basin spans {span_deg} degrees of {axis}, which is less than one cell of \
-                 resolution_deg {resolution_deg}"
+                "the basin spans {span_deg} degrees of {}, which is less than one cell of \
+                 resolution_deg {resolution_deg}",
+                degrees_of(*axis)
             ),
             Self::SpanNotAWholeNumberOfCells {
                 axis,
@@ -360,14 +396,25 @@ impl fmt::Display for BasinBoundsError {
                 resolution_deg,
             } => write!(
                 f,
-                "the basin spans {span_deg} degrees of {axis}, which is not a whole number of \
-                 cells of resolution_deg {resolution_deg}"
+                "the basin spans {span_deg} degrees of {}, which is not a whole number of cells \
+                 of resolution_deg {resolution_deg}",
+                degrees_of(*axis)
             ),
         }
     }
 }
 
 impl std::error::Error for BasinBoundsError {}
+
+/// What a degree along `axis` is a degree of, for an error message: the file
+/// states the zonal axis in longitude and the meridional one in latitude, and
+/// the message has to use the word the file does.
+fn degrees_of(axis: Axis) -> &'static str {
+    match axis {
+        Axis::X => "longitude",
+        Axis::Y => "latitude",
+    }
+}
 
 /// The truncation of the ocean a scenario runs on, in degrees: two meridians,
 /// two parallels and a cell size.
@@ -384,6 +431,14 @@ impl std::error::Error for BasinBoundsError {}
 /// boundary, and the span is always measured east from the western boundary:
 /// two equal longitudes are a basin of zero width, not a basin around the
 /// whole planet.
+///
+/// The output format states the same four degrees, as
+/// `termocline_format::BasinExtent`, so that a written run records the stretch
+/// of ocean it covers. That one is the *record* — a plain wire struct in the
+/// crate ADR-0004 reserves for the file format, with no validation of its own;
+/// this one is the *input*, and the place the bounds are checked. Neither can
+/// stand in for the other without moving simulation logic into the format
+/// crate, which ADR-0004 forbids.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BasinBounds {
     western_longitude_deg: f64,
@@ -435,8 +490,8 @@ impl BasinBounds {
         // Both counts are computed and discarded here purely to reject the
         // spans that have no count; `nx` and `ny` recompute them once the
         // bounds are known to have one.
-        cells_along("longitude", bounds.zonal_span_deg(), resolution_deg)?;
-        cells_along("latitude", bounds.meridional_span_deg(), resolution_deg)?;
+        cells_along(Axis::X, bounds.zonal_span_deg(), resolution_deg)?;
+        cells_along(Axis::Y, bounds.meridional_span_deg(), resolution_deg)?;
         Ok(bounds)
     }
 
@@ -518,14 +573,14 @@ impl BasinBounds {
     pub fn basin(self) -> Basin {
         let grid =
             Grid::new(self.nx(), self.ny()).expect("validated bounds have cells on both axes");
-        let cell_size_m = self.resolution_deg * METRES_PER_DEGREE_OF_ARC_M;
+        let cell_size_m = self.resolution_deg * METRES_PER_DEGREE_OF_ARC;
         let spacing = Spacing::new(cell_size_m, cell_size_m)
             .expect("a positive resolution is a positive cell");
         Basin::new(
             grid,
             spacing,
             WESTERN_BOUNDARY_X_M,
-            self.southern_latitude_deg * METRES_PER_DEGREE_OF_ARC_M,
+            self.southern_latitude_deg * METRES_PER_DEGREE_OF_ARC,
         )
         .expect("finite bounds place the basin at a finite position")
     }
@@ -536,7 +591,7 @@ impl BasinBounds {
     /// Never, for the reason [`BasinBounds::basin`] gives.
     #[must_use]
     pub fn nx(self) -> usize {
-        cells_along("longitude", self.zonal_span_deg(), self.resolution_deg)
+        cells_along(Axis::X, self.zonal_span_deg(), self.resolution_deg)
             .expect("validated bounds are a whole number of cells")
     }
 
@@ -546,7 +601,7 @@ impl BasinBounds {
     /// Never, for the reason [`BasinBounds::basin`] gives.
     #[must_use]
     pub fn ny(self) -> usize {
-        cells_along("latitude", self.meridional_span_deg(), self.resolution_deg)
+        cells_along(Axis::Y, self.meridional_span_deg(), self.resolution_deg)
             .expect("validated bounds are a whole number of cells")
     }
 }
@@ -569,14 +624,10 @@ const WESTERN_BOUNDARY_X_M: f64 = 0.0;
 /// [`BasinBoundsError::AxisShorterThanACell`] if there is no cell in the span
 /// at all, and [`BasinBoundsError::SpanNotAWholeNumberOfCells`] if the count is
 /// not whole to within [`WHOLE_CELL_TOLERANCE`].
-fn cells_along(
-    axis: &'static str,
-    span_deg: f64,
-    resolution_deg: f64,
-) -> Result<usize, BasinBoundsError> {
+fn cells_along(axis: Axis, span_deg: f64, resolution_deg: f64) -> Result<usize, BasinBoundsError> {
     let cells = span_deg / resolution_deg;
     let whole = cells.round();
-    if (cells - whole).abs() > WHOLE_CELL_TOLERANCE {
+    if (cells - whole).abs() > WHOLE_CELL_TOLERANCE * whole.max(1.0) {
         return Err(BasinBoundsError::SpanNotAWholeNumberOfCells {
             axis,
             span_deg,
@@ -590,6 +641,16 @@ fn cells_along(
             resolution_deg,
         });
     }
+    if whole > MAX_CELLS_PER_AXIS {
+        return Err(BasinBoundsError::MoreCellsThanCanBeIndexed {
+            axis,
+            span_deg,
+            resolution_deg,
+            cells: whole,
+        });
+    }
+    // The two bounds above put `whole` in `1..=MAX_CELLS_PER_AXIS`, so the cast
+    // is exact rather than saturating.
     Ok(whole as usize)
 }
 

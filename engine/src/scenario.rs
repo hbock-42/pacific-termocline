@@ -218,6 +218,13 @@ pub struct BasinSection {
     pub northern_latitude_deg: f64,
     /// Cell size, in degrees, on both axes. Omitted means
     /// [`PACIFIC_RESOLUTION_DEG`](crate::basin::PACIFIC_RESOLUTION_DEG).
+    ///
+    /// One number, not two: on the equatorial beta-plane a degree of longitude
+    /// and a degree of latitude are the same degree of arc, so a basin stated
+    /// in degrees has square cells. A scenario wanting a coarser zonal step
+    /// than meridional one cannot say so here, which is deliberate — an
+    /// anisotropic grid is a numerical decision, and it would arrive with the
+    /// ADR that justifies it rather than as a second key.
     pub resolution_deg: f64,
 }
 
