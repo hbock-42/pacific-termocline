@@ -97,10 +97,30 @@ orca orchestration check --wait --types worker_done,escalation,question \
    replays. A timeout or `{count:0}` is a checkpoint, not a failure: tickets
    routinely run 15–60 minutes. Heartbeats and terminal activity mean alive,
    not done.
-4. Answer a `question` with `orca orchestration reply`. Handle an `escalation`
+4. **A silent worker is not a working worker.** Heartbeats are off, so a
+   stalled worker looks exactly like a busy one. When a ticket has been quiet
+   far longer than its siblings, read its terminal rather than assuming:
+
+```
+orca terminal read --terminal <agentTerminalHandle> --limit 20 --json
+```
+
+   A worker that reaches for an optional tool — a browser, a container, a
+   credentialed service — can hit an interactive permission prompt no
+   `--permission-mode` covers, and will sit on it indefinitely. Dismiss it
+   (`terminal send --enter`), then send the worker a revised requirement.
+
+   Prevention is better: before asking a ticket to verify something through
+   external tooling, check the tooling is actually installed. T-08.1 lost
+   roughly twelve minutes to a Chrome-extension prompt because the coordinator
+   demanded in-browser verification without checking the extension was there.
+   When it is not, say what an honest substitute looks like — "compiles for
+   the target and the logic is unit-tested; not opened in a browser" is a
+   better acceptance criterion than one nobody can meet.
+5. Answer a `question` with `orca orchestration reply`. Handle an `escalation`
    yourself or surface it to the user; an escalation is a decision a worker
    correctly refused to make alone.
-5. On `worker_done`, take the merge lane below, then
+6. On `worker_done`, take the merge lane below, then
    `orca orchestration worker-release --dispatch <d>` and refill to 3.
 
 **Order matters in cleanup.** Wait for `worker_done`, then release, then remove
