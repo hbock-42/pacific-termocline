@@ -1,15 +1,15 @@
-Analysis of sampling profile (pid 60859) every 1 millisecond
-Process:         profile [60859]
+Analysis of sampling profile (pid 86204) every 1 millisecond
+Process:         profile [86204]
 Path:            /Users/USER/*/profile
-Load Address:    0x100e3c000
+Load Address:    0x100c8c000
 Identifier:      profile
 Version:         ???
 Code Type:       ARM64
-Parent Process:  zsh [60849]
+Parent Process:  zsh [86165]
 Target Type:     live task
 
-Date/Time:       2026-09-05 19:52:06.024 +0200
-Launch Time:     2026-09-05 19:52:05.997 +0200
+Date/Time:       2026-09-05 20:11:43.461 +0200
+Launch Time:     2026-09-05 20:11:43.429 +0200
 OS Version:      macOS 26.1 (25B78)
 Report Version:  7
 Analysis Tool:   /usr/bin/sample
@@ -20,16 +20,16 @@ Idle exit:                  untracked
 ----
 
 Call graph:
-    261 Thread_96260984: Main Thread
-    + 243 _dyld_start  (in dyld) + 0  [0x1010e89c0]
-    + 10 start  (in dyld) + 6060  [0x1010ec8f0]
-    + ! 10 dyld4::ExternallyViewableState::createMinimalInfo(lsl::Allocator&, unsigned long long, char const*, unsigned long long, char const*, DyldSharedCache const*)  (in dyld) + 1660  [0x101133d80]
-    + !   10 dyld4::ExternallyViewableState::triggerNotifications(dyld_image_mode, unsigned int, dyld_image_info const*)  (in dyld) + 264  [0x101134554]
-    + !     10 dyld4::RemoteNotificationResponder::blockOnSynchronousEvent(unsigned int)  (in dyld) + 48  [0x10111daec]
-    + !       10 dyld4::RemoteNotificationResponder::sendMessage(int, unsigned int, mach_msg_header_t*)  (in dyld) + 220  [0x10111d760]
-    + !         10 mach_msg_overwrite  (in dyld) + 244  [0x10116c454]
-    + !           10 mach_msg2_internal  (in dyld) + 76  [0x10116c2a8]
-    + !             10 mach_msg2_trap  (in dyld) + 8  [0x1010e572c]
+    287 Thread_96333898: Main Thread
+    + 268 _dyld_start  (in dyld) + 0  [0x100e609c0]
+    + 11 start  (in dyld) + 6060  [0x100e648f0]
+    + ! 11 dyld4::ExternallyViewableState::createMinimalInfo(lsl::Allocator&, unsigned long long, char const*, unsigned long long, char const*, DyldSharedCache const*)  (in dyld) + 1660  [0x100eabd80]
+    + !   11 dyld4::ExternallyViewableState::triggerNotifications(dyld_image_mode, unsigned int, dyld_image_info const*)  (in dyld) + 264  [0x100eac554]
+    + !     11 dyld4::RemoteNotificationResponder::blockOnSynchronousEvent(unsigned int)  (in dyld) + 48  [0x100e95aec]
+    + !       11 dyld4::RemoteNotificationResponder::sendMessage(int, unsigned int, mach_msg_header_t*)  (in dyld) + 220  [0x100e95760]
+    + !         11 mach_msg_overwrite  (in dyld) + 244  [0x100ee4454]
+    + !           11 mach_msg2_internal  (in dyld) + 76  [0x100ee42a8]
+    + !             11 mach_msg2_trap  (in dyld) + 8  [0x100e5d72c]
     + 6 start  (in dyld) + 7104  [0x19daf1d04]
     + ! 5 dyld4::prepare(dyld4::APIs&, mach_o::Header const*)  (in dyld) + 2996  [0x19daf30e4]
     + ! : 5 dyld4::RuntimeState::notifyDebuggerLoad(std::span<dyld4::Loader const*, 18446744073709551615ul> const&)  (in dyld) + 432  [0x19db022c4]
@@ -40,24 +40,23 @@ Call graph:
     + ! :           5 mach_msg_overwrite  (in dyld) + 244  [0x19db71454]
     + ! :             5 mach_msg2_internal  (in dyld) + 76  [0x19db712a8]
     + ! :               5 mach_msg2_trap  (in dyld) + 8  [0x19daea72c]
-    + ! 1 dyld4::prepare(dyld4::APIs&, mach_o::Header const*)  (in dyld) + 536  [0x19daf2748]
-    + !   1 dyld4::JustInTimeLoader::makeLaunchLoader(Diagnostics&, dyld4::RuntimeState&)  (in dyld) + 204  [0x19db17f20]
-    + !     1 dyld4::JustInTimeLoader::make(dyld4::RuntimeState&, dyld3::MachOFile const*, char const*, dyld4::FileID const&, unsigned long long, bool, bool, bool, unsigned short, mach_o::Layout const*)  (in dyld) + 808  [0x19db16da8]
-    + !       1 dyld4::JustInTimeLoader::parseSectionLocations(mach_o::Header const*, dyld4::SectionLocations&)  (in dyld) + 116  [0x19db16f6c]
-    + !         1 mach_o::Header::preferredLoadAddress() const  (in dyld) + 124  [0x19db6a564]
-    + !           1 mach_o::Header::forEachSegment(void (mach_o::Header::SegmentInfo const&, bool&) block_pointer) const  (in dyld) + 124  [0x19db6b134]
-    + !             1 mach_o::Header::forEachLoadCommand(void (load_command const*, bool&) block_pointer) const  (in dyld) + 236  [0x19db68174]
-    + 1 start  (in dyld) + 4752  [0x1010ec3d4]
-    + ! 1 dyld4::ExternallyViewableState::createMinimalInfo(lsl::Allocator&, unsigned long long, char const*, unsigned long long, char const*, DyldSharedCache const*)  (in dyld) + 1312  [0x101133c24]
-    + !   1 dyld4::ExternallyViewableState::atlasAddImage(PropertyList::Dictionary&, unsigned long long, char const*)  (in dyld) + 356  [0x101134414]
-    + !     1 mach_o::Header::forEachSegment(void (mach_o::Header::SegmentInfo const&, bool&) block_pointer) const  (in dyld) + 124  [0x101166134]
-    + !       1 mach_o::Header::forEachLoadCommand(void (load_command const*, bool&) block_pointer) const  (in dyld) + 208  [0x101163158]
-    + !         1 invocation function for block in mach_o::Header::forEachSegment(void (mach_o::Header::SegmentInfo const&, bool&) block_pointer) const  (in dyld) + 248  [0x1011663d0]
-    + !           1 invocation function for block in dyld4::ExternallyViewableState::atlasAddImage(PropertyList::Dictionary&, unsigned long long, char const*)  (in dyld) + 168  [0x10113516c]
-    + !             1 PropertyList::Dictionary::addObjectForKey<PropertyList::String, std::basic_string_view<char> const&>(std::basic_string_view<char>, std::basic_string_view<char> const&)  (in dyld) + 104  [0x101135270]
-    + !               1 <deduplicated_symbol>  (in dyld) + 80  [0x1010eee74]
-    + !                 1 lsl::Allocator::aligned_alloc(unsigned long long, unsigned long long)  (in dyld) + 160  [0x101119b00]
-    + !                   1 lsl::Allocator::AllocationMetadata::pool(bool) const  (in dyld) + 132  [0x101119f80]
+    + ! 1 dyld4::prepare(dyld4::APIs&, mach_o::Header const*)  (in dyld) + 1660  [0x19daf2bac]
+    + !   1 dyld4::JustInTimeLoader::applyFixups(Diagnostics&, dyld4::RuntimeState&, dyld4::DyldCacheDataConstLazyScopedWriter&, bool, lsl::Vector<std::pair<dyld4::Loader const*, char const*>>*) const  (in dyld) + 616  [0x19db16134]
+    + !     1 dyld4::Loader::forEachBindTarget(Diagnostics&, dyld4::RuntimeState&, void (unsigned int, unsigned int, dyld4::Loader::ResolvedSymbol const&) block_pointer, bool, void (dyld4::Loader::ResolvedSymbol const&, bool&) block_pointer, void (dyld4::Loader::ResolvedSymbol const&, bool&) block_pointer) const  (in dyld) + 108  [0x19db0f5f0]
+    + !       1 dyld3::MachOAnalyzer::withVMLayout(Diagnostics&, void (mach_o::Layout const&) block_pointer) const  (in dyld) + 672  [0x19db48e04]
+    + !         1 invocation function for block in dyld4::Loader::forEachBindTarget(Diagnostics&, dyld4::RuntimeState&, void (unsigned int, unsigned int, dyld4::Loader::ResolvedSymbol const&) block_pointer, bool, void (dyld4::Loader::ResolvedSymbol const&, bool&) block_pointer, void (dyld4::Loader::ResolvedSymbol const&, bool&) block_pointer) const  (in dyld) + 264  [0x19db0f704]
+    + !           1 mach_o::Fixups::forEachBindTarget_Opcodes(Diagnostics&, bool, void (mach_o::Fixups::BindTargetInfo const&, bool&) block_pointer, void (mach_o::Fixups::BindTargetInfo const&, bool&) block_pointer) const  (in dyld) + 208  [0x19db455d0]
+    + !             1 mach_o::Fixups::forEachBindUnified_Opcodes(Diagnostics&, bool, void (unsigned long long, unsigned int, mach_o::Fixups::BindTargetInfo const&, bool&) block_pointer, void (unsigned long long, unsigned int, mach_o::Fixups::BindTargetInfo const&, bool&) block_pointer) const  (in dyld) + 244  [0x19db45c54]
+    + !               1 mach_o::Fixups::forEachBind_OpcodesLazy(Diagnostics&, void (char const*, bool, bool, unsigned int, int, unsigned int, unsigned int, unsigned long long, unsigned char, char const*, bool, bool, unsigned long long, bool, bool&) block_pointer) const  (in dyld) + 444  [0x19db464d8]
+    + !                 1 invocation function for block in mach_o::Fixups::forEachBindTarget_Opcodes(Diagnostics&, bool, void (mach_o::Fixups::BindTargetInfo const&, bool&) block_pointer, void (mach_o::Fixups::BindTargetInfo const&, bool&) block_pointer) const  (in dyld) + 72  [0x19db46c18]
+    + !                   1 invocation function for block in dyld4::Loader::forEachBindTarget(Diagnostics&, dyld4::RuntimeState&, void (unsigned int, unsigned int, dyld4::Loader::ResolvedSymbol const&) block_pointer, bool, void (dyld4::Loader::ResolvedSymbol const&, bool&) block_pointer, void (dyld4::Loader::ResolvedSymbol const&, bool&) block_pointer) const  (in dyld) + 100  [0x19db0f794]
+    + !                     1 dyld4::Loader::resolveSymbol(Diagnostics&, dyld4::RuntimeState&, int, char const*, bool, bool, void (unsigned int, unsigned int, dyld4::Loader::ResolvedSymbol const&) block_pointer, bool) const  (in dyld) + 544  [0x19db0fa1c]
+    + !                       1 dyld4::Loader::hasExportedSymbol(Diagnostics&, dyld4::RuntimeState&, char const*, dyld4::Loader::ExportedSymbolMode, dyld4::Loader::ResolverMode, dyld4::Loader::ResolvedSymbol*, dyld3::Array<dyld4::Loader const*>*) const  (in dyld) + 1344  [0x19db10c9c]
+    + !                         1 dyld4::Loader::hasExportedSymbol(Diagnostics&, dyld4::RuntimeState&, char const*, dyld4::Loader::ExportedSymbolMode, dyld4::Loader::ResolverMode, dyld4::Loader::ResolvedSymbol*, dyld3::Array<dyld4::Loader const*>*) const  (in dyld) + 384  [0x19db108dc]
+    + !                           1 dyld3::MachOFile::trieWalk(Diagnostics&, unsigned char const*, unsigned char const*, char const*)  (in dyld) + 272  [0x19db41478]
+    + 1 start  (in dyld) + 4752  [0x100e643d4]
+    + ! 1 dyld4::ExternallyViewableState::createMinimalInfo(lsl::Allocator&, unsigned long long, char const*, unsigned long long, char const*, DyldSharedCache const*)  (in dyld) + 236  [0x100eab7f0]
+    + !   1 AAREncoder::AAREncoder(lsl::Allocator&)  (in dyld) + 0  [0x100e95ffc]
     + 1 start  (in dyld) + 4076  [0x19daf1130]
     +   1 dyld4::ExternallyViewableState::createMinimalInfo(lsl::Allocator&, unsigned long long, char const*, unsigned long long, char const*, DyldSharedCache const*)  (in dyld) + 1660  [0x19db38d80]
     +     1 dyld4::ExternallyViewableState::triggerNotifications(dyld_image_mode, unsigned int, dyld_image_info const*)  (in dyld) + 264  [0x19db39554]
@@ -66,143 +65,143 @@ Call graph:
     +           1 mach_msg_overwrite  (in dyld) + 244  [0x19db71454]
     +             1 mach_msg2_internal  (in dyld) + 76  [0x19db712a8]
     +               1 mach_msg2_trap  (in dyld) + 8  [0x19daea72c]
-    11096 Thread_96260984   DispatchQueue_1: com.apple.main-thread  (serial)
-      11096 start  (in dyld) + 7184  [0x19daf1d54]
-        11096 main  (in profile) + 52  [0x100e3ef7c]
-          11096 std::rt::lang_start_internal::hdb28e94b6865fa11  (in profile) + 940  [0x100e8c04c]
-            11096 std::rt::lang_start::_$u7b$$u7b$closure$u7d$$u7d$::hc2218befaf807112  (in profile) + 16  [0x100e3c898]  rt.rs:206
-              11096 std::sys::backtrace::__rust_begin_short_backtrace::h5307c5a7a5f37688  (in profile) + 12  [0x100e3c8b0]  backtrace.rs:158
-                11096 profile::main::h034ae097ae898c8e  (in profile) + 3472  [0x100e3e428]  profile.rs:81
-                  1947 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 636  [0x100e3eb24]  profile.rs:223
-                  ! 1293 engine::solver::Solver::step_with_forcing::_$u7b$$u7b$closure$u7d$$u7d$::h0eddbe61dc987e42  (in profile) + 476  [0x100e3d5fc]  solver.rs:450
-                  ! : 831 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 1440,680,...  [0x100e55674,0x100e5537c,...]
-                  ! : 128 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 176  [0x100e55184]
-                  ! : | 128 termocline_numerics::CGridOperators::ddx_center_to_face::he5f5b7c05019642f  (in profile) + 492,476,...  [0x100e740e0,0x100e740d0,...]
-                  ! : 120 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 192  [0x100e55194]
-                  ! : | 120 termocline_numerics::CGridOperators::ddy_center_to_face::h1fd303d768791a9b  (in profile) + 600,648,...  [0x100e74688,0x100e746b8,...]
-                  ! : 112 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 968  [0x100e5549c]
-                  ! : | 112 termocline_numerics::CGridOperators::ddx_face_to_center::h979eec2df489f797  (in profile) + 532,516,...  [0x100e74a8c,0x100e74a7c,...]
-                  ! : 102 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 984  [0x100e554ac]
-                  ! :   102 termocline_numerics::CGridOperators::ddy_face_to_center::h2e25b44a6ce45364  (in profile) + 480,440,...  [0x100e74dc0,0x100e74d98,...]
-                  ! 651 engine::solver::Solver::step_with_forcing::_$u7b$$u7b$closure$u7d$$u7d$::h0eddbe61dc987e42  (in profile) + 492  [0x100e3d60c]  solver.rs:451
-                  ! : 281 engine::coriolis::CoriolisTerm::add_to_tendency::h957fd2c043b64b34  (in profile) + 752,452,...  [0x100e575e4,0x100e574b8,...]
-                  ! : 193 engine::coriolis::CoriolisTerm::add_to_tendency::h957fd2c043b64b34  (in profile) + 120  [0x100e5736c]
-                  ! : | 193 termocline_numerics::CGridOperators::face_y_to_face_x::h09c3ae0d258c9db4  (in profile) + 732,736,...  [0x100e751ec,0x100e751f0,...]
-                  ! : 177 engine::coriolis::CoriolisTerm::add_to_tendency::h957fd2c043b64b34  (in profile) + 136  [0x100e5737c]
-                  ! :   177 termocline_numerics::CGridOperators::face_x_to_face_y::h602f33b2af5376e2  (in profile) + 868,872,...  [0x100e75a00,0x100e75a04,...]
-                  ! 3 engine::boundary::hold_walls_at_rest::h446fe954f2587294  (in profile) + 172,296  [0x100e59ff0,0x100e5a06c]
-                  1928 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 692  [0x100e3eb5c]  profile.rs:223
-                  ! 1302 engine::solver::Solver::step_with_forcing::_$u7b$$u7b$closure$u7d$$u7d$::h0eddbe61dc987e42  (in profile) + 476  [0x100e3d5fc]  solver.rs:450
-                  ! : 810 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 680,880,...  [0x100e5537c,0x100e55444,...]
-                  ! : 149 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 176  [0x100e55184]
-                  ! : | 149 termocline_numerics::CGridOperators::ddx_center_to_face::he5f5b7c05019642f  (in profile) + 492,448,...  [0x100e740e0,0x100e740b4,...]
-                  ! : 123 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 968  [0x100e5549c]
-                  ! : | 123 termocline_numerics::CGridOperators::ddx_face_to_center::h979eec2df489f797  (in profile) + 532,516,...  [0x100e74a8c,0x100e74a7c,...]
-                  ! : 116 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 984  [0x100e554ac]
-                  ! : | 116 termocline_numerics::CGridOperators::ddy_face_to_center::h2e25b44a6ce45364  (in profile) + 480,440,...  [0x100e74dc0,0x100e74d98,...]
-                  ! : 104 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 192  [0x100e55194]
-                  ! :   104 termocline_numerics::CGridOperators::ddy_center_to_face::h1fd303d768791a9b  (in profile) + 600,648,...  [0x100e74688,0x100e746b8,...]
-                  ! 624 engine::solver::Solver::step_with_forcing::_$u7b$$u7b$closure$u7d$$u7d$::h0eddbe61dc987e42  (in profile) + 492  [0x100e3d60c]  solver.rs:451
-                  ! : 240 engine::coriolis::CoriolisTerm::add_to_tendency::h957fd2c043b64b34  (in profile) + 752,452,...  [0x100e575e4,0x100e574b8,...]
-                  ! : 201 engine::coriolis::CoriolisTerm::add_to_tendency::h957fd2c043b64b34  (in profile) + 120  [0x100e5736c]
-                  ! : | 201 termocline_numerics::CGridOperators::face_y_to_face_x::h09c3ae0d258c9db4  (in profile) + 732,736,...  [0x100e751ec,0x100e751f0,...]
-                  ! : 183 engine::coriolis::CoriolisTerm::add_to_tendency::h957fd2c043b64b34  (in profile) + 136  [0x100e5737c]
-                  ! :   183 termocline_numerics::CGridOperators::face_x_to_face_y::h602f33b2af5376e2  (in profile) + 868,876,...  [0x100e75a00,0x100e75a08,...]
-                  ! 2 engine::boundary::hold_walls_at_rest::h446fe954f2587294  (in profile) + 172,296  [0x100e59ff0,0x100e5a06c]
-                  1874 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 740  [0x100e3eb8c]  profile.rs:223
-                  ! 1260 engine::solver::Solver::step_with_forcing::_$u7b$$u7b$closure$u7d$$u7d$::h0eddbe61dc987e42  (in profile) + 476  [0x100e3d5fc]  solver.rs:450
-                  ! : 822 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 680,880,...  [0x100e5537c,0x100e55444,...]
-                  ! : 119 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 176  [0x100e55184]
-                  ! : | 119 termocline_numerics::CGridOperators::ddx_center_to_face::he5f5b7c05019642f  (in profile) + 492,448,...  [0x100e740e0,0x100e740b4,...]
-                  ! : 116 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 968  [0x100e5549c]
-                  ! : | 116 termocline_numerics::CGridOperators::ddx_face_to_center::h979eec2df489f797  (in profile) + 532,516,...  [0x100e74a8c,0x100e74a7c,...]
-                  ! : 105 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 984  [0x100e554ac]
-                  ! : | 105 termocline_numerics::CGridOperators::ddy_face_to_center::h2e25b44a6ce45364  (in profile) + 480,440,...  [0x100e74dc0,0x100e74d98,...]
-                  ! : 98 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 192  [0x100e55194]
-                  ! :   98 termocline_numerics::CGridOperators::ddy_center_to_face::h1fd303d768791a9b  (in profile) + 600,648,...  [0x100e74688,0x100e746b8,...]
-                  ! 612 engine::solver::Solver::step_with_forcing::_$u7b$$u7b$closure$u7d$$u7d$::h0eddbe61dc987e42  (in profile) + 492  [0x100e3d60c]  solver.rs:451
-                  ! : 270 engine::coriolis::CoriolisTerm::add_to_tendency::h957fd2c043b64b34  (in profile) + 752,452,...  [0x100e575e4,0x100e574b8,...]
-                  ! : 184 engine::coriolis::CoriolisTerm::add_to_tendency::h957fd2c043b64b34  (in profile) + 120  [0x100e5736c]
-                  ! : | 184 termocline_numerics::CGridOperators::face_y_to_face_x::h09c3ae0d258c9db4  (in profile) + 732,740,...  [0x100e751ec,0x100e751f4,...]
-                  ! : 158 engine::coriolis::CoriolisTerm::add_to_tendency::h957fd2c043b64b34  (in profile) + 136  [0x100e5737c]
-                  ! :   158 termocline_numerics::CGridOperators::face_x_to_face_y::h602f33b2af5376e2  (in profile) + 868,876,...  [0x100e75a00,0x100e75a08,...]
-                  ! 2 engine::boundary::hold_walls_at_rest::h446fe954f2587294  (in profile) + 68,172  [0x100e59f88,0x100e59ff0]
-                  1846 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 788  [0x100e3ebbc]  profile.rs:223
-                  ! 1220 engine::solver::Solver::step_with_forcing::_$u7b$$u7b$closure$u7d$$u7d$::h0eddbe61dc987e42  (in profile) + 476  [0x100e3d5fc]  solver.rs:450
-                  ! : 798 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 680,880,...  [0x100e5537c,0x100e55444,...]
-                  ! : 117 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 176  [0x100e55184]
-                  ! : | 117 termocline_numerics::CGridOperators::ddx_center_to_face::he5f5b7c05019642f  (in profile) + 492,448,...  [0x100e740e0,0x100e740b4,...]
-                  ! : 115 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 968  [0x100e5549c]
-                  ! : | 115 termocline_numerics::CGridOperators::ddx_face_to_center::h979eec2df489f797  (in profile) + 532,516,...  [0x100e74a8c,0x100e74a7c,...]
-                  ! : 99 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 192  [0x100e55194]
-                  ! : | 99 termocline_numerics::CGridOperators::ddy_center_to_face::h1fd303d768791a9b  (in profile) + 600,648,...  [0x100e74688,0x100e746b8,...]
-                  ! : 91 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 984  [0x100e554ac]
-                  ! :   91 termocline_numerics::CGridOperators::ddy_face_to_center::h2e25b44a6ce45364  (in profile) + 480,440,...  [0x100e74dc0,0x100e74d98,...]
-                  ! 624 engine::solver::Solver::step_with_forcing::_$u7b$$u7b$closure$u7d$$u7d$::h0eddbe61dc987e42  (in profile) + 492  [0x100e3d60c]  solver.rs:451
-                  ! : 262 engine::coriolis::CoriolisTerm::add_to_tendency::h957fd2c043b64b34  (in profile) + 452,752,...  [0x100e574b8,0x100e575e4,...]
-                  ! : 191 engine::coriolis::CoriolisTerm::add_to_tendency::h957fd2c043b64b34  (in profile) + 136  [0x100e5737c]
-                  ! : | 191 termocline_numerics::CGridOperators::face_x_to_face_y::h602f33b2af5376e2  (in profile) + 868,876,...  [0x100e75a00,0x100e75a08,...]
-                  ! : 171 engine::coriolis::CoriolisTerm::add_to_tendency::h957fd2c043b64b34  (in profile) + 120  [0x100e5736c]
-                  ! :   171 termocline_numerics::CGridOperators::face_y_to_face_x::h09c3ae0d258c9db4  (in profile) + 732,736,...  [0x100e751ec,0x100e751f0,...]
-                  ! 2 engine::boundary::hold_walls_at_rest::h446fe954f2587294  (in profile) + 52,64  [0x100e59f78,0x100e59f84]
-                  422 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 668  [0x100e3eb44]  profile.rs:223
-                  ! 422 _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::add_scaled::h2412b00ec5813a32  (in profile) + 184,584,...  [0x100e57ebc,0x100e5804c,...]
-                  418 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 868  [0x100e3ec0c]  profile.rs:223
-                  ! 418 _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::add_scaled::h2412b00ec5813a32  (in profile) + 384,584,...  [0x100e57f84,0x100e5804c,...]
-                  411 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 768  [0x100e3eba8]  profile.rs:223
-                  ! 411 _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::add_scaled::h2412b00ec5813a32  (in profile) + 584,184,...  [0x100e5804c,0x100e57ebc,...]
-                  408 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 720  [0x100e3eb78]  profile.rs:223
-                  ! 408 _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::add_scaled::h2412b00ec5813a32  (in profile) + 384,184,...  [0x100e57f84,0x100e57ebc,...]
-                  406 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 836  [0x100e3ebec]  profile.rs:223
-                  ! 406 _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::add_scaled::h2412b00ec5813a32  (in profile) + 584,184,...  [0x100e5804c,0x100e57ebc,...]
-                  397 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 812  [0x100e3ebd4]  profile.rs:223
-                  ! 397 _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::add_scaled::h2412b00ec5813a32  (in profile) + 584,184,...  [0x100e5804c,0x100e57ebc,...]
-                  396 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 852  [0x100e3ebfc]  profile.rs:223
-                  ! 396 _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::add_scaled::h2412b00ec5813a32  (in profile) + 184,384,...  [0x100e57ebc,0x100e57f84,...]
-                  225 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 752  [0x100e3eb98]  profile.rs:223
-                  ! 80 _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::assign::h4ba38173cc6bb9cb  (in profile) + 100  [0x100e57d68]
-                  ! : 80 _platform_memmove  (in libsystem_platform.dylib) + 88,100  [0x19dec33b8,0x19dec33c4]
-                  ! 77 _platform_memmove  (in libsystem_platform.dylib) + 88,104  [0x19dec33b8,0x19dec33c8]
-                  ! 68 _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::assign::h4ba38173cc6bb9cb  (in profile) + 136  [0x100e57d8c]
-                  !   68 _platform_memmove  (in libsystem_platform.dylib) + 88,108  [0x19dec33b8,0x19dec33cc]
-                  213 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 704  [0x100e3eb68]  profile.rs:223
-                  ! 84 _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::assign::h4ba38173cc6bb9cb  (in profile) + 100  [0x100e57d68]
-                  ! : 84 _platform_memmove  (in libsystem_platform.dylib) + 88,100  [0x19dec33b8,0x19dec33c4]
-                  ! 68 _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::assign::h4ba38173cc6bb9cb  (in profile) + 136  [0x100e57d8c]
-                  ! : 68 _platform_memmove  (in libsystem_platform.dylib) + 88,108  [0x19dec33b8,0x19dec33cc]
-                  ! 61 _platform_memmove  (in libsystem_platform.dylib) + 88,104  [0x19dec33b8,0x19dec33c8]
-                  202 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 648  [0x100e3eb30]  profile.rs:223
-                  ! 73 _platform_memmove  (in libsystem_platform.dylib) + 88,104  [0x19dec33b8,0x19dec33c8]
-                  ! 70 _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::assign::h4ba38173cc6bb9cb  (in profile) + 100  [0x100e57d68]
-                  ! : 70 _platform_memmove  (in libsystem_platform.dylib) + 88,100  [0x19dec33b8,0x19dec33c4]
-                  ! 59 _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::assign::h4ba38173cc6bb9cb  (in profile) + 136  [0x100e57d8c]
-                  !   59 _platform_memmove  (in libsystem_platform.dylib) + 88,108  [0x19dec33b8,0x19dec33cc]
-                  2 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 596  [0x100e3eafc]  profile.rs:223
-                  ! 2 engine::boundary::hold_walls_at_rest::h446fe954f2587294  (in profile) + 52,172  [0x100e59f78,0x100e59ff0]
-                  1 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 280  [0x100e3e9c0]  profile.rs:201
-                    1 engine::solver::Solver::new::h62b51961ab0bb6b7  (in profile) + 564  [0x100e5bbe0]
-                      1 engine::integrator::Rk4$LT$S$GT$::new::h1049b18c39898404  (in profile) + 864  [0x100e5c264]
-                        1 _platform_memmove  (in libsystem_platform.dylib) + 88  [0x19dec33b8]
+    11003 Thread_96333898   DispatchQueue_1: com.apple.main-thread  (serial)
+      11003 start  (in dyld) + 7184  [0x19daf1d54]
+        11003 main  (in profile) + 52  [0x100c8ef58]
+          11003 std::rt::lang_start_internal::hdb28e94b6865fa11  (in profile) + 940  [0x100cdc008]
+            11003 std::rt::lang_start::_$u7b$$u7b$closure$u7d$$u7d$::hc2218befaf807112  (in profile) + 16  [0x100c8c898]  rt.rs:206
+              11003 std::sys::backtrace::__rust_begin_short_backtrace::h5307c5a7a5f37688  (in profile) + 12  [0x100c8c8b0]  backtrace.rs:158
+                11003 profile::main::h034ae097ae898c8e  (in profile) + 3472  [0x100c8e404]  profile.rs:81
+                  1948 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 636  [0x100c8eb00]  profile.rs:223
+                  ! 1267 engine::solver::integrate::_$u7b$$u7b$closure$u7d$$u7d$::hf0f96ba036fed5fb  (in profile) + 440  [0x100c8d5d8]  solver.rs:469
+                  ! : 815 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 880,1440,...  [0x100ca5420,0x100ca5650,...]
+                  ! : 133 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 176  [0x100ca5160]
+                  ! : | 133 termocline_numerics::CGridOperators::ddx_center_to_face::he5f5b7c05019642f  (in profile) + 492,476,...  [0x100cc409c,0x100cc408c,...]
+                  ! : 116 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 984  [0x100ca5488]
+                  ! : | 116 termocline_numerics::CGridOperators::ddy_face_to_center::h2e25b44a6ce45364  (in profile) + 480,440,...  [0x100cc4d7c,0x100cc4d54,...]
+                  ! : 110 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 192  [0x100ca5170]
+                  ! : | 110 termocline_numerics::CGridOperators::ddy_center_to_face::h1fd303d768791a9b  (in profile) + 600,648,...  [0x100cc4644,0x100cc4674,...]
+                  ! : 93 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 968  [0x100ca5478]
+                  ! :   93 termocline_numerics::CGridOperators::ddx_face_to_center::h979eec2df489f797  (in profile) + 532,516,...  [0x100cc4a48,0x100cc4a38,...]
+                  ! 676 engine::solver::integrate::_$u7b$$u7b$closure$u7d$$u7d$::hf0f96ba036fed5fb  (in profile) + 456  [0x100c8d5e8]  solver.rs:470
+                  ! : 292 engine::coriolis::CoriolisTerm::add_to_tendency::h957fd2c043b64b34  (in profile) + 752,452,...  [0x100ca75c0,0x100ca7494,...]
+                  ! : 197 engine::coriolis::CoriolisTerm::add_to_tendency::h957fd2c043b64b34  (in profile) + 136  [0x100ca7358]
+                  ! : | 197 termocline_numerics::CGridOperators::face_x_to_face_y::h602f33b2af5376e2  (in profile) + 868,876,...  [0x100cc59bc,0x100cc59c4,...]
+                  ! : 187 engine::coriolis::CoriolisTerm::add_to_tendency::h957fd2c043b64b34  (in profile) + 120  [0x100ca7348]
+                  ! :   187 termocline_numerics::CGridOperators::face_y_to_face_x::h09c3ae0d258c9db4  (in profile) + 732,736,...  [0x100cc51a8,0x100cc51ac,...]
+                  ! 5 engine::boundary::hold_walls_at_rest::h446fe954f2587294  (in profile) + 172,68  [0x100ca9fcc,0x100ca9f64]
+                  1918 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 740  [0x100c8eb68]  profile.rs:223
+                  ! 1301 engine::solver::integrate::_$u7b$$u7b$closure$u7d$$u7d$::hf0f96ba036fed5fb  (in profile) + 440  [0x100c8d5d8]  solver.rs:469
+                  ! : 835 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 1440,1248,...  [0x100ca5650,0x100ca5590,...]
+                  ! : 151 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 176  [0x100ca5160]
+                  ! : | 151 termocline_numerics::CGridOperators::ddx_center_to_face::he5f5b7c05019642f  (in profile) + 492,448,...  [0x100cc409c,0x100cc4070,...]
+                  ! : 109 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 192  [0x100ca5170]
+                  ! : | 109 termocline_numerics::CGridOperators::ddy_center_to_face::h1fd303d768791a9b  (in profile) + 600,648,...  [0x100cc4644,0x100cc4674,...]
+                  ! : 104 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 968  [0x100ca5478]
+                  ! : | 104 termocline_numerics::CGridOperators::ddx_face_to_center::h979eec2df489f797  (in profile) + 532,516,...  [0x100cc4a48,0x100cc4a38,...]
+                  ! : 102 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 984  [0x100ca5488]
+                  ! :   102 termocline_numerics::CGridOperators::ddy_face_to_center::h2e25b44a6ce45364  (in profile) + 480,440,...  [0x100cc4d7c,0x100cc4d54,...]
+                  ! 613 engine::solver::integrate::_$u7b$$u7b$closure$u7d$$u7d$::hf0f96ba036fed5fb  (in profile) + 456  [0x100c8d5e8]  solver.rs:470
+                  ! : 287 engine::coriolis::CoriolisTerm::add_to_tendency::h957fd2c043b64b34  (in profile) + 452,752,...  [0x100ca7494,0x100ca75c0,...]
+                  ! : 180 engine::coriolis::CoriolisTerm::add_to_tendency::h957fd2c043b64b34  (in profile) + 120  [0x100ca7348]
+                  ! : | 180 termocline_numerics::CGridOperators::face_y_to_face_x::h09c3ae0d258c9db4  (in profile) + 732,736,...  [0x100cc51a8,0x100cc51ac,...]
+                  ! : 146 engine::coriolis::CoriolisTerm::add_to_tendency::h957fd2c043b64b34  (in profile) + 136  [0x100ca7358]
+                  ! :   146 termocline_numerics::CGridOperators::face_x_to_face_y::h602f33b2af5376e2  (in profile) + 868,872,...  [0x100cc59bc,0x100cc59c0,...]
+                  ! 4 engine::boundary::hold_walls_at_rest::h446fe954f2587294  (in profile) + 84,172,...  [0x100ca9f74,0x100ca9fcc,...]
+                  1908 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 692  [0x100c8eb38]  profile.rs:223
+                  ! 1275 engine::solver::integrate::_$u7b$$u7b$closure$u7d$$u7d$::hf0f96ba036fed5fb  (in profile) + 440  [0x100c8d5d8]  solver.rs:469
+                  ! : 807 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 880,1440,...  [0x100ca5420,0x100ca5650,...]
+                  ! : 141 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 176  [0x100ca5160]
+                  ! : | 141 termocline_numerics::CGridOperators::ddx_center_to_face::he5f5b7c05019642f  (in profile) + 492,448,...  [0x100cc409c,0x100cc4070,...]
+                  ! : 114 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 192  [0x100ca5170]
+                  ! : | 114 termocline_numerics::CGridOperators::ddy_center_to_face::h1fd303d768791a9b  (in profile) + 600,648,...  [0x100cc4644,0x100cc4674,...]
+                  ! : 112 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 984  [0x100ca5488]
+                  ! : | 112 termocline_numerics::CGridOperators::ddy_face_to_center::h2e25b44a6ce45364  (in profile) + 480,440,...  [0x100cc4d7c,0x100cc4d54,...]
+                  ! : 101 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 968  [0x100ca5478]
+                  ! :   101 termocline_numerics::CGridOperators::ddx_face_to_center::h979eec2df489f797  (in profile) + 532,516,...  [0x100cc4a48,0x100cc4a38,...]
+                  ! 633 engine::solver::integrate::_$u7b$$u7b$closure$u7d$$u7d$::hf0f96ba036fed5fb  (in profile) + 456  [0x100c8d5e8]  solver.rs:470
+                  !   296 engine::coriolis::CoriolisTerm::add_to_tendency::h957fd2c043b64b34  (in profile) + 452,752,...  [0x100ca7494,0x100ca75c0,...]
+                  !   179 engine::coriolis::CoriolisTerm::add_to_tendency::h957fd2c043b64b34  (in profile) + 120  [0x100ca7348]
+                  !   | 179 termocline_numerics::CGridOperators::face_y_to_face_x::h09c3ae0d258c9db4  (in profile) + 732,740,...  [0x100cc51a8,0x100cc51b0,...]
+                  !   158 engine::coriolis::CoriolisTerm::add_to_tendency::h957fd2c043b64b34  (in profile) + 136  [0x100ca7358]
+                  !     158 termocline_numerics::CGridOperators::face_x_to_face_y::h602f33b2af5376e2  (in profile) + 868,876,...  [0x100cc59bc,0x100cc59c4,...]
+                  1822 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 788  [0x100c8eb98]  profile.rs:223
+                  ! 1224 engine::solver::integrate::_$u7b$$u7b$closure$u7d$$u7d$::hf0f96ba036fed5fb  (in profile) + 440  [0x100c8d5d8]  solver.rs:469
+                  ! : 784 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 680,1248,...  [0x100ca5358,0x100ca5590,...]
+                  ! : 137 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 176  [0x100ca5160]
+                  ! : | 137 termocline_numerics::CGridOperators::ddx_center_to_face::he5f5b7c05019642f  (in profile) + 492,448,...  [0x100cc409c,0x100cc4070,...]
+                  ! : 122 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 192  [0x100ca5170]
+                  ! : | 122 termocline_numerics::CGridOperators::ddy_center_to_face::h1fd303d768791a9b  (in profile) + 600,648,...  [0x100cc4644,0x100cc4674,...]
+                  ! : 91 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 984  [0x100ca5488]
+                  ! : | 91 termocline_numerics::CGridOperators::ddy_face_to_center::h2e25b44a6ce45364  (in profile) + 480,440,...  [0x100cc4d7c,0x100cc4d54,...]
+                  ! : 90 engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile) + 968  [0x100ca5478]
+                  ! :   90 termocline_numerics::CGridOperators::ddx_face_to_center::h979eec2df489f797  (in profile) + 532,488,...  [0x100cc4a48,0x100cc4a1c,...]
+                  ! 597 engine::solver::integrate::_$u7b$$u7b$closure$u7d$$u7d$::hf0f96ba036fed5fb  (in profile) + 456  [0x100c8d5e8]  solver.rs:470
+                  ! : 260 engine::coriolis::CoriolisTerm::add_to_tendency::h957fd2c043b64b34  (in profile) + 752,452,...  [0x100ca75c0,0x100ca7494,...]
+                  ! : 192 engine::coriolis::CoriolisTerm::add_to_tendency::h957fd2c043b64b34  (in profile) + 120  [0x100ca7348]
+                  ! : | 192 termocline_numerics::CGridOperators::face_y_to_face_x::h09c3ae0d258c9db4  (in profile) + 732,740,...  [0x100cc51a8,0x100cc51b0,...]
+                  ! : 145 engine::coriolis::CoriolisTerm::add_to_tendency::h957fd2c043b64b34  (in profile) + 136  [0x100ca7358]
+                  ! :   145 termocline_numerics::CGridOperators::face_x_to_face_y::h602f33b2af5376e2  (in profile) + 868,872,...  [0x100cc59bc,0x100cc59c0,...]
+                  ! 1 engine::boundary::hold_walls_at_rest::h446fe954f2587294  (in profile) + 172  [0x100ca9fcc]
+                  419 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 812  [0x100c8ebb0]  profile.rs:223
+                  ! 419 _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::add_scaled::h2412b00ec5813a32  (in profile) + 384,584,...  [0x100ca7f60,0x100ca8028,...]
+                  409 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 668  [0x100c8eb20]  profile.rs:223
+                  ! 409 _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::add_scaled::h2412b00ec5813a32  (in profile) + 384,584,...  [0x100ca7f60,0x100ca8028,...]
+                  404 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 868  [0x100c8ebe8]  profile.rs:223
+                  ! 404 _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::add_scaled::h2412b00ec5813a32  (in profile) + 584,184,...  [0x100ca8028,0x100ca7e98,...]
+                  403 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 836  [0x100c8ebc8]  profile.rs:223
+                  ! 403 _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::add_scaled::h2412b00ec5813a32  (in profile) + 584,384,...  [0x100ca8028,0x100ca7f60,...]
+                  393 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 768  [0x100c8eb84]  profile.rs:223
+                  ! 393 _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::add_scaled::h2412b00ec5813a32  (in profile) + 384,184,...  [0x100ca7f60,0x100ca7e98,...]
+                  390 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 720  [0x100c8eb54]  profile.rs:223
+                  ! 390 _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::add_scaled::h2412b00ec5813a32  (in profile) + 184,384,...  [0x100ca7e98,0x100ca7f60,...]
+                  384 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 852  [0x100c8ebd8]  profile.rs:223
+                  ! 384 _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::add_scaled::h2412b00ec5813a32  (in profile) + 384,184,...  [0x100ca7f60,0x100ca7e98,...]
+                  212 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 752  [0x100c8eb74]  profile.rs:223
+                  ! 81 _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::assign::h4ba38173cc6bb9cb  (in profile) + 100  [0x100ca7d44]
+                  ! : 81 _platform_memmove  (in libsystem_platform.dylib) + 88  [0x19dec33b8]
+                  ! 69 _platform_memmove  (in libsystem_platform.dylib) + 88,104  [0x19dec33b8,0x19dec33c8]
+                  ! 61 _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::assign::h4ba38173cc6bb9cb  (in profile) + 136  [0x100ca7d68]
+                  ! : 61 _platform_memmove  (in libsystem_platform.dylib) + 88,108  [0x19dec33b8,0x19dec33cc]
+                  ! 1 _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::assign::h4ba38173cc6bb9cb  (in profile) + 136  [0x100ca7d68]
+                  198 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 648  [0x100c8eb0c]  profile.rs:223
+                  ! 81 _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::assign::h4ba38173cc6bb9cb  (in profile) + 100  [0x100ca7d44]
+                  ! : 81 _platform_memmove  (in libsystem_platform.dylib) + 88  [0x19dec33b8]
+                  ! 64 _platform_memmove  (in libsystem_platform.dylib) + 88,104  [0x19dec33b8,0x19dec33c8]
+                  ! 53 _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::assign::h4ba38173cc6bb9cb  (in profile) + 136  [0x100ca7d68]
+                  !   53 _platform_memmove  (in libsystem_platform.dylib) + 88,108  [0x19dec33b8,0x19dec33cc]
+                  193 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 704  [0x100c8eb44]  profile.rs:223
+                  ! 71 _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::assign::h4ba38173cc6bb9cb  (in profile) + 100  [0x100ca7d44]
+                  ! : 71 _platform_memmove  (in libsystem_platform.dylib) + 88  [0x19dec33b8]
+                  ! 67 _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::assign::h4ba38173cc6bb9cb  (in profile) + 136  [0x100ca7d68]
+                  ! : 67 _platform_memmove  (in libsystem_platform.dylib) + 88,108,...  [0x19dec33b8,0x19dec33cc,...]
+                  ! 55 _platform_memmove  (in libsystem_platform.dylib) + 88,104  [0x19dec33b8,0x19dec33c8]
+                  1 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 280  [0x100c8e99c]  profile.rs:201
+                  ! 1 engine::solver::Solver::new::h62b51961ab0bb6b7  (in profile) + 564  [0x100caa948]
+                  !   1 engine::integrator::Rk4$LT$S$GT$::new::h1049b18c39898404  (in profile) + 904  [0x100caaff4]
+                  !     1 _platform_memmove  (in libsystem_platform.dylib) + 88  [0x19dec33b8]
+                  1 profile::spin::hd50d6ad2e2c2ff30  (in profile) + 520  [0x100c8ea8c]  profile.rs:218
+                    1 std::time::Instant::elapsed::h04f8666e88e9fb43  (in profile) + 28  [0x100ce03b4]
+                      1 std::sys::pal::unix::time::Timespec::now::he65ceb2d6e902d9e  (in profile) + 0  [0x100ce3c80]
 
 Total number in stack (recursive counted multiple, when >=5):
         10       _platform_memmove  (in libsystem_platform.dylib) + 0  [0x19dec3360]
-        7       _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::add_scaled::h2412b00ec5813a32  (in profile) + 0  [0x100e57e04]
-        5       engine::boundary::hold_walls_at_rest::h446fe954f2587294  (in profile) + 0  [0x100e59f44]
+        7       _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::add_scaled::h2412b00ec5813a32  (in profile) + 0  [0x100ca7de0]
 
 Sort by top of stack, same collapsed (when >= 5):
-        engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile)        3261
-        _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::add_scaled::h2412b00ec5813a32  (in profile)        2858
-        engine::coriolis::CoriolisTerm::add_to_tendency::h957fd2c043b64b34  (in profile)        1053
-        termocline_numerics::CGridOperators::face_y_to_face_x::h09c3ae0d258c9db4  (in profile)        749
-        termocline_numerics::CGridOperators::face_x_to_face_y::h602f33b2af5376e2  (in profile)        709
-        _platform_memmove  (in libsystem_platform.dylib)        641
-        termocline_numerics::CGridOperators::ddx_center_to_face::he5f5b7c05019642f  (in profile)        513
-        termocline_numerics::CGridOperators::ddx_face_to_center::h979eec2df489f797  (in profile)        466
-        termocline_numerics::CGridOperators::ddy_center_to_face::h1fd303d768791a9b  (in profile)        421
-        termocline_numerics::CGridOperators::ddy_face_to_center::h2e25b44a6ce45364  (in profile)        414
-        _dyld_start  (in dyld)        243
-        mach_msg2_trap  (in dyld)        16
-        engine::boundary::hold_walls_at_rest::h446fe954f2587294  (in profile)        11
+        engine::shallow_water::ShallowWaterRhs::evaluate::h48e03ecfe3177bb9  (in profile)        3241
+        _$LT$engine..state..OceanState$u20$as$u20$engine..integrator..StateVector$GT$::add_scaled::h2412b00ec5813a32  (in profile)        2802
+        engine::coriolis::CoriolisTerm::add_to_tendency::h957fd2c043b64b34  (in profile)        1135
+        termocline_numerics::CGridOperators::face_y_to_face_x::h09c3ae0d258c9db4  (in profile)        738
+        termocline_numerics::CGridOperators::face_x_to_face_y::h602f33b2af5376e2  (in profile)        646
+        _platform_memmove  (in libsystem_platform.dylib)        603
+        termocline_numerics::CGridOperators::ddx_center_to_face::he5f5b7c05019642f  (in profile)        562
+        termocline_numerics::CGridOperators::ddy_center_to_face::h1fd303d768791a9b  (in profile)        455
+        termocline_numerics::CGridOperators::ddy_face_to_center::h2e25b44a6ce45364  (in profile)        421
+        termocline_numerics::CGridOperators::ddx_face_to_center::h979eec2df489f797  (in profile)        388
+        _dyld_start  (in dyld)        268
+        mach_msg2_trap  (in dyld)        17
+        engine::boundary::hold_walls_at_rest::h446fe954f2587294  (in profile)        10
 
 Binary images description not available
 

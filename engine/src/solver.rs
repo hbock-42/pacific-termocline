@@ -85,7 +85,7 @@ use crate::basin::Basin;
 
 use crate::boundary::NoNormalFlow;
 use crate::coriolis::{BetaPlane, CoriolisTerm};
-use crate::forcing::{HeldInstant, WindForcing, WindStress, WindStressField};
+use crate::forcing::{BorrowedForcing, StageForcing, WindForcing, WindStress, WindStressField};
 use crate::integrator::Rk4;
 use crate::params::PhysicalParams;
 use crate::shallow_water::ShallowWaterRhs;
@@ -367,27 +367,20 @@ impl Solver {
             integrator,
             stage_stress,
         } = self;
-        // The cache lives for this call only: the wind arrives as an argument,
-        // so nothing here can know it is the same wind the previous call
-        // passed. Within one step that is enough to turn RK4's four samplings
-        // into one for a steady wind and three for a wind that varies; a run
-        // that wants the field kept across steps holds a `WindForcing` and
-        // calls `step_with_forcing`.
-        let mut held = HeldInstant::nothing(wind.time_dependence());
-        NoNormalFlow::apply_to_state(state);
-        integrator.step(
+        // The forcing lives for this call only: the wind arrives as an
+        // argument, so nothing here can know it is the same wind the previous
+        // call passed. Within one step it is still worth one sampling instead
+        // of four for a steady wind and three instead of four for a wind that
+        // varies; a run that wants the field kept across steps holds a
+        // `WindForcing` and calls `step_with_forcing`.
+        integrate(
             state,
             t_s,
             *dt_s,
-            &mut |now: &OceanState, stage_t_s: f64, tendency: &mut OceanState| {
-                if !held.holds(stage_t_s) {
-                    stage_stress.sample(basin, wind, stage_t_s);
-                    held.record(stage_t_s);
-                }
-                rhs.evaluate(now, stage_stress, tendency);
-                coriolis.add_to_tendency(now, tendency);
-                NoNormalFlow::apply_to_tendency(tendency);
-            },
+            rhs,
+            coriolis,
+            integrator,
+            &mut BorrowedForcing::new(basin, wind, stage_stress),
         );
     }
 
@@ -414,16 +407,17 @@ impl Solver {
     /// as in [`Solver::step`].
     ///
     /// # Panics
-    /// If `state` or `forcing` covers a different grid from the one this
-    /// solver was built for. A shape mismatch means the calling code is wrong,
-    /// which is what panics are for (CODING_STANDARDS.md § Correctness and
-    /// failure).
+    /// If `forcing` covers a different grid from the one this solver was built
+    /// for — asserted here — or if `state` does, which the evaluators refuse
+    /// in their turn. A shape mismatch means the calling code is wrong, which
+    /// is what panics are for (CODING_STANDARDS.md § Correctness and failure).
     pub fn step_with_forcing<W: WindStress>(
         &mut self,
         state: &mut OceanState,
         t_s: f64,
         forcing: &mut WindForcing<W>,
     ) {
+        // The solver's grid, which its own stage buffer is the shape of.
         let grid = self.stage_stress.grid();
         assert!(
             forcing.basin().grid() == grid,
@@ -431,9 +425,9 @@ impl Solver {
             forcing.basin().grid(),
             grid
         );
-        // The solver's own stage buffer stays idle here: the forcing brings
-        // the field it sampled into, which is exactly the point — it is the
-        // one the *previous* step wrote, and often does not need rewriting.
+        // That buffer stays idle here, which is exactly the point: the field
+        // the forcing brings is the one the *previous* step wrote, and often
+        // does not need rewriting.
         let Self {
             dt_s,
             rhs,
@@ -441,18 +435,42 @@ impl Solver {
             integrator,
             stage_stress: _,
         } = self;
-        NoNormalFlow::apply_to_state(state);
-        integrator.step(
-            state,
-            t_s,
-            *dt_s,
-            &mut |now: &OceanState, stage_t_s: f64, tendency: &mut OceanState| {
-                rhs.evaluate(now, forcing.at(stage_t_s), tendency);
-                coriolis.add_to_tendency(now, tendency);
-                NoNormalFlow::apply_to_tendency(tendency);
-            },
-        );
+        integrate(state, t_s, *dt_s, rhs, coriolis, integrator, forcing);
     }
+}
+
+/// One RK4 step of the engine's scheme: the body both of [`Solver`]'s
+/// wind-taking steps run, differing only in where their stage stress comes
+/// from.
+///
+/// Order matters, and it is the same order in both: the shallow-water
+/// evaluator writes every point of the tendency, the Coriolis term adds to
+/// what it wrote, and the boundary condition has the last word over both.
+/// `state` is brought onto the boundary condition on the way in.
+///
+/// A free function taking the solver's pieces rather than a method, because
+/// the forcing may borrow one of those pieces — `step_forced_by`'s does — and
+/// the borrow checker needs to see them apart.
+fn integrate(
+    state: &mut OceanState,
+    t_s: f64,
+    dt_s: f64,
+    rhs: &mut ShallowWaterRhs,
+    coriolis: &mut CoriolisTerm,
+    integrator: &mut Rk4<OceanState>,
+    forcing: &mut impl StageForcing,
+) {
+    NoNormalFlow::apply_to_state(state);
+    integrator.step(
+        state,
+        t_s,
+        dt_s,
+        &mut |now: &OceanState, stage_t_s: f64, tendency: &mut OceanState| {
+            rhs.evaluate(now, forcing.at(stage_t_s), tendency);
+            coriolis.add_to_tendency(now, tendency);
+            NoNormalFlow::apply_to_tendency(tendency);
+        },
+    );
 }
 
 /// `state` advanced by one step of `dt_s` seconds from time zero, as a freshly

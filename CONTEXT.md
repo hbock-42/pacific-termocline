@@ -56,6 +56,14 @@ The externally specified surface stress field forcing the ocean, a function of
 `(x, y, t)`. Easterly trade-wind stress is `τx < 0`. In v1 it is prescribed,
 never derived from an atmosphere model.
 
+**Wind forcing**:
+A wind stress together with the field it is sampled into over one basin — what
+a run holds and asks for the stress at each instant it integrates through, as
+opposed to the stress *function* (`WindStress`) or the sampled field at one
+instant (`WindStressField`). Whether a run re-samples for a given instant is
+the wind's own declared time dependence
+([ADR-0009](docs/planning/adr/0009-wind-declares-its-time-dependence.md)).
+
 **Scenario**:
 A complete, runnable specification of one simulation: grid, physical
 parameters, wind-forcing description, and run length. The engine's unit of

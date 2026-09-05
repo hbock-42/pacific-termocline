@@ -358,17 +358,6 @@ fn a_season_and_a_burst_declare_themselves_time_varying() {
 }
 
 #[test]
-fn a_season_of_no_amplitude_at_all_is_steady() {
-    // `1 + a·cos(…)` with `a = 0` is exactly 1 for every `t`, in exact
-    // arithmetic and in `f64` — `0·cos + 1` is `1.0` whatever the cosine is.
-    // The declaration is a property of the instance, not of the type.
-    let unmodulated = SeasonalTradeWinds::new(trade_winds(), 0.0, SEASONAL_PEAK_TIME_S)
-        .expect("a zero amplitude is a fraction");
-
-    assert_eq!(unmodulated.time_dependence(), TimeDependence::Steady);
-}
-
-#[test]
 fn a_composite_is_steady_only_when_every_component_is() {
     // Superposition: a sum is constant in time exactly when every term is.
     // The empty composite is calm, and calm does not change.

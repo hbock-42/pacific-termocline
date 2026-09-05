@@ -319,22 +319,29 @@ for the run** instead of 4 times a step.
 ### The benchmark
 
 `cargo bench -p engine --bench scenario_run`, the same machine and the same two
-workloads as the tables above, before and after the change:
+workloads as the tables above. The two runs are back to back on this branch and
+on `main`, with criterion's `--save-baseline`, so its comparison is between two
+measurements taken minutes apart rather than against a figure from another day:
 
-| workload | before | after | criterion's own comparison |
+| workload | before (`main`) | after | criterion's own comparison |
 |---|---|---|---|
-| 320 × 100 | 505.56 ms / run, **474.7 steps/s** | 146.27 ms / run, **1 640.8 steps/s** | −71.06% [−71.27%, −70.87%], p < 0.05 |
-| 160 × 50 | 128.67 ms / run, **1 865.2 steps/s** | 38.24 ms / run, **6 276.6 steps/s** | −70.34% [−70.47%, −70.21%], p < 0.05 |
+| 320 × 100 | 513.11 ms / run, **467.7 steps/s** | 149.60 ms / run, **1 604.3 steps/s** | −70.90% [−71.08%, −70.71%], p < 0.05 |
+| 160 × 50 | 137.40 ms / run, **1 746.7 steps/s** | 38.60 ms / run, **6 218.0 steps/s** | −70.93% [−72.12%, −70.20%], p < 0.05 |
 
-**3.46× at 0.5° and 3.37× at 1.0°**, end to end through the entry point the
-`run` command uses. That is the deliverable, and it is what a user feels: the
-0.5° control run that took 505 ms takes 146 ms.
+**3.4× at both grids**, end to end through the entry point the `run` command
+uses. That is the deliverable, and it is what a user feels: the 0.5° control
+run that took half a second takes 150 ms.
 
-It is also what the baseline predicted almost exactly. A phase measured at 71.0%
-of a step, removed, leaves 29.0% — a 3.45× ceiling. The benchmark reports 3.46×,
-which is the same number, and the agreement is the check on the baseline rather
-than a coincidence: had the wind's share been mis-measured, this is where it
-would have shown.
+It is also what the baseline predicted. A phase measured at 71.0% of a step,
+removed, leaves 29.0% — a 3.45× ceiling, and −70.9% is that ceiling to within
+the measurement. The agreement is the check on the baseline rather than a
+coincidence: had the wind's share been mis-measured, this is where it would have
+shown.
+
+The 1.0° baseline run was the noisy one of the four (129.92 ms to 147.49 ms
+across its ten samples, against a spread of under 3 ms in the other three), so
+its interval is the wide one. The 0.5° figures are the ones to quote; the
+earlier tables in this note are at that grid for the same reason.
 
 ### The new phase table
 
@@ -342,51 +349,53 @@ would have shown.
 second of warm-up, exactly as before:
 
 ```
-== 160x50 cells, 24 steps, 162.48µs per step ==
+== 160x50 cells, 24 steps, 162.979µs per step ==
    phase                       share    per step
-   wind stress sampling         2.9%      4.631µs
-   shallow-water terms         44.0%     71.571µs
-   coriolis                    22.2%     36.114µs
-   boundary condition           0.5%        779ns
-   rk4 stage algebra           30.4%     49.383µs
+   wind stress sampling         2.6%      4.253µs
+   shallow-water terms         44.0%     71.659µs
+   coriolis                    22.8%     37.126µs
+   boundary condition           0.4%        652ns
+   rk4 stage algebra           30.2%     49.286µs
 
-== 320x100 cells, 24 steps, 642.984µs per step ==
+== 320x100 cells, 24 steps, 634.357µs per step ==
    phase                       share    per step
-   wind stress sampling         2.5%     15.946µs
-   shallow-water terms         44.6%    286.913µs
-   coriolis                    22.2%    142.880µs
-   boundary condition           0.2%      1.555µs
-   rk4 stage algebra           30.4%    195.689µs
+   wind stress sampling         2.6%     16.635µs
+   shallow-water terms         44.4%    281.946µs
+   coriolis                    22.2%    140.850µs
+   boundary condition           0.3%      2.111µs
+   rk4 stage algebra           30.4%    192.814µs
 ```
 
-**Wind stress sampling: 71.0% → 2.5%. The shallow-water right-hand side is now
-the hot path it was always assumed to be, at 44.6%.**
+**Wind stress sampling: 71.0% → 2.6%. The shallow-water right-hand side is now
+the hot path it was always assumed to be, at 44.4%.** The two rows are not
+quite like for like, and the second reading below is why: 71.0% was a cost every
+step paid, while 2.6% is one sampling spread across the 24 steps the profiler
+timed. A longer window makes it smaller, which is the opposite of what a
+per-step share does.
 
 Two readings that say the cache did what it claims rather than moving work
 somewhere the table cannot see.
 
 **Every other phase costs what it cost.** At 0.5°: shallow-water terms
-281.1 µs → 286.9 µs, coriolis 137.4 µs → 142.9 µs, RK4 stage algebra
-187.6 µs → 195.7 µs — within 4% of the baseline, in a decomposition whose five
+281.1 µs → 281.9 µs, coriolis 137.4 µs → 140.9 µs, RK4 stage algebra
+187.6 µs → 192.8 µs — within 3% of the baseline, in a decomposition whose five
 shares sum to one by construction. The step got smaller because one phase left,
 not because the clock moved.
 
-**The 2.5% that is left is one sampling, amortised.** The profiler is rebuilt
+**The 2.6% that is left is one sampling, amortised.** The profiler is rebuilt
 after warm-up, so its 24 timed steps contain exactly one full sampling of the
-field. 15.946 µs × 24 = 382.7 µs, against 371.9 µs for one sampling measured at
-the baseline (1.4876 ms per step ÷ 4 stages). The 10.8 µs difference over 24
-steps is 0.45 µs per step, and the phase's own 8 clock reads per step cost
-0.39 µs at the 49 ns the example measures. The 1.0° grid agrees to within a
-microsecond per step. In a real run — the control scenario is 17 520 steps —
-that one sampling is 0.002% of the run, and the phase's residual is the branch
-that decides not to sample.
+field. 16.635 µs × 24 = 399 µs, against 372 µs for one sampling measured at the
+baseline (1.4876 ms per step ÷ 4 stages): the same number to within 7%, on a
+phase whose whole total is a few hundred microseconds. In a real run — the
+control scenario is 17 520 steps — that one sampling is 0.002% of the run, and
+what is left of the phase is the branch that decides not to sample.
 
 ### The sampled profile says the same thing
 
 The baseline was only stated as a conclusion because two instruments with
 different failure modes agreed on it, so the after is held to the same
 standard. `/usr/bin/sample` against
-`cargo run --profile profiling --example profile -- spin 30`, 15 s, 11 096
+`cargo run --profile profiling --example profile -- spin 30`, 15 s, 11 003
 in-loop samples, kept at
 [`docs/profiles/2026-09-05-m1-pro-320x100-cached.sample`](profiles/2026-09-05-m1-pro-320x100-cached.sample)
 beside the baseline's artefact. (`spin` now holds a `WindForcing` across its
@@ -397,41 +406,42 @@ Its summary by self time, demangled and truncated here:
 
 ```
 Sort by top of stack, same collapsed (when >= 5):
-    ShallowWaterRhs::evaluate                                     3261   29.4%
-    <OceanState as StateVector>::add_scaled                       2858   25.8%
-    CoriolisTerm::add_to_tendency                                 1053    9.5%
-    CGridOperators::face_y_to_face_x                               749    6.8%
-    CGridOperators::face_x_to_face_y                               709    6.4%
-    _platform_memmove  (in libsystem_platform.dylib)               641    5.8%
-    CGridOperators::ddx_center_to_face                             513    4.6%
-    CGridOperators::ddx_face_to_center                             466    4.2%
-    CGridOperators::ddy_center_to_face                             421    3.8%
-    CGridOperators::ddy_face_to_center                             414    3.7%
-    boundary::hold_walls_at_rest                                    11    0.1%
+    ShallowWaterRhs::evaluate                                     3241   29.5%
+    <OceanState as StateVector>::add_scaled                       2802   25.5%
+    CoriolisTerm::add_to_tendency                                 1135   10.3%
+    CGridOperators::face_y_to_face_x                               738    6.7%
+    CGridOperators::face_x_to_face_y                               646    5.9%
+    _platform_memmove  (in libsystem_platform.dylib)               603    5.5%
+    CGridOperators::ddx_center_to_face                             562    5.1%
+    CGridOperators::ddy_center_to_face                             455    4.1%
+    CGridOperators::ddy_face_to_center                             421    3.8%
+    CGridOperators::ddx_face_to_center                             388    3.5%
+    boundary::hold_walls_at_rest                                    10    0.1%
 ```
 
 **The wind is not in it at all.** `exp` was 24.1% of the baseline's samples,
 the two `stress` implementations 36.1% between them, the lazy-binding stub
 `DYLD-STUB$$exp` 4.5%, and the sampling loop inlined into the step closure
 7.0%. None of the five now reaches the summary's five-sample threshold, in a
-run of 48 672 steps that samples the field once.
+run of 48 000 steps that samples the field once.
 
 Folded into phases, and set beside the timed table — the timed shares
 renormalised over its four non-wind phases, because the spin's single sampling
-is spread over 48 672 steps where the profiler's is spread over 24, so the two
+is spread over 48 000 steps where the profiler's is spread over 24, so the two
 instruments cannot be compared on that row:
 
 | Phase | timed | sampled |
 |---|---|---|
-| shallow-water terms | 45.8% | 45.7% |
-| coriolis | 22.8% | 22.6% |
-| rk4 stage algebra | 31.2% | 31.5% |
-| boundary condition | 0.2% | 0.1% |
+| shallow-water terms | 45.6% | 46.1% |
+| coriolis | 22.8% | 22.9% |
+| rk4 stage algebra | 31.2% | 31.0% |
+| boundary condition | 0.3% | 0.1% |
 | wind stress sampling | (one sampling, amortised) | below the threshold |
 
-Within 0.3 of a point on every row, which is the agreement the baseline had.
+Within half a point on every row, from two instruments with different failure
+modes — which is the agreement the baseline was stated on.
 
-The spin itself reports 1 622 steps/s, against 464 alone and 445 under the
+The spin itself reports 1 599 steps/s, against 464 alone and 445 under the
 sampler at the baseline. As before, that is not the engine's speed — it is a
 laptop under a 30-second sustained load with a sampler walking its stacks for
 half of it — and the benchmark above is the figure to quote.
@@ -470,16 +480,16 @@ burst and composite forcings, and Epic 07's validations and
 
 The Amdahl arithmetic the baseline did for T-10.3 and T-10.4 has to be redone,
 because it was computed against a step that no longer exists. Against the
-643 µs step at 0.5°:
+634 µs step at 0.5°:
 
-- **T-10.3 (rayon) now attacks 44.6%, not 13.4%.** Parallelising the
+- **T-10.3 (rayon) now attacks 44.4%, not 13.4%.** Parallelising the
   shallow-water evaluator perfectly across this machine's 10 cores takes a step
-  from 643 µs to 385 µs — **1.67×**, against the 1.14× the same calculation gave
+  from 634 µs to 381 µs — **1.67×**, against the 1.14× the same calculation gave
   before. Both evaluators together give 2.5×. The ticket's own instruction not
   to measure itself only against `rhs_evaluation` stands, and matters more now
   that the whole-step figure has something to show.
 - **T-10.4 (`f32`) now attacks 97% of a step.** The two evaluators and the RK4
-  stage algebra are 97.2% of what is left, and the baseline's term table said
+  stage algebra are 97.0% of what is left, and the baseline's term table said
   all of it looks memory-bandwidth-bound — fourteen flat kernels, and an
   `add_scaled` that costs what a kernel costs. Halving the width of every field
   halves the traffic that argument says is being paid for.

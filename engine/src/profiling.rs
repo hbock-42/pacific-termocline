@@ -24,7 +24,10 @@
 //!   one by construction and no work can hide between them.
 //!   `tests/step_profile.rs` pins the profiled step to
 //!   [`Solver::step_forced_by`](crate::Solver::step_forced_by) bit for bit, so
-//!   what is being timed is the step a run actually takes.
+//!   what is being timed is the step a run actually takes. It holds its
+//!   forcing across steps, as [`run_scenario`](crate::run_scenario) does, so
+//!   the wind phase is charged what a run pays rather than what a solver
+//!   handed a fresh wind each call pays.
 //!
 //! - [`TermProfiler`] splits the two evaluator phases further, into the
 //!   fourteen [`RhsTerm`] array kernels the right-hand side and the Coriolis
@@ -88,7 +91,12 @@ use crate::state::OceanState;
 /// an optimisation ticket picks its target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StepPhase {
-    /// Re-sampling the wind stress onto the C-grid, once per RK4 stage.
+    /// Asking the forcing for the stress at the stage's instant, and sampling
+    /// it onto the C-grid when the field in hand is not already that field.
+    ///
+    /// Once per RK4 stage until T-10.5; since then, once per instant the
+    /// forcing has not already been asked about, which for the control
+    /// scenario is once per run (`docs/performance-notes.md`).
     WindStressSampling,
     /// [`ShallowWaterRhs::evaluate`]: pressure gradient, surface stress,
     /// Rayleigh damping and the continuity divergence.
