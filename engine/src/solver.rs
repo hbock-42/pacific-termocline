@@ -13,6 +13,12 @@
 //! ∂h/∂t =       −H·(∂u/∂x + ∂v/∂y)    − r·h
 //! ```
 //!
+//! Two ways in exist, and they differ only in how the forcing arrives.
+//! [`Solver::step`] takes a [`WindStressField`] already sampled onto the
+//! C-grid, which is what the Epic 02 term tests want; [`Solver::step_forced_by`]
+//! takes a [`WindStress`] and a [`Basin`] and re-samples it at each stage,
+//! which is what a scenario wants.
+//!
 //! The two halves stay separate types rather than merging into one evaluator:
 //! rotation is the only term that needs the basin's position on the
 //! beta-plane, and keeping it out of [`ShallowWaterRhs`] keeps the terms that
@@ -60,12 +66,13 @@
 
 use termocline_grid::Grid;
 
+use crate::basin::Basin;
 use crate::coriolis::{BetaPlane, CoriolisTerm};
+use crate::forcing::{WindStress, WindStressField};
 use crate::integrator::Rk4;
 use crate::params::PhysicalParams;
 use crate::shallow_water::ShallowWaterRhs;
 use crate::state::OceanState;
-use crate::wind::WindStress;
 use termocline_numerics::{
     check_timestep, CflError, Spacing, WaveSpeed, CFL_SAFETY_FACTOR, RK4_IMAGINARY_AXIS_LIMIT,
 };
@@ -154,6 +161,11 @@ pub struct Solver {
     coriolis: CoriolisTerm,
     /// The integrator and its stage buffers, sized for this basin.
     integrator: Rk4<OceanState>,
+    /// The surface stress of the current RK4 stage, re-sampled in place by
+    /// [`Solver::step_forced_by`]. Allocated here so that a run driven by a
+    /// [`WindStress`] allocates its forcing once rather than once per stage
+    /// (CODING_STANDARDS.md § Performance).
+    stage_stress: WindStressField,
 }
 
 impl Solver {
@@ -193,6 +205,7 @@ impl Solver {
             rhs: ShallowWaterRhs::new(grid, spacing, params),
             coriolis: CoriolisTerm::new(grid, spacing, plane),
             integrator: Rk4::new(&OceanState::at_rest(grid)),
+            stage_stress: WindStressField::calm(grid),
         })
     }
 
@@ -206,10 +219,11 @@ impl Solver {
     ///
     /// `wind_stress_at(t)` supplies the surface stress at a given time in
     /// seconds; it is called once per RK4 stage, at the tableau's nodes `t`,
-    /// `t + dt/2`, `t + dt/2` and `t + dt`. Epic 02 runs it as a constant stub
-    /// — `|_t| &stress` — but the argument is a function of time because
-    /// Epic 03's scenarios are, and a step that sampled the stress once would
-    /// integrate the wrong forcing.
+    /// `t + dt/2`, `t + dt/2` and `t + dt`. A steady scenario samples its
+    /// [`WindStress`](crate::WindStress) once and hands back the same field at
+    /// every stage — `|_t| &stress` — but the argument is a function of time
+    /// because the seasonal and burst scenarios of Epic 03 are, and a step
+    /// that sampled a varying stress once would integrate the wrong forcing.
     ///
     /// # Panics
     /// If `state` or a returned wind stress covers a different basin from the
@@ -218,7 +232,7 @@ impl Solver {
     /// § Correctness and failure).
     pub fn step<'w, W>(&mut self, state: &mut OceanState, t_s: f64, wind_stress_at: W)
     where
-        W: Fn(f64) -> &'w WindStress,
+        W: Fn(f64) -> &'w WindStressField,
     {
         // Destructured so the closure below can borrow the two evaluators while
         // the integrator is borrowed mutably: they are disjoint fields.
@@ -227,6 +241,7 @@ impl Solver {
             rhs,
             coriolis,
             integrator,
+            stage_stress: _,
         } = self;
         integrator.step(
             state,
@@ -236,6 +251,48 @@ impl Solver {
                 // Order matters: the shallow-water evaluator writes every point
                 // of the tendency, and the Coriolis term adds to what it wrote.
                 rhs.evaluate(now, wind_stress_at(stage_t_s), tendency);
+                coriolis.add_to_tendency(now, tendency);
+            },
+        );
+    }
+
+    /// Advance `state` from time `t_s` to `t_s + dt` under `wind`, in place.
+    ///
+    /// The form a scenario uses: it takes the [`WindStress`] itself rather
+    /// than a field already sampled from one, and re-samples it over `basin`
+    /// at each of RK4's four stage times. That is what makes the forcing a
+    /// *function of time* all the way through the integration — a steady
+    /// scenario gets the same field four times, a seasonal or burst scenario
+    /// gets the four the tableau's nodes actually ask for.
+    ///
+    /// Sampling writes into a buffer the solver owns, so a whole run allocates
+    /// its forcing exactly once (CODING_STANDARDS.md § Performance).
+    ///
+    /// # Panics
+    /// If `state` or `basin` covers a different grid from the one this solver
+    /// was built for. A shape mismatch means the calling code is wrong, which
+    /// is what panics are for (CODING_STANDARDS.md § Correctness and failure).
+    pub fn step_forced_by<W: WindStress + ?Sized>(
+        &mut self,
+        state: &mut OceanState,
+        t_s: f64,
+        basin: Basin,
+        wind: &W,
+    ) {
+        let Self {
+            dt_s,
+            rhs,
+            coriolis,
+            integrator,
+            stage_stress,
+        } = self;
+        integrator.step(
+            state,
+            t_s,
+            *dt_s,
+            &mut |now: &OceanState, stage_t_s: f64, tendency: &mut OceanState| {
+                stage_stress.sample(basin, wind, stage_t_s);
+                rhs.evaluate(now, stage_stress, tendency);
                 coriolis.add_to_tendency(now, tendency);
             },
         );
@@ -266,7 +323,7 @@ pub fn step<'w, W>(
     wind_stress_at: W,
 ) -> Result<OceanState, SolverError>
 where
-    W: Fn(f64) -> &'w WindStress,
+    W: Fn(f64) -> &'w WindStressField,
 {
     let mut solver = Solver::new(state.grid(), spacing, params, plane, dt_s)?;
     let mut advanced = state.clone();

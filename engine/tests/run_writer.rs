@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use engine::{
     BetaPlane, Grid, OceanState, OutputSchedule, OutputScheduleError, PhysicalParams,
-    RunWriteError, RunWriter, Solver, Spacing, WindStress,
+    RunWriteError, RunWriter, Solver, Spacing, WindStressField,
 };
 use termocline_format::{
     frame_encoding, BasinExtent, FormatError, Frame, GridSpec, RunHeader, Variable, FORMAT_VERSION,
@@ -161,7 +161,11 @@ fn write_short_run<W: std::io::Write>(
     let plane = BetaPlane::centered_on_equator(params(), spacing, grid);
     let mut solver =
         Solver::new(grid, spacing, params(), plane, dt_s).expect("half the CFL maximum is stable");
-    let wind = WindStress::uniform(grid, TRADE_WIND_STRESS_X_PA, TRADE_WIND_STRESS_Y_PA);
+    let wind = WindStressField::uniform_including_walls(
+        grid,
+        TRADE_WIND_STRESS_X_PA,
+        TRADE_WIND_STRESS_Y_PA,
+    );
 
     let mut state = initial_state(grid);
     let mut written = Vec::new();
@@ -528,7 +532,11 @@ fn a_state_that_does_not_fit_the_header_grid_is_rejected_by_name() {
     let mut writer = RunWriter::new(Vec::new(), Vec::new(), &header(spacing, NX + 1, NY))
         .expect("a vector never fails a write");
 
-    let wind = WindStress::uniform(grid, TRADE_WIND_STRESS_X_PA, TRADE_WIND_STRESS_Y_PA);
+    let wind = WindStressField::uniform_including_walls(
+        grid,
+        TRADE_WIND_STRESS_X_PA,
+        TRADE_WIND_STRESS_Y_PA,
+    );
     let error = writer
         .append(0.0, &OceanState::at_rest(grid), &wind)
         .expect_err("a 6-column state does not cover a 7-column basin");
@@ -557,7 +565,11 @@ fn appending_more_frames_than_the_header_promises_is_rejected() {
     let (grid, spacing) = basin(NX, NY);
     let mut writer = RunWriter::new(Vec::new(), Vec::new(), &header(spacing, NX, NY))
         .expect("a vector never fails a write");
-    let wind = WindStress::uniform(grid, TRADE_WIND_STRESS_X_PA, TRADE_WIND_STRESS_Y_PA);
+    let wind = WindStressField::uniform_including_walls(
+        grid,
+        TRADE_WIND_STRESS_X_PA,
+        TRADE_WIND_STRESS_Y_PA,
+    );
     let state = OceanState::at_rest(grid);
 
     for _ in 0..EXPECTED_FRAMES {
@@ -584,7 +596,11 @@ fn finishing_a_run_short_of_its_frame_count_is_rejected() {
     let (grid, spacing) = basin(NX, NY);
     let mut writer = RunWriter::new(Vec::new(), Vec::new(), &header(spacing, NX, NY))
         .expect("a vector never fails a write");
-    let wind = WindStress::uniform(grid, TRADE_WIND_STRESS_X_PA, TRADE_WIND_STRESS_Y_PA);
+    let wind = WindStressField::uniform_including_walls(
+        grid,
+        TRADE_WIND_STRESS_X_PA,
+        TRADE_WIND_STRESS_Y_PA,
+    );
     writer
         .append(0.0, &OceanState::at_rest(grid), &wind)
         .expect("the header promised four frames");

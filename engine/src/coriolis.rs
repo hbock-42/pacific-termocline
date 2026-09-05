@@ -125,14 +125,12 @@ impl BetaPlane {
     /// Meridional position of the row `j` of a field at `staggering`, in
     /// metres north of the equator.
     ///
-    /// The half-cell offset that separates a cell-center row from a
-    /// north/south-face row comes from [`Staggering::offset_in_cells`] rather
-    /// than from a literal here, per CODING_STANDARDS.md § Scope guards: the
-    /// grid knows about staggering, the physics does not.
+    /// Delegated to the `basin` module, which owns the index-to-metres
+    /// arithmetic, so that this plane and the [`Basin`](crate::Basin) a
+    /// forcing is sampled over cannot disagree about which row is the equator.
     #[must_use]
     pub fn y_of_row_m(self, staggering: Staggering, j: usize) -> f64 {
-        let (_, offset_in_cells) = staggering.offset_in_cells();
-        self.southern_edge_y_m + (j as f64 + offset_in_cells) * self.dy_m
+        crate::basin::row_position_m(self.southern_edge_y_m, self.dy_m, staggering, j)
     }
 
     /// The largest `|f|` any row of `grid` carries, in s⁻¹.

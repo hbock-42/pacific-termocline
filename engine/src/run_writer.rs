@@ -65,9 +65,9 @@ use termocline_format::{
     HEADER_FILE_NAME,
 };
 
+use crate::forcing::WindStressField;
 use crate::params::PhysicalParams;
 use crate::state::OceanState;
-use crate::wind::WindStress;
 
 /// The engine's physical parameters as the format records them.
 ///
@@ -367,7 +367,7 @@ impl<W: Write> RunWriter<W> {
         &mut self,
         t_s: f64,
         state: &OceanState,
-        wind_stress: &WindStress,
+        wind_stress: &WindStressField,
     ) -> Result<(), RunWriteError> {
         if self.written == self.promised {
             return Err(RunWriteError::TooManyFrames {

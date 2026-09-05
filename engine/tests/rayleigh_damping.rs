@@ -39,7 +39,7 @@ use std::f64::consts::PI;
 
 use engine::{
     check_timestep, shallow_water_rhs, Field2D, Grid, OceanState, PhysicalParams, Rk4,
-    ShallowWaterRhs, Spacing, Staggering, WaveSpeed, WindStress, H_STAGGERING, U_STAGGERING,
+    ShallowWaterRhs, Spacing, Staggering, WaveSpeed, WindStressField, H_STAGGERING, U_STAGGERING,
     V_STAGGERING,
 };
 
@@ -159,7 +159,11 @@ fn damping_adds_exactly_minus_r_times_the_state() {
     let (grid, spacing) = basin(SMALL_BASIN_CELLS);
     let damping_per_s = STRONG_DAMPING_PER_S;
     let state = lopsided_state(grid, spacing);
-    let wind = WindStress::uniform(grid, TRADE_WIND_STRESS_X_PA, TRADE_WIND_STRESS_Y_PA);
+    let wind = WindStressField::uniform_including_walls(
+        grid,
+        TRADE_WIND_STRESS_X_PA,
+        TRADE_WIND_STRESS_Y_PA,
+    );
 
     let undamped = shallow_water_rhs(&state, pacific_params(0.0), spacing, &wind);
     let damped = shallow_water_rhs(&state, pacific_params(damping_per_s), spacing, &wind);
@@ -512,7 +516,7 @@ fn for_each_step(
     mut observe: impl FnMut(usize, &OceanState),
 ) {
     let mut evaluator = ShallowWaterRhs::new(grid, spacing, params);
-    let calm = WindStress::calm(grid);
+    let calm = WindStressField::calm(grid);
     let mut integrator = Rk4::new(state);
     for step in 0..steps {
         let t_s = step as f64 * dt_s;
