@@ -11,6 +11,8 @@ use std::fmt;
 
 use termocline_format::{Frame, RunHeader, RunReadError, RunReader};
 
+use crate::DivergingScale;
+
 /// Seconds in a day, for reporting a run's model time in the unit its output
 /// cadence is chosen in (`steady-trades.toml` writes a frame a day).
 pub(crate) const SECONDS_PER_DAY: f64 = 86_400.0;
@@ -65,6 +67,9 @@ pub struct LoadedRun {
     header_bytes: Vec<u8>,
     /// The run's encoded frames, undecoded.
     frames: Vec<u8>,
+    /// A colour scale covering every frame of the run, built on the pass that
+    /// counts them.
+    scale: DivergingScale,
 }
 
 impl LoadedRun {
@@ -99,15 +104,29 @@ impl LoadedRun {
         // browser tab has no second copy to spare (ADR-0006).
         let mut reader = RunReader::new(header_source.as_slice(), frames.as_slice())?;
         let header = reader.header().clone();
+        let mut scale = DivergingScale::symmetric_over(&[]);
         for frame in reader.by_ref() {
-            frame?;
+            scale = scale.widened(DivergingScale::symmetric_over(frame?.h()));
         }
         Ok(Self {
             source: source.into(),
             header,
             header_bytes: header_source,
             frames,
+            scale,
         })
+    }
+
+    /// A colour scale for the run's thermocline depth anomaly, reaching as far
+    /// either side of zero as the largest anomaly anywhere in the run.
+    ///
+    /// One scale for the whole run rather than one per frame: the same colour
+    /// then means the same anomaly wherever it is seen, so a tilt that
+    /// collapses over a run is seen to collapse instead of being renormalized
+    /// back to full saturation frame by frame.
+    #[must_use]
+    pub const fn anomaly_scale(&self) -> DivergingScale {
+        self.scale
     }
 
     /// Where the run came from: a directory, a pair of dropped files, or a URL.
@@ -120,14 +139,6 @@ impl LoadedRun {
     #[must_use]
     pub const fn header(&self) -> &RunHeader {
         &self.header
-    }
-
-    /// The run's encoded frames, still encoded. [`LoadedRun::frame`] is how
-    /// to get one back; this is the whole run, for a caller that wants to hand
-    /// the bytes on.
-    #[must_use]
-    pub fn frame_bytes(&self) -> &[u8] {
-        &self.frames
     }
 
     /// Frame number `index`, counting from zero, or `None` past the end of the

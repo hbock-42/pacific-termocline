@@ -12,9 +12,12 @@
 //!
 //! The tilt is T-07.4's measured equilibrium of `engine/scenarios/steady-trades.toml`:
 //! `h` = +38.2 m at the western wall and -28.2 m at the eastern, a 60.1 m
-//! west-to-east drop. `CONTEXT.md`, *Thermocline tilt*, is what makes that the
-//! right sign: sustained easterly stress piles the warm layer up in the west,
-//! and a positive `h` is a deeper-than-average thermocline.
+//! west-to-east drop. It is the *input* these tests draw, named by the
+//! acceptance criterion itself ("matching T-07.4's known result"), not an
+//! expected output read back off this code; what is asserted about it — the
+//! colours — comes from ColorBrewer. `CONTEXT.md`, *Thermocline tilt*, is what
+//! makes the sign right: sustained easterly stress piles the warm layer up in
+//! the west, and a positive `h` is a deeper-than-average thermocline.
 //!
 //! The colours are ColorBrewer's 11-class `RdBu` diverging scheme
 //! (Brewer, Harrower & Pennsylvania State University, <https://colorbrewer2.org>),
@@ -128,7 +131,8 @@ fn run_of_one_frame(header: &RunHeader, h_m: Vec<f64>) -> LoadedRun {
 fn heatmap_of(header: &RunHeader, h_m: Vec<f64>) -> Heatmap {
     let run = run_of_one_frame(header, h_m);
     let frame = run.frame(0).expect("a one-frame run has a frame 0");
-    Heatmap::of_frame(run.header().grid, &frame).expect("the frame fits its own grid")
+    Heatmap::of_frame(run.header().grid, &frame, run.anomaly_scale())
+        .expect("the frame fits its own grid")
 }
 
 #[test]
@@ -172,8 +176,11 @@ fn every_column_is_drawn_on_the_side_of_the_scale_its_anomaly_is_on() {
     let heatmap = heatmap_of(&header, field.clone());
 
     let row = heatmap.height() / 2;
+    // Row `row` of the image is row `height - 1 - row` of the field: the map
+    // is drawn north up and the field is stored south first.
+    let field_row = &field[(heatmap.height() - 1 - row) * heatmap.width()..];
     let resolvable_m = heatmap.scale().half_range_m() * RESOLVABLE_FRACTION;
-    for (x, &anomaly_m) in field.iter().take(heatmap.width()).enumerate() {
+    for (x, &anomaly_m) in field_row.iter().take(heatmap.width()).enumerate() {
         // The handful of columns either side of the zero contour are neutral
         // because they are neutral, not because the map is wrong.
         if anomaly_m.abs() < resolvable_m {
@@ -340,4 +347,58 @@ fn the_frame_drawn_is_the_frame_asked_for() {
         assert_eq!(frame.t_s(), expected * common::FRAME_INTERVAL_S);
     }
     assert!(run.frame(3).is_none(), "a fourth frame was never written");
+}
+
+#[test]
+fn one_scale_covers_the_whole_run_so_a_decaying_anomaly_is_seen_to_decay() {
+    // Rescaling per frame would renormalize every frame back to full
+    // saturation, and a tilt collapsing into an El Niño — the thing this
+    // visualizer exists to show — would look like a tilt that never moved.
+    let header = steady_trades_header(2);
+    let strong = vec![WESTERN_WALL_H_M; NX * NY];
+    let weak = vec![WESTERN_WALL_H_M / 4.0; NX * NY];
+    let bytes = RunBytes {
+        header: serde_json::to_vec(&header).expect("a header serializes"),
+        frames: encoded_frames_with_h(&header, 2, |index| {
+            if index == 0 {
+                strong.clone()
+            } else {
+                weak.clone()
+            }
+        }),
+    };
+    let run = LoadedRun::from_bytes("run", bytes).expect("the run loads");
+    assert_eq!(run.anomaly_scale().half_range_m(), WESTERN_WALL_H_M);
+
+    let map_of = |index| {
+        let frame = run.frame(index).expect("the run has two frames");
+        Heatmap::of_frame(run.header().grid, &frame, run.anomaly_scale())
+            .expect("the frame fits its own grid")
+    };
+    assert_close(
+        map_of(0).pixel(0, 0).expect("the corner is drawn"),
+        DEEPEST,
+        "the strong frame saturates the scale",
+    );
+    // A quarter of the way up the warm half of an eleven-class ramp is class
+    // 6.25 — well short of the warm end, which is the whole point.
+    let quarter = map_of(1).pixel(0, 0).expect("the corner is drawn");
+    assert!(
+        is_warm(quarter) && quarter != DEEPEST,
+        "a quarter-strength anomaly must read as weaker, not as saturated: {quarter:?}"
+    );
+}
+
+#[test]
+fn the_colour_bar_is_the_scale_it_labels() {
+    // The bar is what tells a reader which colour means what. Drawn from
+    // anything but the same scale it would be a legend for another map.
+    let scale = DivergingScale::symmetric_over(&[-WESTERN_WALL_H_M, WESTERN_WALL_H_M]);
+    let samples = RD_BU_11.len();
+    let bar = scale.bar_rgb(samples);
+    assert_eq!(bar.len(), samples * 3);
+    for (class, expected) in RD_BU_11.iter().enumerate() {
+        let sample = [bar[class * 3], bar[class * 3 + 1], bar[class * 3 + 2]];
+        assert_close(sample, *expected, &format!("bar sample {class}"));
+    }
 }

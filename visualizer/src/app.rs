@@ -308,18 +308,26 @@ const COLOR_BAR_SAMPLES: usize = 256;
 struct BasinMap {
     /// The frame the reader has chosen, by index into the run.
     index: u64,
-    /// What was last uploaded to the GPU, if anything.
-    drawn: Option<DrawnFrame>,
+    /// The last attempt at drawing a frame, if there has been one.
+    attempt: Option<Attempt>,
 }
 
-/// A frame already colour-mapped and uploaded.
+/// What came of trying to draw one frame.
 ///
 /// Kept because reaching a frame decodes every frame before it
 /// ([`LoadedRun::frame`]), and a panel repaints many times per second while
-/// the chosen frame does not change.
-struct DrawnFrame {
-    /// Which frame this is a map of.
+/// the chosen frame does not change. The failure is kept for the same reason:
+/// retrying it every repaint would fail every repaint.
+struct Attempt {
+    /// The frame this was an attempt at.
     index: u64,
+    /// The map of it, or what refused to build one, in the words of whatever
+    /// refused it.
+    outcome: Result<DrawnFrame, String>,
+}
+
+/// A frame already colour-mapped and uploaded.
+struct DrawnFrame {
     /// Its model time, in seconds since the start of the run.
     t_s: f64,
     /// The scale its colours came from, for the bar beside it.
@@ -334,7 +342,7 @@ impl BasinMap {
     /// Forget the run this was a map of.
     fn forget(&mut self) {
         self.index = 0;
-        self.drawn = None;
+        self.attempt = None;
     }
 
     /// Draw the frame chooser and the map of the chosen frame.
@@ -350,18 +358,31 @@ impl BasinMap {
         }
 
         if self
-            .drawn
+            .attempt
             .as_ref()
-            .is_none_or(|drawn| drawn.index != self.index)
+            .is_none_or(|last| last.index != self.index)
         {
-            self.drawn = self.build(ui, run);
+            self.attempt = Some(Attempt {
+                index: self.index,
+                outcome: self.build(ui, run),
+            });
         }
-        let Some(drawn) = &self.drawn else {
-            ui.label(
-                RichText::new("This frame does not fit the grid its header describes.")
-                    .color(Color32::LIGHT_RED),
-            );
-            return;
+        let outcome = &self
+            .attempt
+            .as_ref()
+            .expect("an attempt was just made")
+            .outcome;
+        let drawn = match outcome {
+            Ok(drawn) => drawn,
+            Err(message) => {
+                ui.label(
+                    RichText::new(format!("Frame {} could not be drawn", self.index))
+                        .color(Color32::LIGHT_RED)
+                        .strong(),
+                );
+                ui.label(message);
+                return;
+            }
         };
 
         ui.label(format!(
@@ -378,16 +399,18 @@ impl BasinMap {
         draw_color_bar(ui, drawn);
     }
 
-    /// Colour-map the chosen frame and upload it, or `None` if the frame does
-    /// not fit the grid.
-    fn build(&self, ui: &egui::Ui, run: &LoadedRun) -> Option<DrawnFrame> {
-        let frame = run.frame(self.index)?;
-        let heatmap = Heatmap::of_frame(run.header().grid, &frame).ok()?;
+    /// Colour-map the chosen frame and upload it, or say what stopped that.
+    fn build(&self, ui: &egui::Ui, run: &LoadedRun) -> Result<DrawnFrame, String> {
+        let scale = run.anomaly_scale();
+        let frame = run
+            .frame(self.index)
+            .ok_or_else(|| format!("this run holds no frame {}", self.index))?;
+        let heatmap = Heatmap::of_frame(run.header().grid, &frame, scale)
+            .map_err(|error| error.to_string())?;
         let image = egui::ColorImage::from_rgb([heatmap.width(), heatmap.height()], heatmap.rgb());
-        Some(DrawnFrame {
-            index: self.index,
+        Ok(DrawnFrame {
             t_s: frame.t_s(),
-            scale: *heatmap.scale(),
+            scale,
             // Nearest, not linear: a texel is a cell of the model, and
             // smoothing between them would draw an anomaly the run never
             // produced.
@@ -396,23 +419,14 @@ impl BasinMap {
                 .load_texture("basin-map", image, egui::TextureOptions::NEAREST),
             bar: ui.ctx().load_texture(
                 "basin-map-scale",
-                color_bar_image(*heatmap.scale()),
+                egui::ColorImage::from_rgb(
+                    [COLOR_BAR_SAMPLES, 1],
+                    &scale.bar_rgb(COLOR_BAR_SAMPLES),
+                ),
                 egui::TextureOptions::LINEAR,
             ),
         })
     }
-}
-
-/// The colour bar of `scale`, one row of samples from its shallow end to its
-/// deep one.
-fn color_bar_image(scale: DivergingScale) -> egui::ColorImage {
-    let mut rgb = Vec::with_capacity(COLOR_BAR_SAMPLES * 3);
-    for sample in 0..COLOR_BAR_SAMPLES {
-        #[allow(clippy::cast_precision_loss)]
-        let fraction = sample as f64 / (COLOR_BAR_SAMPLES - 1) as f64;
-        rgb.extend_from_slice(&scale.color(scale.half_range_m() * (2.0 * fraction - 1.0)));
-    }
-    egui::ColorImage::from_rgb([COLOR_BAR_SAMPLES, 1], &rgb)
 }
 
 /// Draw the colour bar and the anomalies its ends stand for.
@@ -423,13 +437,22 @@ fn draw_color_bar(ui: &mut egui::Ui, drawn: &DrawnFrame) {
         egui::vec2(width, COLOR_BAR_HEIGHT),
     )));
     let half_range_m = drawn.scale.half_range_m();
-    ui.horizontal(|ui| {
-        ui.label(format!("{:+.1} m (shallower)", -half_range_m));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    // Negating zero would label a run at rest "-0.0 m".
+    let shallow_m = if half_range_m == 0.0 {
+        0.0
+    } else {
+        -half_range_m
+    };
+    // Three equal columns, so the middle label sits under the middle of the
+    // bar — where the neutral colour is — rather than wherever the two end
+    // labels happen to leave room.
+    ui.columns(3, |columns| {
+        columns[0].label(format!("{shallow_m:+.1} m (shallower)"));
+        columns[1].with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+            ui.label("0 m")
+        });
+        columns[2].with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(format!("{half_range_m:+.1} m (deeper)"));
-            ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                ui.label("0 m");
-            });
         });
     });
 }

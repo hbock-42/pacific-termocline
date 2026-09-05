@@ -17,6 +17,10 @@
 //! equally far — rather than a sequential ramp over the frame's min and max,
 //! which would put the neutral colour wherever the data happened to start.
 //!
+//! The half-range is the run's, not the frame's, so the same colour means the
+//! same anomaly in every frame of a run and a decaying anomaly is seen to
+//! decay.
+//!
 //! The colours are ColorBrewer's 11-class `RdBu`, reversed. Three reasons for
 //! that scheme in particular:
 //!
@@ -65,6 +69,9 @@ const RD_BU_RAMP: [[u8; 3]; 11] = [
 /// is exactly what the neutral middle of the ramp would say.
 const NO_VALUE: [u8; 3] = [0, 0, 0];
 
+/// Channels in one colour: red, green and blue.
+const CHANNELS: usize = 3;
+
 /// A diverging colour scale for a signed field, pinned neutral at zero.
 ///
 /// The scale is stated in the field's own unit — metres of thermocline depth
@@ -78,6 +85,17 @@ pub struct DivergingScale {
 }
 
 impl DivergingScale {
+    /// The scale that covers both this one and `other`.
+    ///
+    /// How a run-wide scale is built out of its frames: a frame at a time,
+    /// while the frames are being walked for other reasons anyway.
+    #[must_use]
+    pub fn widened(self, other: Self) -> Self {
+        Self {
+            half_range_m: self.half_range_m.max(other.half_range_m),
+        }
+    }
+
     /// The scale that just covers `values_m`, symmetrically about zero.
     ///
     /// The half-range is the largest magnitude among the finite values, so no
@@ -97,6 +115,25 @@ impl DivergingScale {
     #[must_use]
     pub const fn half_range_m(&self) -> f64 {
         self.half_range_m
+    }
+
+    /// The scale itself, as `samples` RGB triples running from its shallow
+    /// end to its deep one: the colour bar that says what a map's colours
+    /// mean.
+    ///
+    /// Here rather than in the shell so that every colour the visualizer draws
+    /// comes from one place, and so the bar can be checked without a GPU. One
+    /// sample is the neutral middle, which is all a bar that narrow could
+    /// honestly show.
+    #[must_use]
+    pub fn bar_rgb(&self, samples: usize) -> Vec<u8> {
+        let mut rgb = Vec::with_capacity(samples * CHANNELS);
+        for sample in 0..samples {
+            #[allow(clippy::cast_precision_loss)]
+            let fraction = sample as f64 / (samples.saturating_sub(1).max(1)) as f64;
+            rgb.extend_from_slice(&self.color(self.half_range_m * (2.0 * fraction - 1.0)));
+        }
+        rgb
     }
 
     /// The colour `value_m` is drawn in.
@@ -163,22 +200,26 @@ pub struct Heatmap {
     scale: DivergingScale,
 }
 
-/// Channels in one pixel of [`Heatmap::rgb`].
-const CHANNELS: usize = 3;
-
 impl Heatmap {
-    /// The map of `frame`'s thermocline depth anomaly over `grid`.
+    /// The map of `frame`'s thermocline depth anomaly over `grid`, on `scale`.
+    ///
+    /// The scale is the caller's because it belongs to the run rather than to
+    /// this frame: [`crate::LoadedRun::anomaly_scale`] covers every frame, so
+    /// a colour means the same anomaly wherever in the run it is seen.
     ///
     /// # Errors
     /// [`FormatError::FieldShape`] if `frame` does not fit `grid` — the frame
     /// of one run against the header of another.
-    pub fn of_frame(grid: GridSpec, frame: &Frame) -> Result<Self, FormatError> {
+    pub fn of_frame(
+        grid: GridSpec,
+        frame: &Frame,
+        scale: DivergingScale,
+    ) -> Result<Self, FormatError> {
         frame.validate(&grid)?;
         let (width, height) = grid
             .grid()
             .field_shape(Variable::ThermoclineDepthAnomaly.staggering());
         let h_m = frame.h();
-        let scale = DivergingScale::symmetric_over(h_m);
         let mut rgb = Vec::with_capacity(width * height * CHANNELS);
         for row in 0..height {
             // Row 0 of the image is the northernmost, which is the last row of
