@@ -363,7 +363,8 @@ impl fmt::Display for BasinBoundsError {
             } => write!(
                 f,
                 "northern_latitude_deg is {northern_latitude_deg}, which is not north of \
-                 southern_latitude_deg {southern_latitude_deg}"
+                 southern_latitude_deg {southern_latitude_deg}; swap the two, or move \
+                 northern_latitude_deg north of {southern_latitude_deg}"
             ),
             Self::ResolutionNotPositive { value_deg } => write!(
                 f,
@@ -377,7 +378,8 @@ impl fmt::Display for BasinBoundsError {
             } => write!(
                 f,
                 "the basin spans {span_deg} degrees of {} in cells of resolution_deg \
-                 {resolution_deg}, which is {cells} cells: more than can be indexed",
+                 {resolution_deg}, which is {cells} cells: more than can be indexed; coarsen \
+                 resolution_deg",
                 degrees_of(*axis)
             ),
             Self::AxisShorterThanACell {
@@ -387,7 +389,8 @@ impl fmt::Display for BasinBoundsError {
             } => write!(
                 f,
                 "the basin spans {span_deg} degrees of {}, which is less than one cell of \
-                 resolution_deg {resolution_deg}",
+                 resolution_deg {resolution_deg}; widen the basin along that axis, or lower \
+                 resolution_deg below the span",
                 degrees_of(*axis)
             ),
             Self::SpanNotAWholeNumberOfCells {
@@ -397,7 +400,8 @@ impl fmt::Display for BasinBoundsError {
             } => write!(
                 f,
                 "the basin spans {span_deg} degrees of {}, which is not a whole number of cells \
-                 of resolution_deg {resolution_deg}",
+                 of resolution_deg {resolution_deg}; set a resolution_deg that divides \
+                 {span_deg}, or move a boundary so that this one does",
                 degrees_of(*axis)
             ),
         }

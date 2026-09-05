@@ -55,7 +55,7 @@ pub use params::{
     SEAWATER_REFERENCE_DENSITY_KG_PER_M3,
 };
 pub use shallow_water::{shallow_water_rhs, ShallowWaterRhs};
-pub use solver::{step, Solver, SolverError};
+pub use solver::{check_rotation_timestep, step, RotationLimitError, Solver, SolverError};
 pub use state::OceanState;
 
 /// Re-exported so a scenario, the forcing and the rotation all name one

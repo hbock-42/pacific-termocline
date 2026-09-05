@@ -123,6 +123,19 @@ pub enum OutputScheduleError {
     /// The output cadence was zero steps, which is not a cadence: it would
     /// ask for a frame between every pair of frames, without end.
     CadenceIsZero,
+    /// The output cadence was longer than the run, so the run would take every
+    /// one of its steps and save none of them: the only frame written would be
+    /// the initial state the run started from.
+    ///
+    /// A run of no steps at all is not this — it is the initial state alone,
+    /// which is what it asked for — so the check applies only to a run that
+    /// actually steps.
+    CadenceLongerThanRun {
+        /// Steps the run takes from its initial state.
+        total_steps: u64,
+        /// Steps between saved frames, as asked for.
+        every_n_steps: u64,
+    },
 }
 
 impl fmt::Display for OutputScheduleError {
@@ -134,6 +147,15 @@ impl fmt::Display for OutputScheduleError {
             Self::CadenceIsZero => write!(
                 f,
                 "every_n_steps is 0; a run writes a frame every N steps, and N must be at least 1"
+            ),
+            Self::CadenceLongerThanRun {
+                total_steps,
+                every_n_steps,
+            } => write!(
+                f,
+                "every_n_steps is {every_n_steps} but the run is only {total_steps} steps long, \
+                 so the run would save its initial state and none of the steps it took; set \
+                 every_n_steps to at most {total_steps}, or lengthen the run"
             ),
         }
     }
@@ -172,8 +194,10 @@ impl OutputSchedule {
     ///
     /// # Errors
     /// [`OutputScheduleError::TimestepNotPositive`] if `dt_s` is not a finite,
-    /// positive duration, and [`OutputScheduleError::CadenceIsZero`] if
-    /// `every_n_steps` is zero.
+    /// positive duration, [`OutputScheduleError::CadenceIsZero`] if
+    /// `every_n_steps` is zero, and
+    /// [`OutputScheduleError::CadenceLongerThanRun`] if a run that steps at
+    /// all would save none of the steps it took.
     pub fn new(
         dt_s: f64,
         total_steps: u64,
@@ -184,6 +208,12 @@ impl OutputSchedule {
         }
         if every_n_steps == 0 {
             return Err(OutputScheduleError::CadenceIsZero);
+        }
+        if total_steps > 0 && every_n_steps > total_steps {
+            return Err(OutputScheduleError::CadenceLongerThanRun {
+                total_steps,
+                every_n_steps,
+            });
         }
         Ok(Self {
             dt_s,

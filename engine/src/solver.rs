@@ -66,10 +66,15 @@
 //! reaching far from the equator it is the other way round: at 625 km cells
 //! over ±2500 km the CFL bound admits a 32-hour step while the inertial
 //! period at the northern wall is 30 hours, and a run at that step amplifies
-//! by a factor of 70 per step at the wall. This is the first module that
-//! sees both terms at once, so it is the first that can check both, and it
-//! refuses a timestep either bound rejects. [ADR-0007] records that decision
-//! and the alternatives weighed against it.
+//! by a factor of 70 per step at the wall. This is the module that owns the
+//! rotation half of the pair — [`check_rotation_timestep`] — and
+//! [`Solver::new`] refuses a timestep either bound rejects. [ADR-0007] records
+//! that decision and the alternatives weighed against it.
+//!
+//! The check is a free function beside the constructor rather than private to
+//! it because the scenario loader runs it too, so that both bounds on `dt_s`
+//! are cleared when a config is read rather than one of them arriving after
+//! the file has otherwise been accepted (T-06.3).
 //!
 //! [ADR-0003]: ../../docs/planning/adr/0003-numerical-scheme.md
 //! [ADR-0007]: ../../docs/planning/adr/0007-rotation-timestep-bound.md
@@ -101,46 +106,106 @@ pub enum SolverError {
     /// The timestep was rejected by the gravity-wave CFL bound of T-01.3.
     Cfl(CflError),
     /// The timestep was longer than the rotation of the beta-plane allows.
-    ///
-    /// The run is refused rather than quietly shortened, per
-    /// CODING_STANDARDS.md § *No silent clamping*.
-    TimestepExceedsRotationLimit {
-        /// The timestep asked for, in seconds.
-        requested_s: f64,
-        /// The largest timestep this basin's rotation allows, in seconds.
-        max_stable_s: f64,
-        /// The largest `|f| = |β·y|` in the basin, in s⁻¹ — the rotation rate
-        /// the bound is derived from.
-        largest_coriolis_per_s: f64,
-    },
+    TimestepExceedsRotationLimit(RotationLimitError),
 }
 
 impl fmt::Display for SolverError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Cfl(error) => error.fmt(f),
-            Self::TimestepExceedsRotationLimit {
-                requested_s,
-                max_stable_s,
-                largest_coriolis_per_s,
-            } => write!(
-                f,
-                "dt is {requested_s} s, but the Coriolis parameter reaches \
-                 {largest_coriolis_per_s} s⁻¹ at this basin's meridional boundary, whose \
-                 inertial oscillation RK4 can only follow up to {max_stable_s} s; the run would \
-                 go unstable there. Set dt to at most {max_stable_s} s, or bring the basin's \
-                 boundaries closer to the equator"
-            ),
+            Self::TimestepExceedsRotationLimit(error) => error.fmt(f),
         }
     }
 }
 
-impl std::error::Error for SolverError {}
+impl std::error::Error for SolverError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Cfl(error) => Some(error),
+            Self::TimestepExceedsRotationLimit(error) => Some(error),
+        }
+    }
+}
 
 impl From<CflError> for SolverError {
     fn from(error: CflError) -> Self {
         Self::Cfl(error)
     }
+}
+
+impl From<RotationLimitError> for SolverError {
+    fn from(error: RotationLimitError) -> Self {
+        Self::TimestepExceedsRotationLimit(error)
+    }
+}
+
+/// A timestep longer than the rotation of the beta-plane allows (ADR-0007).
+///
+/// The run is refused rather than quietly shortened, per CODING_STANDARDS.md
+/// § *No silent clamping*, and the message names both the value asked for and
+/// the largest one this basin admits.
+///
+/// It is a type of its own rather than a variant of [`SolverError`] because
+/// two callers refuse on it: the scenario loader, which checks both bounds on
+/// `dt_s` up front so that a file the engine accepts is a file it can run
+/// (T-06.3), and [`Solver::new`], which is a public constructor and so checks
+/// its own input whoever calls it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RotationLimitError {
+    /// The timestep asked for, in seconds.
+    pub requested_s: f64,
+    /// The largest timestep this basin's rotation allows, in seconds.
+    pub max_stable_s: f64,
+    /// The largest `|f| = |β·y|` in the basin, in s⁻¹ — the rotation rate the
+    /// bound is derived from.
+    pub largest_coriolis_per_s: f64,
+}
+
+impl fmt::Display for RotationLimitError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self {
+            requested_s,
+            max_stable_s,
+            largest_coriolis_per_s,
+        } = self;
+        write!(
+            f,
+            "dt is {requested_s} s, but the Coriolis parameter reaches \
+             {largest_coriolis_per_s} s⁻¹ at this basin's meridional boundary, whose inertial \
+             oscillation RK4 can only follow up to {max_stable_s} s; the run would go unstable \
+             there. Set dt to at most {max_stable_s} s, or bring the basin's boundaries closer \
+             to the equator"
+        )
+    }
+}
+
+impl std::error::Error for RotationLimitError {}
+
+/// Refuse `dt_s` if it is longer than the rotation of `plane` over `grid`
+/// allows (ADR-0007).
+///
+/// The gravity-wave CFL bound is the other half of the pair and lives in
+/// `termocline-numerics`; this one is the engine's, because it is the basin's
+/// position on the beta-plane that sets it.
+///
+/// # Errors
+/// [`RotationLimitError`], naming the timestep asked for, the largest one this
+/// basin allows, and the `|f|` the bound came from.
+pub fn check_rotation_timestep(
+    dt_s: f64,
+    grid: Grid,
+    plane: BetaPlane,
+) -> Result<(), RotationLimitError> {
+    let largest_coriolis_per_s = plane.largest_coriolis_magnitude_per_s(grid);
+    let max_stable_s = max_stable_dt_for_rotation(largest_coriolis_per_s);
+    if dt_s > max_stable_s {
+        return Err(RotationLimitError {
+            requested_s: dt_s,
+            max_stable_s,
+            largest_coriolis_per_s,
+        });
+    }
+    Ok(())
 }
 
 /// The longest timestep, in seconds, at which RK4 stays stable on an
@@ -201,16 +266,7 @@ impl Solver {
         let wave_speed = WaveSpeed::new(params.kelvin_wave_speed_m_per_s())
             .expect("physical parameters are validated positive, so `√(g'·H)` is too");
         check_timestep(dt_s, spacing, wave_speed)?;
-
-        let largest_coriolis_per_s = plane.largest_coriolis_magnitude_per_s(grid);
-        let max_stable_s = max_stable_dt_for_rotation(largest_coriolis_per_s);
-        if dt_s > max_stable_s {
-            return Err(SolverError::TimestepExceedsRotationLimit {
-                requested_s: dt_s,
-                max_stable_s,
-                largest_coriolis_per_s,
-            });
-        }
+        check_rotation_timestep(dt_s, grid, plane)?;
 
         Ok(Self {
             dt_s,
