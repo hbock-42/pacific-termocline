@@ -668,7 +668,7 @@ fn draw_cross_section(ui: &mut egui::Ui, section: &CrossSection, map: egui::Rect
         egui::pos2(map.right(), row.bottom()),
     );
     let painter = ui.painter().with_clip_rect(chart);
-    let axis = egui::Stroke::new(1.0, CROSS_SECTION_AXIS_COLOR);
+    let axis = egui::Stroke::new(1.0_f32, CROSS_SECTION_AXIS_COLOR);
     painter.rect_stroke(chart, 0.0, axis, egui::StrokeKind::Inside);
     // The zero line, at the middle of a scale that is symmetric about zero: it
     // is where the thermocline sits at its mean depth, and where the tilt
