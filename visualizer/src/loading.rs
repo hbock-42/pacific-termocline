@@ -10,10 +10,15 @@ use std::sync::mpsc::{Receiver, Sender};
 
 use termocline_format::{FRAME_FILE_NAME, HEADER_FILE_NAME};
 
-use crate::RunBytes;
+use crate::{RunBytes, Side};
 
-/// A run's bytes, or why they did not arrive, tagged with where they came from.
+/// A run's bytes, or why they did not arrive, tagged with where they came from
+/// and which panel asked for them.
 pub struct Loaded {
+    /// The panel the run was loaded for. A load that lands while the reader
+    /// has moved on still belongs to the panel that started it, so nothing
+    /// arriving late can overwrite the other one.
+    pub side: Side,
     /// Where the run came from, as it is shown to the reader.
     pub source: String,
     /// The bytes, or a message naming what went wrong.
@@ -43,10 +48,11 @@ impl Loader {
 
     /// Deliver a run that was assembled without an asynchronous source — a
     /// drop, which egui has already read for us.
-    pub fn deliver(&self, source: impl Into<String>, bytes: Result<RunBytes, String>) {
+    pub fn deliver(&self, side: Side, source: impl Into<String>, bytes: Result<RunBytes, String>) {
         // The receiver lives as long as the loader, so a send only fails if
         // the app is being torn down; there is nothing left to report to.
         let _ = self.sender.send(Loaded {
+            side,
             source: source.into(),
             bytes,
         });
@@ -58,7 +64,7 @@ impl Loader {
     /// The same code on both targets — `ehttp` is `fetch` in a browser and a
     /// request on a background thread natively. `repaint` is called when the
     /// result lands, because on the web nothing else wakes the frame loop.
-    pub fn fetch(&self, base_url: &str, repaint: impl Fn() + Send + 'static) {
+    pub fn fetch(&self, side: Side, base_url: &str, repaint: impl Fn() + Send + 'static) {
         let base = base_url.trim();
         let source = base.to_owned();
         let prefix = if base.ends_with('/') {
@@ -75,6 +81,7 @@ impl Loader {
                     Ok(bytes) => bytes,
                     Err(message) => {
                         let _ = sender.send(Loaded {
+                            side,
                             source,
                             bytes: Err(message),
                         });
@@ -85,7 +92,11 @@ impl Loader {
                 ehttp::fetch(ehttp::Request::get(frames_url), move |frames| {
                     let bytes =
                         body_of(frames, FRAME_FILE_NAME).map(|frames| RunBytes { header, frames });
-                    let _ = sender.send(Loaded { source, bytes });
+                    let _ = sender.send(Loaded {
+                        side,
+                        source,
+                        bytes,
+                    });
                     repaint();
                 });
             },

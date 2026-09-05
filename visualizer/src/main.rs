@@ -1,15 +1,18 @@
 //! Native entry point for the visualizer.
 //!
 //! A run may be named on the command line — `termocline-viz /tmp/run-demo` —
-//! picked from the window, or dropped onto it. In a browser there is no
-//! command line and no filesystem, and [`visualizer::VisualizerApp`] is
-//! started from `src/web.rs` instead (ADR-0006).
+//! picked from the window, or dropped onto it. A second run named after the
+//! first — `termocline-viz /tmp/run-control /tmp/run-burst` — opens the two
+//! side by side (T-09.5). In a browser there is no command line and no
+//! filesystem, and [`visualizer::VisualizerApp`] is started from `src/web.rs`
+//! instead (ADR-0006).
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
     env_logger::init();
 
-    let directory = std::env::args_os().nth(1).map(std::path::PathBuf::from);
+    let mut runs = std::env::args_os().skip(1).map(std::path::PathBuf::from);
+    let (directory, compare_with) = (runs.next(), runs.next());
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([760.0, 520.0]),
         ..Default::default()
@@ -21,6 +24,9 @@ fn main() -> eframe::Result {
             let mut app = visualizer::VisualizerApp::new();
             if let Some(directory) = directory {
                 app.load_directory(&directory);
+            }
+            if let Some(directory) = compare_with {
+                app.load_directory_to_compare(&directory);
             }
             Ok(Box::new(app))
         }),

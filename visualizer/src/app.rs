@@ -15,14 +15,15 @@ use egui::{Color32, RichText};
 
 use termocline_format::GridSpec;
 
+use crate::comparison::Side;
 use crate::loading::Loaded;
 use crate::run::SECONDS_PER_DAY;
 use crate::{
-    BasinPoint, CrossSection, DivergingScale, Heatmap, LoadedRun, Loader, PendingRun, Playback,
-    PointSeries, Scrubber, WindOverlay,
+    BasinPoint, Comparison, CrossSection, DivergingScale, Heatmap, LoadedRun, Loader, Mismatch,
+    PendingRun, Playback, PointSeries, Scrubber, StressScale, WindOverlay,
 };
 
-/// What the central panel is showing.
+/// What one panel is showing.
 enum Shown {
     /// No run yet: the panel explains how to load one.
     Nothing,
@@ -39,27 +40,56 @@ enum Shown {
     },
 }
 
+impl Shown {
+    /// The run this panel is showing, if it is showing one.
+    const fn run(&self) -> Option<&LoadedRun> {
+        match self {
+            Self::Run(run) => Some(run),
+            _ => None,
+        }
+    }
+}
+
 /// The visualizer's application state.
+///
+/// Everything a panel needs is held per [`Side`], and a single run is the left
+/// panel with the right one closed (T-09.5). One state rather than two — a
+/// "single run" mode beside a "comparison" mode — because the two would drift:
+/// the frame chooser, the drop handling and the loader would each have to be
+/// taught the difference, and each is a place the two panels could come to
+/// disagree.
 pub struct VisualizerApp {
-    /// What the central panel is showing.
-    shown: Shown,
-    /// Dropped files seen so far, waiting for their pair.
-    pending: PendingRun,
-    /// The one channel every source of run bytes posts to.
+    /// What each panel is showing.
+    shown: [Shown; 2],
+    /// Dropped files seen so far, waiting for their pair, per panel.
+    pending: [PendingRun; 2],
+    /// The one channel every source of run bytes posts to, whichever panel
+    /// asked for it.
     loader: Loader,
-    /// The URL a run is served under, as typed or as passed in `?run=`.
-    run_url: String,
-    /// The basin map: which frame it shows, and what it last drew.
+    /// The URL a run is served under, as typed or as passed in the query, per
+    /// panel.
+    run_url: [String; 2],
+    /// Whether the second panel is open.
+    comparing: bool,
+    /// Which panel a dropped run is loaded into.
+    ///
+    /// Chosen by the reader rather than inferred from which panel is empty: a
+    /// run arrives as two files, sometimes in two drops, and a target that
+    /// moved between them would split one run across both panels.
+    drop_side: Side,
+    /// The frame chooser both panels share, and what each of them last drew.
     basin_map: BasinMap,
 }
 
 impl Default for VisualizerApp {
     fn default() -> Self {
         Self {
-            shown: Shown::Nothing,
-            pending: PendingRun::default(),
+            shown: [Shown::Nothing, Shown::Nothing],
+            pending: [PendingRun::default(), PendingRun::default()],
             loader: Loader::default(),
-            run_url: String::new(),
+            run_url: [String::new(), String::new()],
+            comparing: false,
+            drop_side: Side::Left,
             basin_map: BasinMap::default(),
         }
     }
@@ -72,41 +102,71 @@ impl VisualizerApp {
         Self::default()
     }
 
-    /// Start fetching the run served under `base_url`, showing it as loading
-    /// until it lands.
+    /// Start fetching the run served under `base_url` into the first panel,
+    /// showing it as loading until it lands.
     pub fn fetch_run(&mut self, base_url: &str, ctx: &egui::Context) {
-        self.run_url = base_url.to_owned();
-        self.shown = Shown::Loading(base_url.to_owned());
-        let ctx = ctx.clone();
-        self.loader.fetch(base_url, move || ctx.request_repaint());
+        self.fetch_into(Side::Left, base_url, ctx);
     }
 
-    /// Load the run in `directory`. Native only: a browser has no directories
-    /// to open (ADR-0006).
+    /// Start fetching the run served under `base_url` into the second panel,
+    /// opening the comparison.
+    pub fn fetch_run_to_compare(&mut self, base_url: &str, ctx: &egui::Context) {
+        self.comparing = true;
+        self.drop_side = Side::Right;
+        self.fetch_into(Side::Right, base_url, ctx);
+    }
+
+    /// Start fetching the run served under `base_url` into `side`.
+    fn fetch_into(&mut self, side: Side, base_url: &str, ctx: &egui::Context) {
+        self.run_url[side.index()] = base_url.to_owned();
+        self.shown[side.index()] = Shown::Loading(base_url.to_owned());
+        let ctx = ctx.clone();
+        self.loader
+            .fetch(side, base_url, move || ctx.request_repaint());
+    }
+
+    /// Load the run in `directory` into the first panel. Native only: a
+    /// browser has no directories to open (ADR-0006).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn load_directory(&mut self, directory: &std::path::Path) {
+        self.load_directory_into(Side::Left, directory);
+    }
+
+    /// Load the run in `directory` into the second panel, opening the
+    /// comparison. Native only, for the reason [`VisualizerApp::load_directory`]
+    /// is.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn load_directory_to_compare(&mut self, directory: &std::path::Path) {
+        self.comparing = true;
+        self.drop_side = Side::Right;
+        self.load_directory_into(Side::Right, directory);
+    }
+
+    /// Load the run in `directory` into `side`.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn load_directory_into(&mut self, side: Side, directory: &std::path::Path) {
         let source = directory.display().to_string();
-        self.shown = Shown::Loading(source.clone());
+        self.shown[side.index()] = Shown::Loading(source.clone());
         self.loader.deliver(
+            side,
             source,
             crate::loading::native::read_run_directory(directory),
         );
     }
 
-    /// Ask the user for a run directory, on a thread of its own so the frame
-    /// loop keeps running while the dialog is open.
+    /// Ask the user for a run directory for `side`, on a thread of its own so
+    /// the frame loop keeps running while the dialog is open.
     #[cfg(not(target_arch = "wasm32"))]
-    fn pick_directory(&self, ctx: &egui::Context) {
+    fn pick_directory(&self, side: Side, ctx: &egui::Context) {
         let sender = self.loader.sender();
         let ctx = ctx.clone();
+        let title = format!("Open a run directory for panel {}", side.label());
         std::thread::spawn(move || {
-            let Some(directory) = rfd::FileDialog::new()
-                .set_title("Open a run directory")
-                .pick_folder()
-            else {
+            let Some(directory) = rfd::FileDialog::new().set_title(title).pick_folder() else {
                 return;
             };
             let _ = sender.send(Loaded {
+                side,
                 source: directory.display().to_string(),
                 bytes: crate::loading::native::read_run_directory(&directory),
             });
@@ -114,13 +174,20 @@ impl VisualizerApp {
         });
     }
 
-    /// Take whatever finished loading since the last frame and show it.
+    /// Take whatever finished loading since the last frame and show it in the
+    /// panel that asked for it.
     fn absorb_finished_loads(&mut self) {
-        while let Some(Loaded { source, bytes }) = self.loader.poll() {
+        while let Some(Loaded {
+            side,
+            source,
+            bytes,
+        }) = self.loader.poll()
+        {
             // Whatever arrives, the map of the last run is no longer the map
-            // of the run on screen.
+            // of the run on screen — and in a comparison the scale is both
+            // runs', so the other panel's map is no longer its map either.
             self.basin_map.forget();
-            self.shown = match bytes.and_then(|bytes| {
+            self.shown[side.index()] = match bytes.and_then(|bytes| {
                 LoadedRun::from_bytes(source.clone(), bytes).map_err(|error| error.to_string())
             }) {
                 Ok(run) => Shown::Run(Box::new(run)),
@@ -129,20 +196,25 @@ impl VisualizerApp {
         }
     }
 
-    /// Take the files dropped on the window this frame, and load the run once
-    /// both of them have arrived.
+    /// Take the files dropped on the window this frame, and load the run into
+    /// the chosen panel once both of them have arrived.
     fn absorb_dropped_files(&mut self, ctx: &egui::Context) {
         let dropped = ctx.input(|input| input.raw.dropped_files.clone());
+        let side = if self.comparing {
+            self.drop_side
+        } else {
+            Side::Left
+        };
         for file in &dropped {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(path) = file.path.as_ref().filter(|path| path.is_dir()) {
-                self.load_directory(path);
+                self.load_directory_into(side, path);
                 continue;
             }
             match dropped_file_contents(file) {
                 Ok((name, bytes)) => {
-                    if !self.pending.offer(&name, bytes) {
-                        self.shown = Shown::Failed {
+                    if !self.pending[side.index()].offer(&name, bytes) {
+                        self.shown[side.index()] = Shown::Failed {
                             source: name.clone(),
                             message: format!(
                                 "{name} is not part of a run; drop {} and {}",
@@ -153,41 +225,63 @@ impl VisualizerApp {
                     }
                 }
                 Err(message) => {
-                    self.shown = Shown::Failed {
+                    self.shown[side.index()] = Shown::Failed {
                         source: "dropped file".to_owned(),
                         message,
                     };
                 }
             }
         }
-        if let Some(bytes) = self.pending.take_run() {
-            self.loader.deliver("dropped files", Ok(bytes));
+        if let Some(bytes) = self.pending[side.index()].take_run() {
+            self.loader.deliver(side, "dropped files", Ok(bytes));
         }
     }
 
-    /// The bar of run-loading affordances.
+    /// The bar of run-loading affordances: one row per open panel, and the
+    /// switch that opens the second.
     ///
-    /// Returns whether the run-URL field has the keyboard. It is the one thing
-    /// in the shell that a keystroke means something different to, so it is
-    /// what decides whether the scrubber's keys are the scrubber's to take.
+    /// Returns whether a run-URL field has the keyboard. They are the one
+    /// thing in the shell that a keystroke means something different to, so
+    /// they are what decide whether the scrubber's keys are the scrubber's to
+    /// take.
     fn draw_controls(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut url_has_keyboard = false;
+        for side in Side::BOTH {
+            if side == Side::Right && !self.comparing {
+                continue;
+            }
+            url_has_keyboard |= self.draw_side_controls(ui, side);
+        }
+        ui.checkbox(&mut self.comparing, "Compare two runs")
+            .on_hover_text(
+                "Show a second run beside this one, on one frame index and one colour scale",
+            );
+        url_has_keyboard
+    }
+
+    /// One panel's row of loading affordances.
+    fn draw_side_controls(&mut self, ui: &mut egui::Ui, side: Side) -> bool {
         ui.horizontal(|ui| {
+            if self.comparing {
+                ui.radio_value(&mut self.drop_side, side, format!("Run {}", side.label()))
+                    .on_hover_text("Dropped files load into this panel");
+            }
             #[cfg(not(target_arch = "wasm32"))]
             if ui.button("Open run directory…").clicked() {
-                self.pick_directory(ui.ctx());
+                self.pick_directory(side, ui.ctx());
             }
             ui.label("Run URL:");
             let url = ui.add(
-                egui::TextEdit::singleline(&mut self.run_url)
+                egui::TextEdit::singleline(&mut self.run_url[side.index()])
                     .hint_text("https://…/run-demo/")
                     .desired_width(260.0),
             );
             let submitted =
                 url.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
             let fetch = ui.button("Fetch").clicked();
-            if (submitted || fetch) && !self.run_url.trim().is_empty() {
-                let (url, ctx) = (self.run_url.clone(), ui.ctx().clone());
-                self.fetch_run(&url, &ctx);
+            if (submitted || fetch) && !self.run_url[side.index()].trim().is_empty() {
+                let (url, ctx) = (self.run_url[side.index()].clone(), ui.ctx().clone());
+                self.fetch_into(side, &url, &ctx);
             }
             url.has_focus()
         })
@@ -195,7 +289,7 @@ impl VisualizerApp {
     }
 }
 
-/// What to show when there is no run yet, or the last one failed.
+/// What to show when a panel has no run yet, or its last one failed.
 fn draw_instructions(ui: &mut egui::Ui, pending: &PendingRun) {
     ui.label(format!(
         "Drop a run's {} and {} onto this window{}.",
@@ -229,33 +323,21 @@ impl eframe::App for VisualizerApp {
             .inner;
         let keyboard_free = !url_has_keyboard;
 
-        // Disjoint borrows: the panel reads the run while the map it draws
-        // caches a texture of one of its frames.
+        // Disjoint borrows: the panels read their runs while the maps they
+        // draw cache a texture of one frame each.
         let Self {
             shown,
             pending,
             basin_map,
+            comparing,
             ..
         } = self;
-        egui::CentralPanel::default().show(ctx, |ui| match &*shown {
-            Shown::Nothing => draw_instructions(ui, pending),
-            Shown::Loading(source) => {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(format!("Loading {source}…"));
-                });
+        egui::CentralPanel::default().show(ctx, |ui| {
+            if *comparing {
+                draw_comparison(ui, shown, pending, basin_map, keyboard_free);
+            } else {
+                draw_single(ui, &shown[0], &pending[0], basin_map, keyboard_free);
             }
-            Shown::Failed { source, message } => {
-                ui.label(
-                    RichText::new(format!("{source} could not be loaded"))
-                        .color(Color32::LIGHT_RED)
-                        .strong(),
-                );
-                ui.label(message);
-                ui.separator();
-                draw_instructions(ui, pending);
-            }
-            Shown::Run(run) => draw_run(ui, run, basin_map, keyboard_free),
         });
 
         if ctx.input(|input| !input.raw.hovered_files.is_empty()) {
@@ -270,11 +352,113 @@ impl eframe::App for VisualizerApp {
     }
 }
 
-/// The metadata panel, and under it the basin map of the chosen frame.
-fn draw_run(ui: &mut egui::Ui, run: &LoadedRun, basin_map: &mut BasinMap, keyboard_free: bool) {
+/// The one open panel: its metadata, and under it the basin map of the chosen
+/// frame.
+fn draw_single(
+    ui: &mut egui::Ui,
+    shown: &Shown,
+    pending: &PendingRun,
+    basin_map: &mut BasinMap,
+    keyboard_free: bool,
+) {
+    match shown {
+        Shown::Run(run) => {
+            draw_run_header(ui, Side::Left, run);
+            ui.add_space(12.0);
+            ui.separator();
+            basin_map.draw(ui, run, keyboard_free);
+        }
+        other => draw_waiting(ui, other, pending),
+    }
+}
+
+/// Two runs held against each other, or why they are not.
+///
+/// The two panels are only worth drawing together once both runs are there and
+/// [`Comparison`] has accepted them; short of that this says what each panel is
+/// waiting for, side by side, so a reader can see which half is missing.
+fn draw_comparison(
+    ui: &mut egui::Ui,
+    shown: &[Shown; 2],
+    pending: &[PendingRun; 2],
+    basin_map: &mut BasinMap,
+    keyboard_free: bool,
+) {
+    let (Some(left), Some(right)) = (shown[0].run(), shown[1].run()) else {
+        ui.columns(2, |columns| {
+            for side in Side::BOTH {
+                let column = &mut columns[side.index()];
+                column.label(RichText::new(format!("Run {}", side.label())).strong());
+                match &shown[side.index()] {
+                    Shown::Run(run) => draw_run_header(column, side, run),
+                    other => draw_waiting(column, other, &pending[side.index()]),
+                }
+            }
+        });
+        return;
+    };
+    match Comparison::of(left, right) {
+        Ok(comparison) => basin_map.draw_comparison(ui, &comparison, keyboard_free),
+        Err(mismatch) => draw_refusal(ui, [left, right], &mismatch),
+    }
+}
+
+/// Why these two runs are not being drawn side by side, and what each of them
+/// is.
+///
+/// A refusal rather than a picture: the alternative is two panels claiming a
+/// correspondence — same place, same moment — that the runs do not support,
+/// and a reader has no way to see that from the picture itself
+/// (`crate::comparison`).
+fn draw_refusal(ui: &mut egui::Ui, runs: [&LoadedRun; 2], mismatch: &Mismatch) {
+    ui.label(
+        RichText::new("These two runs cannot be compared")
+            .color(Color32::LIGHT_RED)
+            .strong(),
+    );
+    ui.label(mismatch.to_string());
+    ui.label("Load another run into one of the panels, or turn the comparison off to look at them one at a time.");
+    ui.add_space(12.0);
+    ui.separator();
+    ui.columns(2, |columns| {
+        for side in Side::BOTH {
+            draw_run_header(&mut columns[side.index()], side, runs[side.index()]);
+        }
+    });
+}
+
+/// A panel with no run in it yet: what it is doing, or how to give it one.
+fn draw_waiting(ui: &mut egui::Ui, shown: &Shown, pending: &PendingRun) {
+    match shown {
+        Shown::Nothing => draw_instructions(ui, pending),
+        Shown::Loading(source) => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(format!("Loading {source}…"));
+            });
+        }
+        Shown::Failed { source, message } => {
+            ui.label(
+                RichText::new(format!("{source} could not be loaded"))
+                    .color(Color32::LIGHT_RED)
+                    .strong(),
+            );
+            ui.label(message);
+            ui.separator();
+            draw_instructions(ui, pending);
+        }
+        Shown::Run(_) => {}
+    }
+}
+
+/// Where a run came from, and the metadata panel of what it says it is.
+///
+/// The grid is named after the panel rather than after the run: two panels may
+/// hold the same run, and two grids under one name would lay out as one.
+fn draw_run_header(ui: &mut egui::Ui, side: Side, run: &LoadedRun) {
     ui.label(RichText::new(run.source()).strong());
     ui.add_space(6.0);
-    egui::Grid::new("run-metadata")
+    egui::Grid::new(format!("run-metadata-{}", side.label()))
         .num_columns(2)
         .striped(true)
         .spacing([24.0, 4.0])
@@ -285,9 +469,6 @@ fn draw_run(ui: &mut egui::Ui, run: &LoadedRun, basin_map: &mut BasinMap, keyboa
                 ui.end_row();
             }
         });
-    ui.add_space(12.0);
-    ui.separator();
-    basin_map.draw(ui, run, keyboard_free);
 }
 
 /// The name and bytes of a dropped file, from whichever of the two egui fills
@@ -384,12 +565,23 @@ const SELECTED_CELL_MIN_PT: f32 = 9.0;
 /// that keeps a line legible over any ground.
 const ARROW_CASING_WIDTH_PT: f32 = 3.0;
 
-/// The basin map of one chosen frame of the loaded run.
+/// The frame chooser, and the basin map each open panel draws of the frame it
+/// names.
 ///
 /// The map is a texture rather than a mesh: `h` is one value per cell, and the
 /// cheapest honest way to show a cell grid is one pixel per cell, magnified
 /// without interpolation. It is also the way that costs the same on both
 /// targets, which is what ADR-0006 asks of anything drawn here.
+///
+/// # One chooser, two panels
+///
+/// A comparison (T-09.5) does not *keep* the two panels synced; there is
+/// nothing to keep. The chooser, the clock, the layer toggles, the colour bar
+/// and the picked cell are held here, once, and each panel holds only what it
+/// built for itself — so scrubbing or playing writes one `u64` that both
+/// panels read, and there is no state in which they could disagree. That is
+/// the same argument `crate::playback` makes for playback owning no index, one
+/// level up.
 ///
 /// # What a drag costs
 ///
@@ -400,7 +592,8 @@ const ARROW_CASING_WIDTH_PT: f32 = 3.0;
 /// already drawn rebuilds nothing ([`Attempt`]); and the colour bar, which is
 /// the run's and not the frame's, is uploaded once per run ([`ColorBar`]).
 /// What is left is one frame decoded, colour-mapped and uploaded per frame the
-/// reader actually asks for, which is the work the drag is for.
+/// reader actually asks for — one per open panel — which is the work the drag
+/// is for.
 ///
 /// Playback (T-09.2) adds nothing to that: it writes the scrubber's index and
 /// nothing else, so a played frame and a dragged one cost the same, and a
@@ -410,8 +603,8 @@ const ARROW_CASING_WIDTH_PT: f32 = 3.0;
 /// and drawn from geometry, so neither showing it nor hiding it is a reason to
 /// rebuild anything, and it adds nothing per frame a drag passes through. The
 /// equatorial cross-section (T-09.3) rides on it the same way, and is drawn
-/// from the same run-wide scale as the colour bar, so it too costs nothing per
-/// repaint and nothing per toggle.
+/// from the same scale as the colour bar, so it too costs nothing per repaint
+/// and nothing per toggle.
 ///
 /// # What the time series costs, and why it is not on that path
 ///
@@ -421,30 +614,86 @@ const ARROW_CASING_WIDTH_PT: f32 = 3.0;
 /// buys it nothing and a rebuild walks the whole run — 731 frames of the
 /// scenario run, against the one frame everything above reads.
 ///
-/// It is therefore held here, beside the frame cache rather than inside it,
-/// and rebuilt only when the reader clicks a **different** cell. Scrubbing,
-/// playing, toggling either chart and re-clicking the selected cell all leave
-/// it alone; [`BasinMap::series_walks`] counts the rebuilds so the tests can
-/// say so by name.
+/// It is therefore held beside the frame cache rather than inside it, and
+/// rebuilt only when the reader picks a **different** cell. Scrubbing,
+/// playing, toggling any chart and re-picking the selected cell all leave it
+/// alone; [`SeriesCache::walks`] counts the rebuilds so the tests can say so
+/// by name. In a comparison the picked cell is the pair's — the two runs are
+/// over one grid, or they would not be comparable — so one click asks each
+/// panel for the series of the same place in its own run, and each panel walks
+/// its own run once for it.
 struct BasinMap {
     /// The frame the reader has chosen, and the ways they choose another.
+    /// Shared by both panels of a comparison.
     scrubber: Scrubber,
-    /// The clock that chooses frames on the reader's behalf.
+    /// The clock that chooses frames on the reader's behalf, for both panels.
     playback: Playback,
-    /// Whether the wind-stress overlay is drawn over the map.
-    show_wind: bool,
-    /// Whether the equatorial cross-section is drawn under the map.
-    show_section: bool,
-    /// Whether the point time series is drawn under the map.
-    show_series: bool,
+    /// Which layers are drawn over and under the maps.
+    layers: Layers,
+    /// The cell the reader picked, in the coordinates of the grid both panels
+    /// are over.
+    selected: Option<BasinPoint>,
+    /// What each panel last drew, and the series it holds. The second is
+    /// untouched until a comparison is open.
+    panels: [FramePanel; 2],
+    /// The colour bar of whatever is being drawn, built the first time a frame
+    /// of it is drawn: the run's scale on its own, and both runs' shared scale
+    /// in a comparison.
+    bar: Option<ColorBar>,
+}
+
+/// Which layers the reader has asked for, over and under every open map.
+///
+/// One set for the pair rather than one each: they are a question about what a
+/// reader wants to see, not about a run, and two panels showing different
+/// layers would be two pictures rather than a comparison.
+#[derive(Debug, Clone, Copy)]
+struct Layers {
+    /// Whether the wind-stress overlay is drawn over the maps.
+    wind: bool,
+    /// Whether the equatorial cross-section is drawn under the maps.
+    section: bool,
+    /// Whether the point time series is drawn under the maps.
+    series: bool,
+}
+
+impl Default for BasinMap {
+    fn default() -> Self {
+        Self {
+            scrubber: Scrubber::default(),
+            // Paused, as `crate::playback` says: a run that started moving on
+            // load would be off its first frame before the header had been
+            // read, and it is also what leaves an idle repaint with nothing to
+            // rebuild.
+            playback: Playback::new(),
+            layers: Layers {
+                // On by default: the forcing is why the map looks the way it
+                // does, and a reader who does not know the overlay exists
+                // cannot ask for it.
+                wind: true,
+                // On by default: the tilt is what the run is about, and the
+                // section is the view that states it as a number rather than
+                // as a colour (T-09.3).
+                section: true,
+                // On by default, with nothing selected: the chart says how to
+                // pick a point, and a reader who does not know the map is
+                // clickable never finds out (T-09.4).
+                series: true,
+            },
+            selected: None,
+            panels: [FramePanel::default(), FramePanel::default()],
+            bar: None,
+        }
+    }
+}
+
+/// One panel's caches: the last frame it drew, and the series it holds.
+#[derive(Default)]
+struct FramePanel {
     /// The last attempt at drawing a frame, if there has been one.
     attempt: Option<Attempt>,
-    /// The run's colour bar, built the first time a frame of it is drawn.
-    bar: Option<ColorBar>,
-    /// The series the reader picked, and what building it has cost.
-    ///
-    /// Beside the frame cache rather than in it: the series is of the whole
-    /// run, so the frame on screen is not a reason to rebuild it.
+    /// The series at the picked cell of this panel's run, and what building it
+    /// has cost.
     series: SeriesCache,
 }
 
@@ -453,6 +702,7 @@ struct BasinMap {
 /// The two travel together everywhere, because the count is only meaningful
 /// against the series it counts: this is the one path in the shell that walks a
 /// whole run ([`crate::time_series`]), and the count is how a test says so.
+#[derive(Default)]
 struct SeriesCache {
     /// The series at the cell the reader picked, if they have picked one.
     series: Option<PointSeries>,
@@ -465,14 +715,6 @@ struct SeriesCache {
 }
 
 impl SeriesCache {
-    /// A cache with nothing picked, which has cost nothing.
-    const fn empty() -> Self {
-        Self {
-            series: None,
-            walks: 0,
-        }
-    }
-
     /// The series on screen, if the reader has picked a cell.
     const fn shown(&self) -> Option<&PointSeries> {
         self.series.as_ref()
@@ -506,34 +748,6 @@ impl SeriesCache {
     }
 }
 
-impl Default for BasinMap {
-    fn default() -> Self {
-        Self {
-            scrubber: Scrubber::default(),
-            // Paused, as `crate::playback` says: a run that started moving on
-            // load would be off its first frame before the header had been
-            // read, and it is also what leaves an idle repaint with nothing to
-            // rebuild.
-            playback: Playback::new(),
-            // On by default: the forcing is why the map looks the way it does,
-            // and a reader who does not know the overlay exists cannot ask for
-            // it.
-            show_wind: true,
-            // On by default: the tilt is what the run is about, and the
-            // section is the view that states it as a number rather than as a
-            // colour (T-09.3).
-            show_section: true,
-            // On by default, with nothing selected: the chart says how to pick
-            // a point, and a reader who does not know the map is clickable
-            // cannot find out by clicking it.
-            show_series: true,
-            attempt: None,
-            bar: None,
-            series: SeriesCache::empty(),
-        }
-    }
-}
-
 /// What came of trying to draw one frame.
 ///
 /// Kept because a panel repaints many times per second while the chosen frame
@@ -543,6 +757,14 @@ impl Default for BasinMap {
 struct Attempt {
     /// The frame this was an attempt at.
     index: u64,
+    /// The colour scale it was drawn on. Part of what identifies the attempt
+    /// because in a comparison the scale is both runs' (`crate::comparison`):
+    /// loading a louder run beside this one changes what this panel's own
+    /// frame should look like, and a cache that ignored that would leave one
+    /// panel drawn on a scale the colour bar no longer states.
+    scale: DivergingScale,
+    /// The stress scale its overlay was drawn on, kept for the same reason.
+    stress_scale: StressScale,
     /// The map of it, or what refused to build one, in the words of whatever
     /// refused it.
     outcome: Result<DrawnFrame, String>,
@@ -570,82 +792,60 @@ struct DrawnFrame {
     section: CrossSection,
 }
 
-/// The colour bar of a run, and the scale it was sampled from.
+/// The colour bar of what is on screen, and the scale it was sampled from.
 ///
-/// The scale is the run's rather than the frame's (`crate::heatmap`), so the
-/// bar is the same in every frame and is uploaded once — not once per frame a
-/// drag passes through.
+/// The scale is the run's rather than the frame's (`crate::heatmap`), and in a
+/// comparison it is both runs' (`crate::comparison`) — so the bar is the same
+/// in every frame, and there is one of it for two panels rather than one each.
 struct ColorBar {
-    /// The scale the bar was sampled from, so a run whose scale is not this
-    /// one gets its own bar.
+    /// The scale the bar was sampled from, so a scale that is not this one
+    /// gets its own bar.
     scale: DivergingScale,
     /// The bar itself, sampled across the scale.
     texture: egui::TextureHandle,
 }
 
-impl BasinMap {
-    /// Forget the run this was a map of. The overlay toggle is the reader's
-    /// choice rather than the run's, so it survives.
+impl FramePanel {
+    /// Forget the run this was a panel of.
     fn forget(&mut self) {
-        self.scrubber = Scrubber::new();
-        // The clock was playing the run that has just gone; the speed it was
-        // playing at is the reader's choice, so that stays.
-        self.playback.pause();
         self.attempt = None;
-        self.bar = None;
-        // The cell was a place in the basin of the run that has just gone; the
-        // next run's cell of that index is a different place.
         self.series.forget();
     }
 
-    /// Draw the frame chooser and the map of the chosen frame.
-    fn draw(&mut self, ui: &mut egui::Ui, run: &LoadedRun, keyboard_free: bool) {
-        let frame_count = run.header().output.frame_count;
-        self.scrubber.fit_to(frame_count);
-        if self.scrubber.last().is_none() {
-            ui.label("This run holds no frames to draw.");
-            return;
-        }
-        // The clock before the controls: the frame this repaint draws is the
-        // one whatever time has passed since the last one has bought, and
-        // every affordance below writes the same index it does.
-        self.playback
-            .advance(&mut self.scrubber, f64::from(ui.input(|i| i.stable_dt)));
-        self.scrubber.draw(ui, keyboard_free);
-        self.playback.draw(ui, &mut self.scrubber, keyboard_free);
-        // The overlay is drawn over the map, never into it: nothing the map is
-        // built from depends on this.
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut self.show_wind, "Wind stress τ");
-            ui.checkbox(&mut self.show_section, "Equatorial cross-section");
-            ui.checkbox(&mut self.show_series, "Point time series");
-        });
+    /// The frame `index` of `run` drawn on `scale`, from the cache where the
+    /// last attempt was at the same frame on the same scales.
+    fn drawn(
+        &mut self,
+        ui: &egui::Ui,
+        run: &LoadedRun,
+        index: u64,
+        scale: DivergingScale,
+        stress_scale: StressScale,
+    ) -> &Result<DrawnFrame, String> {
+        drawn_in(&mut self.attempt, ui, run, index, scale, stress_scale)
+    }
 
-        let index = self.scrubber.index();
-        if self.attempt.as_ref().is_none_or(|last| last.index != index) {
-            self.attempt = Some(Attempt {
-                index,
-                outcome: self.build(ui, run, index),
-            });
-        }
-        // Before the frame is read back, because that read borrows the panel
-        // for as long as the frame is drawn and this is the one thing left
-        // that writes to it.
-        self.ensure_color_bar(ui, run.anomaly_scale());
+    /// Draw this panel: the map of frame `index` of `run`, and whichever
+    /// layers the reader has asked for.
+    ///
+    /// The picked cell is the caller's rather than this panel's, because in a
+    /// comparison it is the pair's: a click here picks the same place in both
+    /// panels, and each panel then holds that place's series in its own run.
+    fn draw(
+        &mut self,
+        ui: &mut egui::Ui,
+        run: &LoadedRun,
+        index: u64,
+        scale: DivergingScale,
+        stress_scale: StressScale,
+        layers: Layers,
+        selected: &mut Option<BasinPoint>,
+    ) {
         // Disjoint borrows: the frame already drawn is read while the series —
         // which is of the whole run rather than of that frame — is picked and
         // built beside it.
-        let Self {
-            show_wind,
-            show_section,
-            show_series,
-            attempt,
-            bar,
-            series,
-            ..
-        } = self;
-        let outcome = &attempt.as_ref().expect("an attempt was just made").outcome;
-        let drawn = match outcome {
+        let Self { attempt, series } = self;
+        let drawn = match drawn_in(attempt, ui, run, index, scale, stress_scale) {
             Ok(drawn) => drawn,
             Err(message) => {
                 ui.label(
@@ -657,32 +857,29 @@ impl BasinMap {
                 return;
             }
         };
-
-        // Counted from one, as the metadata panel counts the run's frames.
-        // The scrubber's own index starts at zero, and it shows no number.
-        ui.label(format!(
-            "Frame {} of {frame_count} — thermocline depth anomaly h at {:.2} days",
-            index + 1,
-            drawn.t_s / SECONDS_PER_DAY
-        ));
         ui.horizontal(|ui| {
             ui.label("west");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label("east");
             });
         });
-        let reserved_pt = reserved_below_map_pt(ui, *show_section, *show_series);
+        let reserved_pt = reserved_below_map_pt(ui, layers.section, layers.series);
         let map_area = draw_texture_fitted(ui, &drawn.map, reserved_pt);
         let map = map_area.rect;
-        if *show_wind {
+        if layers.wind {
             draw_wind_arrows(ui, map, drawn);
         }
         // The click that picks a place, and the only path in the shell that
         // walks a whole run. It is taken before the charts are drawn, so the
-        // series on screen is the one the click just asked for, and it is
-        // guarded on the cell rather than on the click: a reader clicking twice
-        // in the same cell has asked for the series they already have.
+        // series on screen is the one the click just asked for. A repaint is
+        // asked for with it because the other panel of a comparison may
+        // already have been drawn this pass, and it holds the same cell of its
+        // own run.
         if let Some(point) = clicked_point(&map_area, map, run.header().grid) {
+            *selected = Some(point);
+            ui.ctx().request_repaint();
+        }
+        if let Some(point) = *selected {
             series.select(run, point);
         }
         // Where the series came from, marked on the map it was picked off: a
@@ -694,25 +891,170 @@ impl BasinMap {
         // Directly under the map and across exactly its width, so a longitude
         // on the chart sits under the column of the map it came from. The
         // colour bar goes below both: the scale is the same one.
-        if *show_section {
+        if layers.section {
             draw_cross_section(ui, &drawn.section, map);
         }
         // The time series goes under the section, and only its horizontal
         // extent is the map's: its axis is time, so nothing on it lines up with
         // a column of the map.
-        if *show_series {
+        if layers.series {
             draw_time_series(ui, series.shown(), drawn.t_s, map);
         }
+    }
+}
+
+impl BasinMap {
+    /// Forget the runs this was a map of. The layer toggles are the reader's
+    /// choice rather than the run's, so they survive.
+    fn forget(&mut self) {
+        self.scrubber = Scrubber::new();
+        // The clock was playing the run that has just gone; the speed it was
+        // playing at is the reader's choice, so that stays.
+        self.playback.pause();
+        // The cell was a place in the basin of the run that has just gone; the
+        // next run's cell of that index is a different place.
+        self.selected = None;
+        for panel in &mut self.panels {
+            panel.forget();
+        }
+        self.bar = None;
+    }
+
+    /// Draw the frame chooser and the map of the chosen frame of one run.
+    fn draw(&mut self, ui: &mut egui::Ui, run: &LoadedRun, keyboard_free: bool) {
+        let frame_count = run.header().output.frame_count;
+        let Some(index) = self.chooser(ui, frame_count, keyboard_free) else {
+            ui.label("This run holds no frames to draw.");
+            return;
+        };
+        let (scale, stress_scale) = (run.anomaly_scale(), run.wind_stress_scale());
+        // Before the frame is read back, because that read borrows the panel
+        // for as long as the frame is drawn and this is the one thing left
+        // that writes to it.
+        self.ensure_color_bar(ui, scale);
+        let Self {
+            panels,
+            bar,
+            layers,
+            selected,
+            ..
+        } = self;
+        let panel = &mut panels[Side::Left.index()];
+        // The frame is built before the line above it is written, because the
+        // time in that line is the frame's. Building it here costs nothing:
+        // the panel keeps what it built, and drawing it reads that back.
+        let Some(t_s) = panel
+            .drawn(ui, run, index, scale, stress_scale)
+            .as_ref()
+            .ok()
+            .map(|drawn| drawn.t_s)
+        else {
+            // The panel says what stopped it, where the map would have been.
+            panel.draw(ui, run, index, scale, stress_scale, *layers, selected);
+            return;
+        };
+        // Counted from one, as the metadata panel counts the run's frames.
+        // The scrubber's own index starts at zero, and it shows no number.
+        ui.label(format!(
+            "Frame {} of {frame_count} — thermocline depth anomaly h at {:.2} days",
+            index + 1,
+            t_s / SECONDS_PER_DAY
+        ));
+        panel.draw(ui, run, index, scale, stress_scale, *layers, selected);
         draw_color_bar(ui, bar.as_ref().expect("a colour bar was just built"));
-        if *show_wind {
+        if layers.wind {
             ui.label(format!(
                 "Wind stress τ: the longest arrow is {:.3} N m^-2, the strongest in the run",
-                drawn.wind.scale().max_magnitude_pa()
+                stress_scale.max_magnitude_pa()
             ));
         }
     }
 
-    /// Sample the run's colour bar, the first time a frame of it is drawn.
+    /// Draw the frame chooser and, side by side, the map each of the two runs
+    /// has of the frame it names.
+    ///
+    /// One chooser, one clock, one colour bar and one picked cell for the pair:
+    /// the two panels are drawn from the same index and the same scale, which
+    /// is what makes them comparable at all (`crate::comparison`).
+    fn draw_comparison(
+        &mut self,
+        ui: &mut egui::Ui,
+        comparison: &Comparison<'_>,
+        keyboard_free: bool,
+    ) {
+        let frame_count = comparison.frame_count();
+        let Some(index) = self.chooser(ui, frame_count, keyboard_free) else {
+            ui.label("These runs share no frames to draw.");
+            return;
+        };
+        let (scale, stress_scale) = (comparison.scale(), comparison.wind_stress_scale());
+        self.ensure_color_bar(ui, scale);
+        let Self {
+            panels,
+            bar,
+            layers,
+            selected,
+            ..
+        } = self;
+        let runs = [comparison.left(), comparison.right()];
+        // The frames are built before the line above them is written, because
+        // what that line says about the time is the frames' to say and not the
+        // cadence's. Building them here costs nothing: each panel keeps what it
+        // built, and the column below reads it back rather than building it
+        // again.
+        let mut times_s = [None, None];
+        for side in Side::BOTH {
+            times_s[side.index()] = panels[side.index()]
+                .drawn(ui, runs[side.index()], index, scale, stress_scale)
+                .as_ref()
+                .ok()
+                .map(|drawn| drawn.t_s);
+        }
+        ui.label(frame_line(index, frame_count, times_s));
+        ui.columns(2, |columns| {
+            for (side, (panel, run)) in Side::BOTH.into_iter().zip(panels.iter_mut().zip(runs)) {
+                let column = &mut columns[side.index()];
+                column.label(RichText::new(run.source()).strong());
+                panel.draw(column, run, index, scale, stress_scale, *layers, selected);
+            }
+        });
+        // Under both panels and across the whole width, because it is the one
+        // scale both of them were drawn on.
+        draw_color_bar(ui, bar.as_ref().expect("a colour bar was just built"));
+        if layers.wind {
+            ui.label(format!(
+                "Wind stress τ: the longest arrow is {:.3} N m^-2, the strongest in either run",
+                stress_scale.max_magnitude_pa()
+            ));
+        }
+        for difference in comparison.differences() {
+            ui.label(difference.to_string());
+        }
+    }
+
+    /// Draw the frame chooser over a run of `frame_count` frames and say which
+    /// frame it names, or `None` when there are none to choose between.
+    fn chooser(&mut self, ui: &mut egui::Ui, frame_count: u64, keyboard_free: bool) -> Option<u64> {
+        self.scrubber.fit_to(frame_count);
+        self.scrubber.last()?;
+        // The clock before the controls: the frame this repaint draws is the
+        // one whatever time has passed since the last one has bought, and
+        // every affordance below writes the same index it does.
+        self.playback
+            .advance(&mut self.scrubber, f64::from(ui.input(|i| i.stable_dt)));
+        self.scrubber.draw(ui, keyboard_free);
+        self.playback.draw(ui, &mut self.scrubber, keyboard_free);
+        // The layers are drawn over and under the map, never into it: nothing
+        // the map is built from depends on these.
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.layers.wind, "Wind stress τ");
+            ui.checkbox(&mut self.layers.section, "Equatorial cross-section");
+            ui.checkbox(&mut self.layers.series, "Point time series");
+        });
+        Some(self.scrubber.index())
+    }
+
+    /// Sample the colour bar of `scale`, the first time a frame is drawn on it.
     fn ensure_color_bar(&mut self, ui: &egui::Ui, scale: DivergingScale) {
         if self.bar.as_ref().is_none_or(|bar| bar.scale != scale) {
             self.bar = Some(ColorBar {
@@ -728,31 +1070,96 @@ impl BasinMap {
             });
         }
     }
+}
 
-    /// Colour-map frame `index` and upload it, or say what stopped that.
-    fn build(&self, ui: &egui::Ui, run: &LoadedRun, index: u64) -> Result<DrawnFrame, String> {
-        let frame = run
-            .frame(index)
-            .ok_or_else(|| format!("this run holds no frame {index}"))?;
-        let heatmap = Heatmap::of_frame(run.header().grid, &frame, run.anomaly_scale())
-            .map_err(|error| error.to_string())?;
-        let wind = WindOverlay::of_frame(run.header().grid, &frame, run.wind_stress_scale())
-            .map_err(|error| error.to_string())?;
-        let section = CrossSection::of_frame(run.header().grid, &frame, run.anomaly_scale())
-            .map_err(|error| error.to_string())?;
-        let image = egui::ColorImage::from_rgb([heatmap.width(), heatmap.height()], heatmap.rgb());
-        Ok(DrawnFrame {
-            t_s: frame.t_s(),
-            wind,
-            section,
-            // Nearest, not linear: a texel is a cell of the model, and
-            // smoothing between them would draw an anomaly the run never
-            // produced.
-            map: ui
-                .ctx()
-                .load_texture("basin-map", image, egui::TextureOptions::NEAREST),
-        })
+/// Frame `index` of `run` on `scale`, from `attempt` where that is what it
+/// last held, and built into it where it is not.
+///
+/// Free rather than a method because a panel draws its series while holding
+/// the frame it drew, and the two are different fields of it.
+fn drawn_in<'a>(
+    attempt: &'a mut Option<Attempt>,
+    ui: &egui::Ui,
+    run: &LoadedRun,
+    index: u64,
+    scale: DivergingScale,
+    stress_scale: StressScale,
+) -> &'a Result<DrawnFrame, String> {
+    let stale = attempt.as_ref().is_none_or(|last| {
+        last.index != index || last.scale != scale || last.stress_scale != stress_scale
+    });
+    if stale {
+        *attempt = Some(Attempt {
+            index,
+            scale,
+            stress_scale,
+            outcome: build(ui, run, index, scale, stress_scale),
+        });
     }
+    &attempt.as_ref().expect("an attempt was just made").outcome
+}
+
+/// The line above the two panels: which frame they are both on, and what the
+/// runs themselves date it.
+///
+/// The time is read off the frames rather than counted from the output
+/// cadence, so two runs that date the same index differently say so instead of
+/// being labelled with one time neither of them wrote. Compared exactly: two
+/// runs put the same number on the same moment or they do not, and no
+/// tolerance would make a disagreement of a second more honest than one of a
+/// day.
+fn frame_line(index: u64, frame_count: u64, times_s: [Option<f64>; 2]) -> String {
+    let frame = format!("Frame {} of {frame_count} in both panels", index + 1);
+    let days = |t_s: f64| t_s / SECONDS_PER_DAY;
+    match times_s {
+        [Some(left_s), Some(right_s)] if left_s == right_s => format!(
+            "{frame} — thermocline depth anomaly h at {:.2} days",
+            days(left_s)
+        ),
+        [Some(left_s), Some(right_s)] => format!(
+            "{frame} — thermocline depth anomaly h, which run {} dates {:.2} days and run {} \
+             dates {:.2} days",
+            Side::Left.label(),
+            days(left_s),
+            Side::Right.label(),
+            days(right_s),
+        ),
+        // A panel that could not draw its frame has no time to report; the
+        // panel itself says what stopped it.
+        _ => frame,
+    }
+}
+
+/// Colour-map frame `index` of `run` on `scale` and upload it, or say what
+/// stopped that.
+fn build(
+    ui: &egui::Ui,
+    run: &LoadedRun,
+    index: u64,
+    scale: DivergingScale,
+    stress_scale: StressScale,
+) -> Result<DrawnFrame, String> {
+    let frame = run
+        .frame(index)
+        .ok_or_else(|| format!("this run holds no frame {index}"))?;
+    let heatmap =
+        Heatmap::of_frame(run.header().grid, &frame, scale).map_err(|error| error.to_string())?;
+    let wind = WindOverlay::of_frame(run.header().grid, &frame, stress_scale)
+        .map_err(|error| error.to_string())?;
+    let section = CrossSection::of_frame(run.header().grid, &frame, scale)
+        .map_err(|error| error.to_string())?;
+    let image = egui::ColorImage::from_rgb([heatmap.width(), heatmap.height()], heatmap.rgb());
+    Ok(DrawnFrame {
+        t_s: frame.t_s(),
+        wind,
+        section,
+        // Nearest, not linear: a texel is a cell of the model, and
+        // smoothing between them would draw an anomaly the run never
+        // produced.
+        map: ui
+            .ctx()
+            .load_texture("basin-map", image, egui::TextureOptions::NEAREST),
+    })
 }
 
 /// Draw the colour bar and the anomalies its ends stand for.
@@ -1208,8 +1615,8 @@ mod tests {
         Variable,
     };
 
-    use super::{BasinMap, LoadedRun};
-    use crate::{BasinPoint, RunBytes, SeriesSample};
+    use super::{BasinMap, DrawnFrame, LoadedRun, Side};
+    use crate::{BasinPoint, Comparison, RunBytes, SeriesSample};
 
     /// A basin small enough to build in a unit test, on the extent of
     /// `CONTEXT.md`, *Basin*.
@@ -1221,6 +1628,17 @@ mod tests {
     /// A run of three frames whose `h` is everywhere the frame's own index, in
     /// metres, so consecutive frames are drawn in different colours.
     fn run() -> LoadedRun {
+        run_of("basin-map", 3, 1.0)
+    }
+
+    /// A run named `source` of `frame_count` frames whose `h` is everywhere
+    /// `metres_per_frame` times the frame's own index, in metres.
+    ///
+    /// The value doubles as the frame's name: a panel drawing this run says
+    /// which frame it is drawing through the numbers in it, which is what lets
+    /// two panels be asserted to be on the same frame rather than merely to
+    /// hold the same index.
+    fn run_of(source: &str, frame_count: u64, metres_per_frame: f64) -> LoadedRun {
         let grid = grid();
         let header = RunHeader::new(
             grid,
@@ -1231,19 +1649,21 @@ mod tests {
                 rayleigh_damping_per_s: 1.0e-7,
                 reference_density_kg_per_m3: 1025.0,
             },
-            "basin-map",
+            source,
             OutputTiming {
-                frame_count: 3,
+                frame_count,
                 interval_s: 86_400.0,
             },
         );
         let mut frames = Vec::new();
         for index in 0..header.output.frame_count {
             #[allow(clippy::cast_precision_loss)]
-            let value = index as f64;
+            let value = index as f64 * metres_per_frame;
             let field = |variable| vec![0.0; grid.field_len(variable)];
+            #[allow(clippy::cast_precision_loss)]
+            let t_s = index as f64 * header.output.interval_s;
             let frame = Frame::new(
-                value * header.output.interval_s,
+                t_s,
                 &grid,
                 vec![value; grid.field_len(Variable::ThermoclineDepthAnomaly)],
                 field(Variable::ZonalCurrentAnomaly),
@@ -1257,7 +1677,7 @@ mod tests {
             );
         }
         LoadedRun::from_bytes(
-            "basin-map",
+            source,
             RunBytes {
                 header: serde_json::to_vec(&header).expect("a header serializes"),
                 frames,
@@ -1277,15 +1697,63 @@ mod tests {
         let _painted = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| map.draw(ui, run, true));
         });
-        let drawn = map
+        let drawn = panel_frame(map, Side::Left);
+        let bar = map.bar.as_ref().expect("a colour bar was built");
+        (drawn.map.id(), bar.texture.id())
+    }
+
+    /// What panel `side` drew, on the repaint that has just happened.
+    fn panel_frame(map: &BasinMap, side: Side) -> &DrawnFrame {
+        map.panels[side.index()]
             .attempt
             .as_ref()
             .expect("a frame was drawn")
             .outcome
             .as_ref()
-            .expect("it drew");
-        let bar = map.bar.as_ref().expect("a colour bar was built");
-        (drawn.map.id(), bar.texture.id())
+            .expect("it drew")
+    }
+
+    /// The `h` panel `side` is drawing, in metres.
+    ///
+    /// Every cell of a frame of these runs holds the same value, and that
+    /// value names the frame ([`run_of`]) — so this is which frame the panel
+    /// is showing, read off what it drew rather than off the index it was
+    /// handed.
+    fn panel_h_m(map: &BasinMap, side: Side) -> f64 {
+        let section = &panel_frame(map, side).section;
+        let first = section
+            .points()
+            .first()
+            .expect("the section crosses the basin");
+        assert!(
+            section
+                .points()
+                .iter()
+                .all(|point| point.h_m() == first.h_m()),
+            "these runs are flat within a frame"
+        );
+        first.h_m()
+    }
+
+    /// The series panel `side` holds, and how many times it has walked a run
+    /// for one.
+    fn panel_series(map: &BasinMap, side: Side) -> &super::SeriesCache {
+        &map.panels[side.index()].series
+    }
+
+    /// Repaint a comparison of `left` and `right` once.
+    fn repaint_comparison(
+        ctx: &egui::Context,
+        map: &mut BasinMap,
+        left: &LoadedRun,
+        right: &LoadedRun,
+    ) {
+        let comparison = Comparison::of(left, right).expect("these runs are comparable");
+        let _painted = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                map.draw_comparison(ui, &comparison, true);
+            });
+        });
     }
 
     #[test]
@@ -1330,9 +1798,9 @@ mod tests {
         let (ctx, run) = (egui::Context::default(), run());
         let mut map = BasinMap::default();
         let first = repaint(&ctx, &mut map, &run);
-        map.show_section = !map.show_section;
+        map.layers.section = !map.layers.section;
         assert_eq!(repaint(&ctx, &mut map, &run), first);
-        map.show_section = !map.show_section;
+        map.layers.section = !map.layers.section;
         assert_eq!(repaint(&ctx, &mut map, &run), first);
     }
 
@@ -1347,13 +1815,7 @@ mod tests {
         for index in 0..run.header().output.frame_count {
             map.scrubber.set_index(index);
             let _ = repaint(&ctx, &mut map, &run);
-            let drawn = map
-                .attempt
-                .as_ref()
-                .expect("a frame was drawn")
-                .outcome
-                .as_ref()
-                .expect("it drew");
+            let drawn = panel_frame(&map, Side::Left);
             #[allow(clippy::cast_precision_loss)]
             let expected_m = index as f64;
             assert!(drawn
@@ -1379,13 +1841,13 @@ mod tests {
         let (ctx, run) = (egui::Context::default(), run());
         let mut map = BasinMap::default();
         let _ = repaint(&ctx, &mut map, &run);
-        map.series.select(&run, middle_point(&run));
-        assert_eq!(map.series.walks, 1);
-        map.series.select(&run, middle_point(&run));
-        assert_eq!(map.series.walks, 1, "the same cell is the series in hand");
+        map.panels[Side::Left.index()].series.select(&run, middle_point(&run));
+        assert_eq!(panel_series(&map, Side::Left).walks, 1);
+        map.panels[Side::Left.index()].series.select(&run, middle_point(&run));
+        assert_eq!(panel_series(&map, Side::Left).walks, 1, "the same cell is the series in hand");
         // And it is a series of this run: `h` is everywhere the frame's own
         // index in metres, so the samples say which run they came from.
-        let series = map.series.shown().expect("a point was picked");
+        let series = panel_series(&map, Side::Left).shown().expect("a point was picked");
         #[allow(clippy::cast_precision_loss)]
         let expected: Vec<f64> = (0..run.frame_count()).map(|index| index as f64).collect();
         assert_eq!(
@@ -1406,7 +1868,7 @@ mod tests {
         let (ctx, run) = (egui::Context::default(), run());
         let mut map = BasinMap::default();
         let _ = repaint(&ctx, &mut map, &run);
-        map.series.select(&run, middle_point(&run));
+        map.panels[Side::Left.index()].series.select(&run, middle_point(&run));
         map.scrubber.set_index(2);
         let _ = repaint(&ctx, &mut map, &run);
         map.playback.set_frames_per_second(60.0);
@@ -1414,7 +1876,7 @@ mod tests {
         for _ in 0..10 {
             let _ = repaint(&ctx, &mut map, &run);
         }
-        assert_eq!(map.series.walks, 1);
+        assert_eq!(panel_series(&map, Side::Left).walks, 1);
     }
 
     #[test]
@@ -1426,12 +1888,12 @@ mod tests {
         let (ctx, run) = (egui::Context::default(), run());
         let mut map = BasinMap::default();
         let first = repaint(&ctx, &mut map, &run);
-        map.series.select(&run, middle_point(&run));
-        map.show_series = !map.show_series;
+        map.panels[Side::Left.index()].series.select(&run, middle_point(&run));
+        map.layers.series = !map.layers.series;
         assert_eq!(repaint(&ctx, &mut map, &run), first);
-        map.show_series = !map.show_series;
+        map.layers.series = !map.layers.series;
         assert_eq!(repaint(&ctx, &mut map, &run), first);
-        assert_eq!(map.series.walks, 1);
+        assert_eq!(panel_series(&map, Side::Left).walks, 1);
     }
 
     #[test]
@@ -1447,5 +1909,192 @@ mod tests {
         );
         // The scale is the run's, not the frame's, so the bar is the same bar.
         assert_eq!(second_bar, first_bar);
+    }
+
+    #[test]
+    fn scrubbing_moves_both_panels_to_the_same_frame() {
+        // The ticket's acceptance criterion, from the scrubbing half: the two
+        // panels are not kept in step, they are drawn from one index, so what
+        // is asserted is that each panel drew the frame the chooser names —
+        // read off the values in the frame, not off the index.
+        let ctx = egui::Context::default();
+        let (left, right) = (
+            run_of("control", 3, 1.0),
+            // A different amplitude, so a panel drawing the wrong run's frame
+            // would show a different number rather than a coincidentally equal
+            // one.
+            run_of("perturbed", 3, 10.0),
+        );
+        let mut map = BasinMap::default();
+        for index in 0..3 {
+            map.scrubber.set_index(index);
+            repaint_comparison(&ctx, &mut map, &left, &right);
+            #[allow(clippy::cast_precision_loss)]
+            let frame = index as f64;
+            assert_eq!(panel_h_m(&map, Side::Left), frame);
+            assert_eq!(panel_h_m(&map, Side::Right), frame * 10.0);
+        }
+    }
+
+    #[test]
+    fn playing_carries_both_panels_through_the_run_together() {
+        // The other half of the criterion: the clock writes the one index the
+        // two panels read, so every repaint has them on the same frame, and
+        // the pair stops at the last frame together.
+        let ctx = egui::Context::default();
+        let (left, right) = (run_of("control", 3, 1.0), run_of("perturbed", 3, 10.0));
+        let mut map = BasinMap::default();
+        repaint_comparison(&ctx, &mut map, &left, &right);
+        map.playback.set_frames_per_second(60.0);
+        map.playback.play(&mut map.scrubber);
+        // Sixty frames a second against a repaint loop running rather slower:
+        // ten repaints is far more than the three frames of these runs, so
+        // what is asserted is where they stopped, not how fast.
+        for _ in 0..10 {
+            repaint_comparison(&ctx, &mut map, &left, &right);
+            assert_eq!(panel_h_m(&map, Side::Left) * 10.0, panel_h_m(&map, Side::Right));
+        }
+        assert_eq!(map.scrubber.index(), 2, "playback stops at the last frame");
+        assert!(!map.playback.is_playing());
+        assert_eq!(panel_h_m(&map, Side::Left), 2.0);
+        assert_eq!(panel_h_m(&map, Side::Right), 20.0);
+    }
+
+    #[test]
+    fn a_shorter_run_stops_the_pair_at_the_frames_they_share() {
+        // Past the shorter run's last frame there is nothing to put in the
+        // second panel, so the chooser reaches only as far as both runs do.
+        let ctx = egui::Context::default();
+        let (left, right) = (run_of("long", 3, 1.0), run_of("short", 2, 10.0));
+        let mut map = BasinMap::default();
+        // The first repaint is what fits the chooser to the pair; asking for
+        // frame 2 after it is asking for a frame the shorter run does not have.
+        repaint_comparison(&ctx, &mut map, &left, &right);
+        map.scrubber.set_index(2);
+        repaint_comparison(&ctx, &mut map, &left, &right);
+        assert_eq!(map.scrubber.index(), 1);
+        assert_eq!(panel_h_m(&map, Side::Left), 1.0);
+        assert_eq!(panel_h_m(&map, Side::Right), 10.0);
+    }
+
+    #[test]
+    fn both_panels_are_drawn_on_the_one_colour_bar() {
+        // One bar for the pair, sampled from the scale that covers both runs:
+        // two bars would be two scales, and two scales are what would make the
+        // panels incomparable (`crate::comparison`).
+        let ctx = egui::Context::default();
+        let (left, right) = (run_of("control", 3, 1.0), run_of("perturbed", 3, 10.0));
+        let mut map = BasinMap::default();
+        repaint_comparison(&ctx, &mut map, &left, &right);
+        let comparison = Comparison::of(&left, &right).expect("these runs are comparable");
+        let bar = map.bar.as_ref().expect("a colour bar was built");
+        assert_eq!(bar.scale, comparison.scale());
+        assert_eq!(bar.scale, right.anomaly_scale(), "the wider of the two");
+        assert_ne!(bar.scale, left.anomaly_scale());
+    }
+
+    #[test]
+    fn repainting_the_same_pair_rebuilds_nothing() {
+        let ctx = egui::Context::default();
+        let (left, right) = (run_of("control", 3, 1.0), run_of("perturbed", 3, 10.0));
+        let mut map = BasinMap::default();
+        repaint_comparison(&ctx, &mut map, &left, &right);
+        let drawn = Side::BOTH.map(|side| panel_frame(&map, side).map.id());
+        let bar = map
+            .bar
+            .as_ref()
+            .expect("a colour bar was built")
+            .texture
+            .id();
+        repaint_comparison(&ctx, &mut map, &left, &right);
+        assert_eq!(
+            Side::BOTH.map(|side| panel_frame(&map, side).map.id()),
+            drawn
+        );
+        assert_eq!(
+            map.bar
+                .as_ref()
+                .expect("a colour bar was built")
+                .texture
+                .id(),
+            bar
+        );
+    }
+
+    #[test]
+    fn putting_a_louder_run_beside_a_run_redraws_it_on_the_shared_scale() {
+        // A panel's map is only right for the scale it was drawn on, and in a
+        // comparison the scale is both runs'. So the cache is keyed on the
+        // scale as well as the frame: without that, the run drawn alone would
+        // keep the colours of its own scale while the colour bar under it
+        // stated another.
+        let ctx = egui::Context::default();
+        let (left, right) = (run_of("control", 3, 1.0), run_of("perturbed", 3, 10.0));
+        let mut map = BasinMap::default();
+        let _fitted = repaint(&ctx, &mut map, &left);
+        map.scrubber.set_index(2);
+        let (alone, _bar) = repaint(&ctx, &mut map, &left);
+        repaint_comparison(&ctx, &mut map, &left, &right);
+        assert_ne!(panel_frame(&map, Side::Left).map.id(), alone);
+        // And it is still the same frame of the same run.
+        assert_eq!(panel_h_m(&map, Side::Left), 2.0);
+    }
+
+    #[test]
+    fn a_picked_cell_is_the_same_cell_in_both_panels_and_walks_each_run_once() {
+        // The cell is the pair's, because the two runs are over one grid: one
+        // click asks each panel for the series of the same place in its own
+        // run, and each walks its own run once for it (T-09.4's cost property,
+        // held per panel).
+        let ctx = egui::Context::default();
+        let (left, right) = (run_of("control", 3, 1.0), run_of("perturbed", 3, 10.0));
+        let mut map = BasinMap::default();
+        repaint_comparison(&ctx, &mut map, &left, &right);
+        map.selected = Some(middle_point(&left));
+        repaint_comparison(&ctx, &mut map, &left, &right);
+        for side in Side::BOTH {
+            let series = panel_series(&map, side);
+            assert_eq!(series.walks, 1);
+            assert_eq!(
+                series.shown().expect("a cell was picked").point(),
+                middle_point(&left)
+            );
+        }
+        // The two series are of the same place in two runs, so they differ by
+        // the amplitude the runs differ by.
+        let h_m = |side| {
+            panel_series(&map, side)
+                .shown()
+                .expect("a cell was picked")
+                .samples()
+                .iter()
+                .map(SeriesSample::h_m)
+                .collect::<Vec<f64>>()
+        };
+        assert_eq!(h_m(Side::Left), vec![0.0, 1.0, 2.0]);
+        assert_eq!(h_m(Side::Right), vec![0.0, 10.0, 20.0]);
+        // And repainting the pair walks neither run again.
+        repaint_comparison(&ctx, &mut map, &left, &right);
+        for side in Side::BOTH {
+            assert_eq!(panel_series(&map, side).walks, 1);
+        }
+    }
+
+    #[test]
+    fn the_frame_line_reports_the_time_both_runs_put_the_frame_at() {
+        // One time, because both runs wrote the same one: 86 400 s is a day.
+        let line = super::frame_line(11, 731, [Some(1_036_800.0), Some(1_036_800.0)]);
+        assert!(line.contains("Frame 12 of 731"), "{line}");
+        assert!(line.contains("at 12.00 days"), "{line}");
+    }
+
+    #[test]
+    fn the_frame_line_says_when_the_two_runs_date_the_frame_differently() {
+        // A run continued from day 100 and a run started at zero share an
+        // index and nothing else; the line reports both times rather than
+        // inventing one from the cadence.
+        let line = super::frame_line(0, 366, [Some(0.0), Some(8_640_000.0)]);
+        assert!(line.contains("run A dates 0.00 days"), "{line}");
+        assert!(line.contains("run B dates 100.00 days"), "{line}");
     }
 }

@@ -11,7 +11,7 @@ use std::cell::Cell;
 use std::fmt;
 use std::io::Read;
 
-use termocline_format::{decode_frame, Frame, RunHeader, RunReadError, RunReader};
+use termocline_format::{decode_frame, Frame, GridSpec, RunHeader, RunReadError, RunReader};
 
 use crate::{DivergingScale, StressScale};
 
@@ -334,6 +334,23 @@ fn format_quantity(value: f64) -> String {
     } else {
         format!("{value}")
     }
+}
+
+/// A grid, as a reader would name it: how many cells, over what stretch of
+/// ocean.
+///
+/// Both halves, because either can be what makes two runs incomparable — the
+/// same basin at two resolutions, or the same cell count over two oceans
+/// ([`crate::Mismatch::Grid`]).
+pub(crate) fn grid_description(grid: GridSpec) -> String {
+    let extent = grid.extent();
+    format!(
+        "{} × {} cells over {}, {}",
+        grid.nx(),
+        grid.ny(),
+        longitude_span(extent.west_deg_east, extent.east_deg_east),
+        latitude_span(extent.south_deg_north, extent.north_deg_north),
+    )
 }
 
 /// A west-to-east longitude span, as degrees east or west of the meridian.
