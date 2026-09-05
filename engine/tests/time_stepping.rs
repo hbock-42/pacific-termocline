@@ -529,6 +529,12 @@ const ENERGY_ORDER_TOLERANCE: f64 = 0.2;
 /// across the study are orders of a truncation error. One part in a thousand
 /// over sixteen basin crossings is two orders of magnitude below the energy
 /// itself.
+///
+/// It is a ceiling on *this* four-crossing run and nothing more. The bound the
+/// drift is actually held to — derived from the C-grid Coriolis pair's
+/// skewness defect and RK4's amplification polynomial, resolution-dependent,
+/// and checked over a run eight times as long — is T-07.5's, in
+/// `conservation.rs`.
 const ENERGY_DRIFT_CEILING: f64 = 1.0e-3;
 
 /// The largest relative departure of the energy from its initial value over an
