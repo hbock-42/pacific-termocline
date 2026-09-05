@@ -820,6 +820,11 @@ Stating the boundary is part of the claim.
   not an absolute error at any given production resolution. A scenario run at a
   coarser grid than these tests use inherits the same second-order behaviour
   with a correspondingly larger coefficient.
+- **The Epic 12 coupling is a different report.** Everything above runs with
+  the wind *prescribed*. Switching on the SST anomaly and the atmosphere's
+  response to it makes the basin a coupled system whose behaviour none of these
+  closed forms describes, and whether it oscillates — and at what period — is
+  [`docs/enso-oscillation-report.md`](enso-oscillation-report.md).
 - **T-07.4's rotating-basin statements are modal, not a closed form.** The
   exact tilt profile is available only in the channel; in the rotating basin
   what is asserted is `Σh = 0`, the `ψ₀` balance, and the direction and
