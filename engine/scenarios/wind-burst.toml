@@ -1,0 +1,42 @@
+# Westerly-wind-burst scenario: an anomaly superimposed on the steady alizés.
+#
+# Two forcings, summed in the order they appear: the trade winds of
+# `steady-trades.toml`, plus a westerly burst (CONTEXT.md, *Westerly wind
+# burst*). The burst is an anomaly *against* the trades, so its peak stress is
+# positive while theirs is negative.
+
+[basin]
+nx = 200
+ny = 60
+dx_m = 50000.0
+dy_m = 50000.0
+
+[physics]
+reduced_gravity_m_per_s2 = 0.06
+mean_thermocline_depth_m = 150.0
+rayleigh_damping_per_s = 1.0e-7
+
+[run]
+dt_s = 3600.0
+total_steps = 17520
+output_every_n_steps = 24
+
+[[wind]]
+type = "steady_trade_winds"
+equatorial_zonal_stress_pa = -0.05
+meridional_decay_scale_m = 361000.0
+
+[[wind]]
+type = "wind_burst_anomaly"
+# +0.04 Pa reverses the local stress: −0.05 Pa of trades plus 0.04 Pa of burst
+# still leaves the equator easterly, which is the observed regime.
+peak_zonal_stress_pa = 0.04
+# Centred in the western Pacific, a fifth of the way across a 10 000 km basin.
+center_x_m = 2000000.0
+zonal_scale_m = 1000000.0
+# The waveguide the burst is meant to excite: Le = √(c/β) ≈ 3.61e5 m.
+meridional_scale_m = 361000.0
+# Fired one year into the run, once the trade-driven tilt has spun up.
+peak_time_s = 31556926.08
+# Lt = 10 days, the duration of an observed burst.
+duration_s = 864000.0

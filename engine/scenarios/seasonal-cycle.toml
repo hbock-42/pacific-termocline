@@ -1,0 +1,31 @@
+# Seasonal-cycle scenario: the same alizés breathing with the year.
+#
+# Identical basin and physics to `steady-trades.toml`; the only difference is
+# the annual harmonic 1 + a·cos(2π(t − t_peak)/T_year) on the wind stress
+# (CONTEXT.md, *Seasonal cycle*), so a run of each is a controlled comparison.
+
+[basin]
+nx = 200
+ny = 60
+dx_m = 50000.0
+dy_m = 50000.0
+
+[physics]
+reduced_gravity_m_per_s2 = 0.06
+mean_thermocline_depth_m = 150.0
+rayleigh_damping_per_s = 1.0e-7
+
+[run]
+dt_s = 3600.0
+total_steps = 17520
+output_every_n_steps = 24
+
+[[wind]]
+type = "seasonal_trade_winds"
+equatorial_zonal_stress_pa = -0.05
+meridional_decay_scale_m = 361000.0
+# The alizés vary by roughly ±20 % over the year in the equatorial Pacific
+# (docs/planning/01-scientific-model.md, *Seasonal cycle*).
+relative_amplitude = 0.2
+# The trades peak in the boreal summer: 210 days into a run started on 1 Jan.
+peak_time_s = 18144000.0
