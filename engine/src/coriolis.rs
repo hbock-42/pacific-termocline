@@ -275,9 +275,25 @@ pub(crate) fn accumulate_rows(
         .enumerate()
     {
         let gain = gain_per_s(j);
-        let velocities = &velocity.as_slice()[j * points_per_row..][..points_per_row];
-        for (rate, velocity_m_per_s) in row.iter_mut().zip(velocities) {
+        for (rate, velocity_m_per_s) in row.iter_mut().zip(row_of(velocity, j)) {
             *rate += gain * velocity_m_per_s;
         }
     }
+}
+
+/// Row `j` of `field`, as a slice of its `nx` points.
+///
+/// The one place the flat-index arithmetic behind a row-at-a-time loop is
+/// written. Both this module and [`crate::sst`] evaluate a coefficient once
+/// per row — `f = β·y` for one, the same `f` for the other — and then need the
+/// matching row of a companion field at the same staggering; doing the
+/// `j * nx` by hand at each of those sites is the raw index arithmetic
+/// CODING_STANDARDS.md § *Scope guards* points away from.
+///
+/// # Panics
+/// If `j` is past the last row, which means the caller is iterating a field of
+/// a different shape from the one it is reading.
+pub(crate) fn row_of(field: &Field2D<f64>, j: usize) -> &[f64] {
+    let points_per_row = field.nx();
+    &field.as_slice()[j * points_per_row..][..points_per_row]
 }

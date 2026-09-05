@@ -274,19 +274,7 @@ impl Solver {
         plane: BetaPlane,
         dt_s: f64,
     ) -> Result<Self, SolverError> {
-        let wave_speed = WaveSpeed::new(params.kelvin_wave_speed_m_per_s())
-            .expect("physical parameters are validated positive, so `√(g'·H)` is too");
-        check_timestep(dt_s, spacing, wave_speed)?;
-        check_rotation_timestep(dt_s, grid, plane)?;
-
-        Ok(Self {
-            dt_s,
-            rhs: ShallowWaterRhs::new(grid, spacing, params),
-            coriolis: CoriolisTerm::new(grid, spacing, plane),
-            sst: None,
-            integrator: Rk4::new(&OceanState::at_rest(grid)),
-            stage_stress: WindStressField::calm(grid),
-        })
+        Self::build(grid, spacing, params, plane, dt_s, None)
     }
 
     /// [`Solver::new`], with the Epic 12 SST anomaly equation of [`crate::sst`]
@@ -316,14 +304,43 @@ impl Solver {
         dt_s: f64,
         sst: SstParams,
     ) -> Result<Self, SolverError> {
+        Self::build(grid, spacing, params, plane, dt_s, Some(sst))
+    }
+
+    /// The body of both public constructors: check the two timestep bounds,
+    /// then allocate a solver of the shape the coupling asks for.
+    ///
+    /// One function rather than one constructor deferring to the other,
+    /// because what the coupling changes is not a field to overwrite
+    /// afterwards but the *shape of the buffers*: RK4 takes the shape of its
+    /// five stage states from a prototype, and a coupled run's states carry a
+    /// fourth field. Building the uncoupled solver first would allocate five
+    /// three-field states only to drop them, and would leave the coupled path
+    /// depending on which fields the struct-update syntax happened to replace.
+    fn build(
+        grid: Grid,
+        spacing: Spacing,
+        params: PhysicalParams,
+        plane: BetaPlane,
+        dt_s: f64,
+        sst: Option<SstParams>,
+    ) -> Result<Self, SolverError> {
+        let wave_speed = WaveSpeed::new(params.kelvin_wave_speed_m_per_s())
+            .expect("physical parameters are validated positive, so `√(g'·H)` is too");
+        check_timestep(dt_s, spacing, wave_speed)?;
+        check_rotation_timestep(dt_s, grid, plane)?;
+
+        let prototype = match sst {
+            Some(_) => OceanState::at_rest_with_sst_anomaly(grid),
+            None => OceanState::at_rest(grid),
+        };
         Ok(Self {
-            sst: Some(SstTerm::new(grid, spacing, plane, params, sst)),
-            // RK4's stage buffers take their shape from a prototype, and a
-            // coupled run's states carry a fourth field — so the prototype has
-            // to carry it too, or the stages would silently be a different
-            // state type from the one being stepped.
-            integrator: Rk4::new(&OceanState::at_rest_with_sst_anomaly(grid)),
-            ..Self::new(grid, spacing, params, plane, dt_s)?
+            dt_s,
+            rhs: ShallowWaterRhs::new(grid, spacing, params),
+            coriolis: CoriolisTerm::new(grid, spacing, plane),
+            sst: sst.map(|sst| SstTerm::new(grid, spacing, plane, params, sst)),
+            integrator: Rk4::new(&prototype),
+            stage_stress: WindStressField::calm(grid),
         })
     }
 

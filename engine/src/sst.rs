@@ -38,6 +38,19 @@
 //!   climatology, the SST equation's counterpart of the Rayleigh damping the
 //!   core already carries.
 //!
+//! # Why the advection is zonal only
+//!
+//! There is no `−v'·∂T̄/∂y` term, and that is a decision rather than an
+//! omission. The mean SST of the equatorial Pacific is a *maximum* near the
+//! equator, so `∂T̄/∂y` changes sign across it and vanishes on it — the one
+//! row where this model does most of its work. A single prescribed constant,
+//! which is what the zonal gradient legitimately is (the warm pool falls away
+//! to the cold tongue almost uniformly along the equator), would therefore be
+//! the wrong shape for the meridional one: it would advect heat across the
+//! equator in a direction the real ocean does not. Representing it honestly
+//! needs a `T̄(y)` profile rather than a number, which is a bigger change than
+//! this ticket's equation and is not what makes the Bjerknes loop close.
+//!
 //! # The upwelling is implied by the wind, not prescribed
 //!
 //! `w` is not a parameter. It is diagnosed at each evaluation from the wind
@@ -85,7 +98,8 @@ use std::fmt;
 use termocline_grid::{Field2D, Grid, Staggering, H_STAGGERING, U_STAGGERING, V_STAGGERING};
 use termocline_numerics::{CGridOperators, Spacing};
 
-use crate::coriolis::BetaPlane;
+use crate::boundary::NoNormalFlow;
+use crate::coriolis::{row_of, BetaPlane};
 use crate::forcing::WindStressField;
 use crate::params::PhysicalParams;
 use crate::state::OceanState;
@@ -325,10 +339,16 @@ pub fn mixed_layer_velocity_m_per_s(
 ///
 /// The two stress components live on different faces of the C-grid — `τx` with
 /// `u`, `τy` with `v` — but each mixed-layer velocity component needs both, so
-/// each is interpolated onto the other's faces first. Those interpolations
-/// leave the basin's wall faces at zero, since a wall face has cells on one
-/// side only; the consequence is confined to the perimeter columns and rows,
-/// which is where the closed basin's coasts are anyway.
+/// each is interpolated onto the other's faces first. A C-grid interpolation is
+/// undefined on a wall face, which has cells on one side only, so the
+/// mixed-layer flow would be reading an unwritten number exactly at the coast.
+/// It does not: the flow is brought onto the closed basin's boundary condition
+/// before its divergence is taken
+/// ([`NoNormalFlow::apply_to_surface_flow`]). A coast is a coast to the
+/// surface layer as much as to the currents the solver integrates, so this is
+/// the physics rather than a patch over the interpolation — and it is what
+/// keeps a fictitious upwelling from appearing along the perimeter under any
+/// wind with a meridional component.
 #[derive(Debug, Clone)]
 pub struct SurfaceLayer {
     /// Where the basin sits on the beta-plane, which is what `f` at each row
@@ -336,12 +356,15 @@ pub struct SurfaceLayer {
     plane: BetaPlane,
     /// The C-grid derivative and interpolation operators at this spacing.
     operators: CGridOperators,
-    /// Mass of the mixed layer per unit area, `ρ₀·H_m`, in kg/m².
+    /// The mixed-layer constants this layer reads `H_m` and `r_s` from. Held
+    /// whole rather than copied field by field: they arrive together, they are
+    /// validated together, and a second copy of two of them is a place for the
+    /// two to disagree.
+    params: SstParams,
+    /// Mass of the mixed layer per unit area, `ρ₀·H_m`, in kg/m². Derived from
+    /// `params` and the ocean's `ρ₀` once, because it is what a stress is
+    /// divided by at every point of every evaluation.
     layer_mass_kg_per_m2: f64,
-    /// Mixed-layer depth `H_m`, in metres.
-    mixed_layer_depth_m: f64,
-    /// Rayleigh drag `r_s` of the surface layer, in s⁻¹.
-    surface_drag_per_s: f64,
     /// `τy` interpolated onto the east/west faces, where `u_ml` needs it.
     tau_y_on_u_faces_pa: Field2D<f64>,
     /// `τx` interpolated onto the north/south faces, where `v_ml` needs it.
@@ -373,9 +396,8 @@ impl SurfaceLayer {
         Self {
             plane,
             operators: CGridOperators::new(grid, spacing),
+            params: sst,
             layer_mass_kg_per_m2: params.reference_density_kg_per_m3() * sst.mixed_layer_depth_m(),
-            mixed_layer_depth_m: sst.mixed_layer_depth_m(),
-            surface_drag_per_s: sst.surface_drag_per_s(),
             tau_y_on_u_faces_pa: grid.allocate(U_STAGGERING, 0.0),
             tau_x_on_v_faces_pa: grid.allocate(V_STAGGERING, 0.0),
             u_mixed_layer_m_per_s: grid.allocate(U_STAGGERING, 0.0),
@@ -410,7 +432,7 @@ impl SurfaceLayer {
         self.operators
             .face_x_to_face_y(wind_stress.tau_x_pa(), &mut self.tau_x_on_v_faces_pa);
 
-        let (mass, drag) = (self.layer_mass_kg_per_m2, self.surface_drag_per_s);
+        let (mass, drag) = (self.layer_mass_kg_per_m2, self.params.surface_drag_per_s());
         let plane = self.plane;
         write_rows(
             &mut self.u_mixed_layer_m_per_s,
@@ -431,6 +453,14 @@ impl SurfaceLayer {
             },
         );
 
+        // The coast, before the divergence: no wind-driven flow through a wall,
+        // and so no upwelling read off an interpolation that was never defined
+        // there.
+        NoNormalFlow::apply_to_surface_flow(
+            &mut self.u_mixed_layer_m_per_s,
+            &mut self.v_mixed_layer_m_per_s,
+        );
+
         self.operators.ddx_face_to_center(
             &self.u_mixed_layer_m_per_s,
             &mut self.zonal_divergence_per_s,
@@ -443,7 +473,7 @@ impl SurfaceLayer {
         // What diverges out of the surface layer horizontally has to arrive
         // through its base, so the upward velocity there is the depth-
         // integrated divergence.
-        let depth_m = self.mixed_layer_depth_m;
+        let depth_m = self.params.mixed_layer_depth_m();
         let divergence = self
             .zonal_divergence_per_s
             .as_slice()
@@ -459,6 +489,23 @@ impl SurfaceLayer {
         }
     }
 
+    /// Zonal wind-driven flow `u_ml` of the mixed layer, in m/s, at east/west
+    /// faces, as of the last [`SurfaceLayer::diagnose`]. Zero on the western
+    /// and eastern walls, which is the closed basin's boundary condition and
+    /// not a gap.
+    #[must_use]
+    pub const fn zonal_flow_m_per_s(&self) -> &Field2D<f64> {
+        &self.u_mixed_layer_m_per_s
+    }
+
+    /// Meridional wind-driven flow `v_ml` of the mixed layer, in m/s, at
+    /// north/south faces. The twin of [`SurfaceLayer::zonal_flow_m_per_s`],
+    /// held at zero on the southern and northern walls.
+    #[must_use]
+    pub const fn meridional_flow_m_per_s(&self) -> &Field2D<f64> {
+        &self.v_mixed_layer_m_per_s
+    }
+
     /// Upwelling `w` out of the mixed layer's base, in m/s, at cell centers,
     /// as of the last [`SurfaceLayer::diagnose`]. Positive is upward.
     #[must_use]
@@ -472,7 +519,8 @@ impl SurfaceLayer {
 ///
 /// All three fields are at the same staggering — the two stress components
 /// have already been brought onto `out`'s faces — so this is a pointwise loop,
-/// as in [`crate::coriolis::accumulate_rows`].
+/// as in [`crate::coriolis::accumulate_rows`], and it reads its companion rows
+/// through the same [`row_of`] that module owns.
 fn write_rows(
     out: &mut Field2D<f64>,
     zonal_stress_pa: &Field2D<f64>,
@@ -487,8 +535,8 @@ fn write_rows(
         .enumerate()
     {
         let coriolis = coriolis_per_s(j);
-        let zonal = &zonal_stress_pa.as_slice()[j * points_per_row..][..points_per_row];
-        let meridional = &meridional_stress_pa.as_slice()[j * points_per_row..][..points_per_row];
+        let zonal = row_of(zonal_stress_pa, j);
+        let meridional = row_of(meridional_stress_pa, j);
         for ((value, tau_x), tau_y) in row.iter_mut().zip(zonal).zip(meridional) {
             *value = component(*tau_x, *tau_y, coriolis);
         }

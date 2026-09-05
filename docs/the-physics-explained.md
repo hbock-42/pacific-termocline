@@ -239,11 +239,15 @@ engine implements the first half only.
 
 **Not in the model (v1):**
 
-- **Sea-surface temperature.** There is no `T'` field in the linear core, so
-  strictly the engine simulates the ocean *dynamics* of ENSO — where the warm
-  water is — not the temperature anomalies that ENSO is defined by. Since the
-  eastern thermocline depth and eastern SST move together, `h` in the east is a
-  good proxy, and that is how to read it.
+- **Sea-surface temperature**, unless you ask for it. There is no `T'` field in
+  the linear core, so by default the engine simulates the ocean *dynamics* of
+  ENSO — where the warm water is — not the temperature anomalies that ENSO is
+  defined by. Since the eastern thermocline depth and eastern SST move
+  together, `h` in the east is a good proxy, and that is how to read a default
+  run. A scenario that carries an `[sst]` section gets a real mixed-layer `T'`
+  integrated alongside, warmed and cooled by the water the trade-driven
+  upwelling draws up from just below the thermocline (T-12.1); the linear core
+  it rides on is unchanged, down to the last bit.
 - **The atmospheric half of the Bjerknes loop.** The winds do not respond to
   the ocean. Feed the engine a wind burst and you get the ocean's response to
   that burst; you do not get a self-sustaining oscillation, because the arrow

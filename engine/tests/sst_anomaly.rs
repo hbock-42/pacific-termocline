@@ -126,7 +126,7 @@ fn the_mixed_layer_transport_converges_on_the_ekman_transport_as_the_drag_weaken
     let layer_mass_kg_per_m2 = SEAWATER_REFERENCE_DENSITY_KG_PER_M3 * MIXED_LAYER_DEPTH_M;
     let expected = ekman_transport_m2_per_s(TRADE_WIND_STRESS_PA, coriolis_per_s);
 
-    let mut errors = Vec::new();
+    let mut samples = Vec::new();
     for halvings in 0..3 {
         let surface_drag_per_s = DEFAULT_SURFACE_DRAG_PER_S / f64::from(1 << halvings);
         let (_, v_ml_m_per_s) = mixed_layer_velocity_m_per_s(
@@ -137,19 +137,62 @@ fn the_mixed_layer_transport_converges_on_the_ekman_transport_as_the_drag_weaken
             surface_drag_per_s,
         );
         let transport_m2_per_s = v_ml_m_per_s * MIXED_LAYER_DEPTH_M;
-        errors.push(((transport_m2_per_s - expected) / expected).abs());
+        let smallness = (surface_drag_per_s / coriolis_per_s).powi(2);
+        samples.push((
+            smallness,
+            ((transport_m2_per_s - expected) / expected).abs(),
+        ));
     }
 
-    for pair in errors.windows(2) {
-        let (coarse, fine) = (pair[0], pair[1]);
-        // Halving `r_s` quarters a second-order error. The 5% band is the
-        // slack the exact ratio `(1 + 4x)/(1 + x)` with `x = (r_s/f)²` leaves
-        // at these values, where `x ≈ 3·10⁻³`.
-        let observed_ratio = coarse / fine;
+    for (smallness, error) in samples.iter().copied() {
+        // The departure is not merely second order, it is known exactly: the
+        // solution's transport is `1/(1 + x)` of Ekman's with
+        // `x = (r_s/f)²`, so the relative error is `x/(1 + x)`. Asserting the
+        // closed form rather than a slack band around a ratio of four leaves
+        // nothing to a tolerance — the only inexactness left is the
+        // floating-point arithmetic that produced both sides.
+        let exact = smallness / (1.0 + smallness);
+        // The budget is a few ulps of *one*, not of `exact`. Both sides are
+        // formed by subtracting two transports that agree to better than a
+        // part in fifty, so the cancellation carries the rounding of the
+        // order-one operands into a difference two orders smaller; scaling the
+        // budget by the small difference would be asking the arithmetic for
+        // precision it never had.
         assert!(
-            (observed_ratio - 4.0).abs() < 0.05 * 4.0,
-            "halving the surface drag should quarter the departure from the Ekman transport, \
-             but the error went from {coarse:e} to {fine:e}, a ratio of {observed_ratio}"
+            (error - exact).abs() <= 16.0 * f64::EPSILON,
+            "at (r_s/f)² = {smallness:e} the transport should fall short of Ekman's by \
+             exactly {exact:e} of itself, but it falls short by {error:e}"
+        );
+    }
+
+    // ...and that closed form is second order in `r_s/f`, which is what the
+    // halvings are there to make legible: each one very nearly quarters the
+    // departure. "Very nearly" is itself exact — `x/(1 + x)` with `x` quartered
+    // gives a ratio of `4·(1 + x)/(1 + 4x)`, approaching four from below — so
+    // this is asserted against its own closed form too, and not against a band
+    // around four.
+    for pair in samples.windows(2) {
+        let ((coarse_smallness, coarse), (fine_smallness, fine)) = (pair[0], pair[1]);
+        assert!(
+            coarse_smallness > fine_smallness,
+            "the samples must run from the strongest drag to the weakest"
+        );
+        let observed = coarse / fine;
+        let exact = 4.0 * (1.0 + fine_smallness) / (1.0 + 4.0 * fine_smallness);
+        assert!(
+            exact < 4.0,
+            "the ratio approaches four from below, so a prediction at or above it is a \
+             mis-derivation rather than a near miss"
+        );
+        // A part in a billion. The two errors being divided each carry the
+        // cancellation noise bounded above — a few ulps of one against a
+        // difference of order `x` — so the ratio inherits about `ε/x ≈ 10⁻¹⁴`
+        // of relative noise; a part in a billion is far inside any physical
+        // slack while leaving that arithmetic alone.
+        assert!(
+            (observed - exact).abs() <= 1.0e-9 * exact,
+            "halving the surface drag should shrink the departure from the Ekman transport \
+             by exactly {exact}, but it went from {coarse:e} to {fine:e}, a ratio of {observed}"
         );
     }
 }
@@ -167,6 +210,31 @@ fn the_mixed_layer_transport_converges_on_the_ekman_transport_as_the_drag_weaken
 fn analytic_equatorial_upwelling_m_per_s(tau_x_pa: f64, surface_drag_per_s: f64) -> f64 {
     -BETA_PER_M_PER_S * tau_x_pa
         / (SEAWATER_REFERENCE_DENSITY_KG_PER_M3 * surface_drag_per_s * surface_drag_per_s)
+}
+
+/// The relative error the C-grid difference makes on that upwelling at a cell
+/// height of `dy_m`, to leading order — the tolerance every fixed-resolution
+/// check of the equatorial upwelling is entitled to, derived rather than
+/// observed.
+///
+/// The discrete `∂v_ml/∂y` at a center row sitting on the equator is the
+/// centred difference `(v(dy/2) − v(−dy/2))/dy`, whose Taylor series is
+/// `v'(0) + (dy²/24)·v'''(0) + O(dy⁴)`. Writing `v_ml = (a/r_s)·f(u)` with
+/// `u = βy/r_s`, `a = −τx/(ρ₀·H_m)` and `f(u) = u/(1 + u²) = u − u³ + u⁵ − …`,
+/// the two derivatives are `f'(0) = 1` and `f'''(0) = −6`, so
+///
+/// ```text
+/// (dy²/24)·v'''(0) / v'(0) = −(1/4)·(β·dy/r_s)²
+/// ```
+///
+/// Second order in `dy`, as [ADR-0003]'s C-grid difference promises, and set
+/// by the one meridional scale the upwelling has: the half-width `r_s/β` over
+/// which the Ekman singularity is smoothed.
+///
+/// [ADR-0003]: ../../docs/planning/adr/0003-numerical-scheme.md
+fn upwelling_truncation_fraction(dy_m: f64, surface_drag_per_s: f64) -> f64 {
+    let cells_per_equatorial_scale = BETA_PER_M_PER_S * dy_m / surface_drag_per_s;
+    0.25 * cells_per_equatorial_scale * cells_per_equatorial_scale
 }
 
 #[test]
@@ -247,6 +315,55 @@ fn the_upwelling_is_upward_at_the_equator_under_the_alizes_and_downward_under_a_
         westerly < 0.0,
         "a westerly must downwell at the equator, but w = {westerly} m/s"
     );
+}
+
+#[test]
+fn the_wind_driven_flow_does_not_cross_the_coast() {
+    // A closed basin's coast is a coast to the surface layer too, and the
+    // upwelling is that layer's divergence — so a wall carrying flow would put
+    // a fictitious `w` in the perimeter cells that entrainment would then feed
+    // on. It matters most under a wind with a meridional component, which is
+    // where each mixed-layer component needs the *other* stress interpolated
+    // onto its faces, and where a C-grid interpolation is undefined on a wall.
+    // Exactly zero, not nearly: the condition is an assignment.
+    let params = physical_params();
+    let sst = sst_params();
+    let ny = 21;
+    let basin = equatorial_basin(6, ny, 1.0e5, 4.0e6);
+    let plane = BetaPlane::of_basin(params, basin);
+    let mut layer = SurfaceLayer::new(basin.grid(), basin.spacing(), plane, params, sst);
+
+    // Both components non-zero, which no shipped forcing produces today — the
+    // point is that the boundary condition does not depend on that staying
+    // true.
+    layer.diagnose(&WindStressField::uniform(
+        basin.grid(),
+        TRADE_WIND_STRESS_PA,
+        0.02,
+    ));
+
+    let zonal = layer.zonal_flow_m_per_s();
+    let last_column = zonal.nx() - 1;
+    for j in 0..zonal.ny() {
+        for i in [0, last_column] {
+            assert_eq!(
+                *zonal.get(i, j).expect("a wall column is in bounds"),
+                0.0,
+                "the mixed layer flows through the meridional wall at column {i}, row {j}"
+            );
+        }
+    }
+    let meridional = layer.meridional_flow_m_per_s();
+    let last_row = meridional.ny() - 1;
+    for i in 0..meridional.nx() {
+        for j in [0, last_row] {
+            assert_eq!(
+                *meridional.get(i, j).expect("a wall row is in bounds"),
+                0.0,
+                "the mixed layer flows through the zonal wall at column {i}, row {j}"
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -336,13 +453,13 @@ fn entrainment_carries_the_thermocline_anomaly_into_the_mixed_layer() {
     // The coupling the ticket is about: a deeper thermocline (`h > 0`) puts
     // warmer water under the mixed layer, and the upwelling the alizés imply
     // pumps it in at `w/H_m · γ·h`. With `u' = 0` and `T' = 0` that is the
-    // whole tendency, so it can be read off the upwelling the surface layer
-    // diagnosed — which the convergence test above has already anchored to the
-    // closed-form Ekman divergence. Exact to machine precision, because this
-    // is the assembly of the term rather than its physics.
+    // whole tendency, so every factor of the expected value is written out
+    // from theory — the closed-form equatorial upwelling above, and the two
+    // mixed-layer constants stated at the top of this file. Nothing is read
+    // back from the engine.
     let params = physical_params();
     let sst = sst_params();
-    let ny = 41;
+    let ny = 161;
     let basin = equatorial_basin(6, ny, 1.0e5, 4.0e6);
     let plane = BetaPlane::of_basin(params, basin);
     let mut term = SstTerm::new(basin.grid(), basin.spacing(), plane, params, sst);
@@ -353,23 +470,32 @@ fn entrainment_carries_the_thermocline_anomaly_into_the_mixed_layer() {
     let alizes = WindStressField::uniform(basin.grid(), TRADE_WIND_STRESS_PA, 0.0);
     term.add_to_tendency(&state, &alizes, &mut tendency);
 
-    let row = equator_row(ny);
-    let upwelling_m_per_s = *term
-        .surface_layer()
-        .upwelling_m_per_s()
-        .get(3, row)
+    let expected_k_per_s =
+        analytic_equatorial_upwelling_m_per_s(TRADE_WIND_STRESS_PA, sst.surface_drag_per_s())
+            / MIXED_LAYER_DEPTH_M
+            * SUBSURFACE_SENSITIVITY_K_PER_M
+            * thermocline_anomaly_m;
+    let measured = *tendency
+        .sst_anomaly_k()
+        .unwrap()
+        .get(3, equator_row(ny))
         .unwrap();
-    let expected_k_per_s = upwelling_m_per_s / MIXED_LAYER_DEPTH_M
-        * SUBSURFACE_SENSITIVITY_K_PER_M
-        * thermocline_anomaly_m;
-    let measured = *tendency.sst_anomaly_k().unwrap().get(3, row).unwrap();
     assert!(
         expected_k_per_s > 0.0,
         "a deeper thermocline under upwelling must warm the mixed layer, not cool it"
     );
+    // The only inexact step between theory and tendency is the C-grid
+    // difference that produced `w`, so the tolerance is that difference's own
+    // leading truncation term, derived above — with a tenth of itself in hand
+    // for the `O(dy⁴)` remainder, which at this resolution is another two
+    // orders smaller again.
+    let tolerance_k_per_s = 1.1
+        * upwelling_truncation_fraction(basin.spacing().dy_m(), sst.surface_drag_per_s())
+        * expected_k_per_s;
     assert!(
-        (measured - expected_k_per_s).abs() <= 8.0 * f64::EPSILON * expected_k_per_s.abs(),
-        "entrainment should warm at {expected_k_per_s} K/s, but the tendency is {measured} K/s"
+        (measured - expected_k_per_s).abs() <= tolerance_k_per_s,
+        "entrainment should warm at {expected_k_per_s} K/s to within {tolerance_k_per_s} K/s, \
+         but the tendency is {measured} K/s"
     );
 }
 
@@ -564,8 +690,9 @@ fn the_sst_section_switches_the_coupling_on_and_round_trips_through_toml() {
     // Omitted, so it takes the Zebiak-Cane two-day surface drag.
     assert_eq!(sst.surface_drag_per_s(), DEFAULT_SURFACE_DRAG_PER_S);
 
-    let reparsed = ScenarioConfig::from_toml(&config.to_toml().expect("TOML can hold these numbers"))
-        .expect("what the engine writes, the engine reads");
+    let reparsed =
+        ScenarioConfig::from_toml(&config.to_toml().expect("TOML can hold these numbers"))
+            .expect("what the engine writes, the engine reads");
     assert_eq!(reparsed, config);
 }
 

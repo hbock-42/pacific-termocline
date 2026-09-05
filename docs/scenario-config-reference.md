@@ -462,6 +462,15 @@ not a parameter: it is diagnosed at every evaluation from the wind stress,
 through the steady Rayleigh-drag balance of the wind-driven surface layer, so
 the alizés upwell at the equator and a westerly does not.
 
+The advection is **zonal only**, deliberately. The mean SST of the equatorial
+Pacific peaks near the equator, so `∂T̄/∂y` changes sign across it and vanishes
+on it; a single constant — which is what the zonal gradient legitimately is,
+the warm pool falling away to the cold tongue almost uniformly along the
+equator — would be the wrong shape for the meridional one, and would advect
+heat across the equator in a direction the real ocean does not. A faithful
+meridional term needs a `T̄(y)` profile rather than a number, which is a larger
+change than this equation and is not what closes the Bjerknes loop.
+
 **The section is the switch.** Omitting it entirely leaves the scenario the
 validated linear model of Epics 01–07 — three prognostic variables, three
 fields allocated, the right-hand side those epics were validated against.

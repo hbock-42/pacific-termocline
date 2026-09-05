@@ -604,8 +604,6 @@ impl WindStress for ScenarioWind {
     }
 }
 
-/// A scenario as it is written in a file: four sections, no invariants.
-///
 /// The `[sst]` section: the Epic 12 mixed-layer coupling, and the switch that
 /// turns it on.
 ///
@@ -656,6 +654,8 @@ impl SstSection {
     }
 }
 
+/// A scenario as it is written in a file: five sections, no invariants.
+///
 /// This is the `serde` record and nothing more. It round-trips through TOML,
 /// so a run can record the scenario that produced it, and it becomes a
 /// runnable [`Scenario`] only through [`ScenarioConfig::build`], which is

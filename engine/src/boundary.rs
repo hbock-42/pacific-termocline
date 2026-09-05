@@ -105,6 +105,31 @@ impl NoNormalFlow {
     pub fn apply_to_tendency(tendency: &mut OceanState) {
         hold_walls_at_rest(tendency);
     }
+
+    /// Bring a *diagnosed* horizontal flow onto the same condition: set
+    /// `zonal_m_per_s` to zero on the western and eastern walls and
+    /// `meridional_m_per_s` on the southern and northern ones.
+    ///
+    /// The two fields are at the `u` and `v` staggerings but are not the
+    /// prognostic currents — the Epic 12 surface layer's wind-driven flow is
+    /// the caller ([`crate::sst::SurfaceLayer`]). It gets the same condition
+    /// for the same reason: a closed basin's coast is a coast to every flow in
+    /// the model, not only to the one being integrated, and the surface
+    /// layer's divergence is about to be read as an upwelling.
+    ///
+    /// It also removes the one place that divergence could have been read off
+    /// an undefined number. Each mixed-layer component needs *both* stress
+    /// components, so one of them arrives interpolated from the other's faces
+    /// — and a C-grid interpolation is undefined on a wall face, which has
+    /// cells on one side only. Holding the wall at rest says what the physics
+    /// says there, instead of differencing whatever the interpolation left.
+    pub fn apply_to_surface_flow(
+        zonal_m_per_s: &mut Field2D<f64>,
+        meridional_m_per_s: &mut Field2D<f64>,
+    ) {
+        zero_first_and_last_columns(zonal_m_per_s);
+        zero_first_and_last_rows(meridional_m_per_s);
+    }
 }
 
 /// Zero the normal component on the four walls of an [`OceanState`], read
