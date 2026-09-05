@@ -119,6 +119,16 @@
 //! but the quadrature is used in preference to the expansion, so that the `k̂⁵`
 //! term is not a budget entry.
 //!
+//! One departure from T-07.1 is worth naming rather than leaving implicit.
+//! Its acceptance criterion says *phase* speed, and what a centroid reads is a
+//! *group* speed. On the Kelvin branch that distinction is empty — `ω = c·k` is
+//! linear, so `ω/k = ∂ω/∂k = c` at every wavenumber — which is exactly why
+//! T-07.1 could use the words interchangeably. On this branch they are
+//! genuinely different numbers, and the group speed is the one that has to be
+//! measured: it is what a packet's envelope travels at, so it is what a
+//! position measured twice can read at all. `c/3` is the `k̂ → 0` limit of both,
+//! which is what keeps the headline claim the same claim.
+//!
 //! Nothing else in the basin disturbs that centroid. The Kelvin branch has no
 //! `ψ₀` in the westward invariant at all, so whatever Kelvin energy the run
 //! carries is invisible to it by construction; the packet stays four widths
@@ -302,7 +312,20 @@ const GRAVEST_ROSSBY_SHAPE_RATIO: f64 = 0.25;
 
 /// Meridional mode number `n` of the gravest Rossby wave, as the `2n + 1` it
 /// enters the dispersion relation as.
+///
+/// One constant rather than two, because the `3` of `ω̂³ − (k̂² + 3)ω̂ − k̂ = 0`
+/// and the `3` of `c/3` are the same number: the long-wave root of that cubic
+/// is `ω̂ = −k̂/(2n + 1)`, so a mode's long-wave speed is `c/(2n + 1)`. Writing
+/// the speed as `c` over this term rather than over a literal is what keeps the
+/// two from drifting apart.
 const GRAVEST_ROSSBY_MERIDIONAL_TERM: f64 = 3.0;
+/// The same `2n + 1` for the *second* meridional Rossby mode, `n = 2`.
+///
+/// Its long-wave speed `c/5` is the nearest analytic speed on the slow side of
+/// `c/3`, and
+/// [`the_rossby_packet_travels_west_at_a_third_of_the_kelvin_wave_speed`] uses
+/// it as one of the two neighbours the measurement has to be nearer `c/3` than.
+const SECOND_ROSSBY_MERIDIONAL_TERM: f64 = 5.0;
 
 /// How far out in `k̂` the spectral quadrature of [`mean_group_speed_in_c`]
 /// integrates, in units of `1/σ̂`.
@@ -438,7 +461,7 @@ impl Experiment {
     /// The long-wave speed of the gravest Rossby mode, in m/s — `−c/3`, the
     /// headline number of `CONTEXT.md`. Negative: westward.
     fn long_wave_speed_m_per_s(self) -> f64 {
-        -self.wave_speed_m_per_s() / 3.0
+        -self.wave_speed_m_per_s() / GRAVEST_ROSSBY_MERIDIONAL_TERM
     }
 
     /// The speed this run's centroid should show, in m/s, from the dispersion
@@ -616,10 +639,15 @@ impl Experiment {
             }
         }
 
+        // `(8/3)·ŷ·e^{−ŷ²/2}` is `(4/3)·ψ₁`, and writing it that way is the
+        // point: the mode is defined by its meridional velocity sitting on
+        // `ψ₁` (module header), and every other field of it follows from that.
         let (v_nx, v_ny) = grid.field_shape(V_STAGGERING);
         for j in 0..v_ny {
-            let y_hat = self.basin.y_of_row_m(V_STAGGERING, j) / self.deformation_radius_m;
-            let trapping = (-0.5 * y_hat * y_hat).exp();
+            let waveguide = MeridionalStructure::First.at(
+                self.basin.y_of_row_m(V_STAGGERING, j),
+                self.deformation_radius_m,
+            );
             for i in 0..v_nx {
                 let x_m = self.basin.x_of_column_m(V_STAGGERING, i);
                 *state
@@ -627,12 +655,11 @@ impl Experiment {
                     .get_mut(i, j)
                     .expect("the loop bounds are the field's own shape") = self
                     .wave_speed_m_per_s()
-                    * (8.0 / 3.0)
+                    * (4.0 / 3.0)
                     * amplitude
                     * self.deformation_radius_m
                     * envelope_slope_per_m(x_m)
-                    * y_hat
-                    * trapping;
+                    * waveguide;
             }
         }
 
@@ -827,7 +854,7 @@ fn the_rossby_packet_travels_west_at_a_third_of_the_kelvin_wave_speed() {
         for (name, other_m_per_s) in [
             (
                 "the n = 2 mode's c/5",
-                experiment.wave_speed_m_per_s() / 5.0,
+                experiment.wave_speed_m_per_s() / SECOND_ROSSBY_MERIDIONAL_TERM,
             ),
             ("the Kelvin speed c", experiment.wave_speed_m_per_s()),
         ] {
