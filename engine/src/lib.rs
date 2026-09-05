@@ -16,6 +16,7 @@
 // lint is what keeps that true as the crate grows.
 #![warn(missing_docs)]
 
+pub mod basin;
 pub mod coriolis;
 pub mod forcing;
 pub mod integrator;
@@ -40,12 +41,14 @@ pub use shallow_water::{shallow_water_rhs, ShallowWaterRhs};
 pub use solver::{step, Solver, SolverError};
 pub use state::OceanState;
 
+/// Re-exported so a scenario, the forcing and the rotation all name one
+/// basin geometry.
+pub use basin::{Basin, BasinError};
+
 /// Re-exported so a scenario names one wind forcing: the [`forcing::WindStress`]
-/// trait a scenario implements, the [`forcing::Basin`] it is sampled over, and
-/// the [`forcing::WindStressField`] the solver actually reads.
-pub use forcing::{
-    Basin, BasinError, SteadyTradeWinds, WindStress, WindStressError, WindStressField,
-};
+/// trait a scenario implements and the [`forcing::WindStressField`] the solver
+/// actually reads.
+pub use forcing::{SteadyTradeWinds, WindStress, WindStressError, WindStressField};
 
 /// Re-exported so binaries and the visualizer agree on one format version, and
 /// on where a run's two files live (ADR-0004: the format crate is the one

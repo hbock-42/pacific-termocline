@@ -159,7 +159,11 @@ fn damping_adds_exactly_minus_r_times_the_state() {
     let (grid, spacing) = basin(SMALL_BASIN_CELLS);
     let damping_per_s = STRONG_DAMPING_PER_S;
     let state = lopsided_state(grid, spacing);
-    let wind = WindStressField::uniform(grid, TRADE_WIND_STRESS_X_PA, TRADE_WIND_STRESS_Y_PA);
+    let wind = WindStressField::uniform_including_walls(
+        grid,
+        TRADE_WIND_STRESS_X_PA,
+        TRADE_WIND_STRESS_Y_PA,
+    );
 
     let undamped = shallow_water_rhs(&state, pacific_params(0.0), spacing, &wind);
     let damped = shallow_water_rhs(&state, pacific_params(damping_per_s), spacing, &wind);

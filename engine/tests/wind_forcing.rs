@@ -97,6 +97,22 @@ const BASIN_DY_M: f64 = 1.0e5;
 /// Zonal cell count of the test basins.
 const BASIN_NX: usize = 40;
 
+/// One solar day, in seconds — the shortest interval the steadiness check
+/// samples over.
+const DAY_S: f64 = 86_400.0;
+/// One tropical year, in seconds (365.24 days). The period T-03.2's seasonal
+/// modulation will carry, and therefore the interval a *steady* scenario must
+/// be unmoved by.
+const YEAR_S: f64 = 365.24 * DAY_S;
+/// Ten years, in seconds — several ENSO cycles, and long enough that a slow
+/// drift in a supposedly steady field would show.
+const DECADE_S: f64 = 10.0 * YEAR_S;
+
+/// Meridional positions the trade-wind profile is probed at, in metres north
+/// of the equator: on the equator, one test cell off it, a quarter of the way
+/// to the pole, and far outside any basin this model uses.
+const PROBE_LATITUDES_M: [f64; 4] = [0.0, BASIN_DY_M, -2.5e6, 1.0e7];
+
 /// Meridional cell counts the tilt is measured on, in decreasing order. The
 /// basin reaches `±ny·Δy/2`, so each entry halves the largest `|f| = β·|y|`
 /// the run sees, and with it the rotation coupling the one-dimensional
@@ -115,6 +131,15 @@ const RUN_TO_EQUILIBRIUM_S: f64 = 3.0e7;
 /// tens of ulps of `f64` (ε ≈ 2.2×10⁻¹⁶) for the handful of operations per
 /// point the expression costs.
 const ROUNDING_TOLERANCE: f64 = 1.0e-14;
+
+/// The equatorial deformation radius `Le = √(c/β)`, in metres — the
+/// meridional scale over which equatorial waves decay away from the equator
+/// (`CONTEXT.md`, *Equatorial deformation radius*), and the natural width for
+/// a wind field meant to drive that waveguide. About 3.45×10⁵ m for the
+/// parameters below.
+fn equatorial_deformation_radius_m(params: PhysicalParams) -> f64 {
+    (params.kelvin_wave_speed_m_per_s() / params.beta_per_m_per_s()).sqrt()
+}
 
 /// The equatorial-Pacific parameter set at a given Rayleigh damping.
 fn pacific_params(rayleigh_damping_per_s: f64) -> PhysicalParams {
@@ -143,8 +168,11 @@ fn the_trade_winds_blow_easterly_on_the_equator() {
     // The sign convention of `CONTEXT.md`: the alizés blow from the east, so
     // `τx < 0`. On the equator the Gaussian is exactly one, so the stress is
     // the configured amplitude itself.
-    let winds = SteadyTradeWinds::with_meridional_decay(TRADE_WIND_STRESS_PA, 3.45e5)
-        .expect("an easterly stress with a positive decay scale");
+    let winds = SteadyTradeWinds::with_meridional_decay(
+        TRADE_WIND_STRESS_PA,
+        equatorial_deformation_radius_m(pacific_params(STRONG_DAMPING_PER_S)),
+    )
+    .expect("an easterly stress with a positive decay scale");
     let (tau_x_pa, _) = winds.stress(0.0, 0.0, 0.0);
 
     assert!(
@@ -160,7 +188,7 @@ fn the_trade_winds_decay_away_from_the_equator_as_a_gaussian() {
     // module's own arithmetic: at one decay scale the stress is `τ₀/e`, at two
     // it is `τ₀/e⁴`, and it is symmetric about the equator because `y` enters
     // squared.
-    let decay_scale_m = 3.45e5;
+    let decay_scale_m = equatorial_deformation_radius_m(pacific_params(STRONG_DAMPING_PER_S));
     let winds = SteadyTradeWinds::with_meridional_decay(TRADE_WIND_STRESS_PA, decay_scale_m)
         .expect("an easterly stress with a positive decay scale");
 
@@ -189,7 +217,7 @@ fn uniform_trade_winds_have_no_meridional_structure() {
     let winds = SteadyTradeWinds::uniform(TRADE_WIND_STRESS_PA)
         .expect("an easterly stress is a trade wind");
 
-    for y_m in [0.0, 1.0e5, -2.5e6, 1.0e7] {
+    for y_m in PROBE_LATITUDES_M {
         assert_eq!(winds.stress(0.0, y_m, 0.0).0, TRADE_WIND_STRESS_PA);
     }
 }
@@ -199,13 +227,20 @@ fn the_trade_winds_are_zonal_and_steady() {
     // "Steady" is the whole name of the scenario: the same stress at every
     // `x`, and at every `t` from the first step to ten years in. The seasonal
     // modulation is T-03.2's.
-    let winds = SteadyTradeWinds::with_meridional_decay(TRADE_WIND_STRESS_PA, 3.45e5)
-        .expect("an easterly stress with a positive decay scale");
-    let reference = winds.stress(0.0, 1.0e5, 0.0);
+    let params = pacific_params(STRONG_DAMPING_PER_S);
+    let winds = SteadyTradeWinds::with_meridional_decay(
+        TRADE_WIND_STRESS_PA,
+        equatorial_deformation_radius_m(params),
+    )
+    .expect("an easterly stress with a positive decay scale");
+    // Probed off the equator, where the profile actually varies, so a stress
+    // that drifted with `x` or `t` could not hide behind the Gaussian's peak.
+    let probe_y_m = BASIN_DY_M;
+    let reference = winds.stress(0.0, probe_y_m, 0.0);
 
-    for x_m in [0.0, 1.0e6, BASIN_LX_M] {
-        for t_s in [0.0, 86_400.0, 3.156e7, 3.156e8] {
-            let stress = winds.stress(x_m, 1.0e5, t_s);
+    for x_m in [0.0, BASIN_LX_M / 2.0, BASIN_LX_M] {
+        for t_s in [0.0, DAY_S, YEAR_S, DECADE_S] {
+            let stress = winds.stress(x_m, probe_y_m, t_s);
             assert_eq!(stress, reference, "at x = {x_m} m, t = {t_s} s");
             assert_eq!(stress.1, 0.0, "the alizés carry no meridional stress");
         }
@@ -236,7 +271,8 @@ fn a_wind_that_is_not_easterly_is_refused_by_name() {
 
 #[test]
 fn a_decay_scale_that_is_not_a_distance_is_refused_by_name() {
-    for value_m in [0.0, -3.45e5, f64::NAN, f64::INFINITY] {
+    let negative_scale_m = -equatorial_deformation_radius_m(pacific_params(STRONG_DAMPING_PER_S));
+    for value_m in [0.0, negative_scale_m, f64::NAN, f64::INFINITY] {
         let error = SteadyTradeWinds::with_meridional_decay(TRADE_WIND_STRESS_PA, value_m)
             .expect_err("a decay scale must be a finite, positive distance");
         let WindStressError::ScaleNotPositive {
@@ -255,7 +291,7 @@ fn a_decay_scale_that_is_not_a_distance_is_refused_by_name() {
 
 #[test]
 fn a_basin_at_a_position_that_is_not_a_position_is_refused_by_name() {
-    let basin = equatorial_basin(4);
+    let basin = equatorial_basin(NARROWING_BASIN_CELLS[1]);
     let error = Basin::new(basin.grid(), basin.spacing(), f64::NAN, 0.0)
         .expect_err("a basin edge must be a finite position");
     let BasinError::NotFinite { parameter, value_m } = error;
@@ -283,7 +319,7 @@ fn the_basin_and_the_beta_plane_agree_on_where_each_row_sits() {
     // The forcing and the rotation must not disagree about which row is the
     // equator, or the wind would be centred on one latitude and the waveguide
     // on another.
-    let basin = equatorial_basin(8);
+    let basin = equatorial_basin(NARROWING_BASIN_CELLS[0]);
     let params = pacific_params(STRONG_DAMPING_PER_S);
     let plane = BetaPlane::centered_on_equator(params, basin.spacing(), basin.grid());
 
@@ -305,8 +341,9 @@ fn sampling_puts_each_component_on_the_faces_its_equation_lives_on() {
     // accelerates `v`, on the north/south ones. Each interior face must carry
     // the trait's value at that face's own position, evaluated here from the
     // Gaussian rather than read back from the field.
-    let decay_scale_m = 3.45e5;
-    let basin = equatorial_basin(8);
+    let params = pacific_params(STRONG_DAMPING_PER_S);
+    let decay_scale_m = equatorial_deformation_radius_m(params);
+    let basin = equatorial_basin(NARROWING_BASIN_CELLS[0]);
     let winds = SteadyTradeWinds::with_meridional_decay(TRADE_WIND_STRESS_PA, decay_scale_m)
         .expect("an easterly stress with a positive decay scale");
 
@@ -344,7 +381,7 @@ fn the_closed_basins_walls_carry_no_sampled_stress() {
     // is what keeps a wind-driven closed basin closed until T-04.2 gives the
     // boundary a condition of its own — without it the coasts pass water and
     // the basin never tilts at all.
-    let basin = equatorial_basin(8);
+    let basin = equatorial_basin(NARROWING_BASIN_CELLS[0]);
     let winds = SteadyTradeWinds::uniform(TRADE_WIND_STRESS_PA)
         .expect("an easterly stress is a trade wind");
 
@@ -369,12 +406,15 @@ fn re_sampling_in_place_writes_every_point() {
     // A time-varying scenario re-samples one buffer per RK4 stage rather than
     // allocating a field per stage (CODING_STANDARDS.md § Performance), so no
     // point may survive from the previous contents.
-    let basin = equatorial_basin(8);
-    let winds = SteadyTradeWinds::with_meridional_decay(TRADE_WIND_STRESS_PA, 3.45e5)
-        .expect("an easterly stress with a positive decay scale");
+    let basin = equatorial_basin(NARROWING_BASIN_CELLS[0]);
+    let winds = SteadyTradeWinds::with_meridional_decay(
+        TRADE_WIND_STRESS_PA,
+        equatorial_deformation_radius_m(pacific_params(STRONG_DAMPING_PER_S)),
+    )
+    .expect("an easterly stress with a positive decay scale");
     let expected = WindStressField::sampled(basin, &winds, 0.0);
 
-    let mut field = WindStressField::uniform(basin.grid(), 1.0, -1.0);
+    let mut field = WindStressField::uniform_including_walls(basin.grid(), 1.0, -1.0);
     field.sample(basin, &winds, 0.0);
 
     assert_eq!(field, expected);
@@ -387,8 +427,8 @@ fn sampling_over_the_wrong_basin_panics() {
     // are for (CODING_STANDARDS.md § Correctness and failure).
     let winds = SteadyTradeWinds::uniform(TRADE_WIND_STRESS_PA)
         .expect("an easterly stress is a trade wind");
-    let mut field = WindStressField::calm(equatorial_basin(8).grid());
-    field.sample(equatorial_basin(4), &winds, 0.0);
+    let mut field = WindStressField::calm(equatorial_basin(NARROWING_BASIN_CELLS[0]).grid());
+    field.sample(equatorial_basin(NARROWING_BASIN_CELLS[1]), &winds, 0.0);
 }
 
 // --- The acceptance criterion: the thermocline tilts. ---
@@ -426,13 +466,13 @@ fn run_to_equilibrium(
     let mut solver = Solver::new(basin.grid(), basin.spacing(), params, plane, dt_s)
         .unwrap_or_else(|error| panic!("the test's own timestep must be admissible: {error}"));
 
-    // The forcing is steady, so it is sampled once and reused: the trait is a
-    // function of time, but this scenario's value does not depend on it.
-    let stress = WindStressField::sampled(basin, winds, 0.0);
+    // Driven by the trait itself, re-sampled at every RK4 stage: this is the
+    // path a scenario takes, and the one that makes the forcing plumbing of
+    // this ticket load-bearing rather than decorative.
     let mut state = OceanState::at_rest(basin.grid());
     let steps = (run_s / dt_s).ceil() as usize;
     for step in 0..steps {
-        solver.step(&mut state, step as f64 * dt_s, |_t_s| &stress);
+        solver.step_forced_by(&mut state, step as f64 * dt_s, basin, winds);
     }
     state
 }
@@ -570,15 +610,16 @@ fn trade_winds_that_decay_off_the_equator_still_tilt_the_thermocline() {
     // The other profile the ticket names. A stress that falls away from the
     // equator has no closed-form steady state — it drives a meridional
     // circulation the one-dimensional balance says nothing about — so this
-    // checks the sign the criterion is about, on a basin wide enough for the
-    // decay to be visible: the deformation radius is 3.45×10⁵ m and the basin
-    // reaches ±4×10⁵ m.
+    // checks the sign the criterion is about, on the widest of the test basins,
+    // which reaches ±4×10⁵ m — a little over one deformation radius, so the
+    // decay is visible across it.
     let basin = equatorial_basin(NARROWING_BASIN_CELLS[0]);
     let params = pacific_params(STRONG_DAMPING_PER_S);
-    let deformation_radius_m =
-        (params.kelvin_wave_speed_m_per_s() / params.beta_per_m_per_s()).sqrt();
-    let winds = SteadyTradeWinds::with_meridional_decay(TRADE_WIND_STRESS_PA, deformation_radius_m)
-        .expect("an easterly stress with a positive decay scale");
+    let winds = SteadyTradeWinds::with_meridional_decay(
+        TRADE_WIND_STRESS_PA,
+        equatorial_deformation_radius_m(params),
+    )
+    .expect("an easterly stress with a positive decay scale");
 
     let state = run_to_equilibrium(basin, params, &winds, RUN_TO_EQUILIBRIUM_S);
 

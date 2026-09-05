@@ -381,7 +381,11 @@ fn a_uniform_wind_stress_accelerates_the_current_by_tau_over_rho_h() {
     let (grid, spacing) = basin(SMALL_BASIN_CELLS);
     let params = pacific_params();
     let state = OceanState::at_rest(grid);
-    let wind = WindStressField::uniform(grid, TRADE_WIND_STRESS_X_PA, TRADE_WIND_STRESS_Y_PA);
+    let wind = WindStressField::uniform_including_walls(
+        grid,
+        TRADE_WIND_STRESS_X_PA,
+        TRADE_WIND_STRESS_Y_PA,
+    );
 
     let tendency = shallow_water_rhs(&state, params, spacing, &wind);
 
@@ -473,7 +477,11 @@ fn a_reused_evaluator_writes_every_point_of_its_output() {
     *state.h_mut() = sample(grid, spacing, H_STAGGERING, |x_m, y_m| {
         gaussian_bump_m(spacing, crest, x_m, y_m)
     });
-    let wind = WindStressField::uniform(grid, TRADE_WIND_STRESS_X_PA, TRADE_WIND_STRESS_Y_PA);
+    let wind = WindStressField::uniform_including_walls(
+        grid,
+        TRADE_WIND_STRESS_X_PA,
+        TRADE_WIND_STRESS_Y_PA,
+    );
     let expected = shallow_water_rhs(&state, params, spacing, &wind);
 
     let mut evaluator = ShallowWaterRhs::new(grid, spacing, params);
@@ -512,7 +520,11 @@ fn the_basin_walls_carry_the_wind_stress_alone() {
     *state.h_mut() = sample(grid, spacing, H_STAGGERING, |x_m, y_m| {
         gaussian_bump_m(spacing, crest, x_m, y_m)
     });
-    let wind = WindStressField::uniform(grid, TRADE_WIND_STRESS_X_PA, TRADE_WIND_STRESS_Y_PA);
+    let wind = WindStressField::uniform_including_walls(
+        grid,
+        TRADE_WIND_STRESS_X_PA,
+        TRADE_WIND_STRESS_Y_PA,
+    );
 
     let tendency = shallow_water_rhs(&state, params, spacing, &wind);
 

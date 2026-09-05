@@ -12,8 +12,9 @@
 //! points its momentum equations live on, which on the Arakawa C-grid of
 //! [ADR-0003] are the east/west faces for `τx` and the north/south faces for
 //! `τy`. [`WindStressField`] is that discretisation — the trait sampled onto
-//! one basin at one instant — and [`Basin`] is what turns a `(staggering, i,
-//! j)` into the `(x, y)` in metres the trait is asked about.
+//! one basin at one instant — and [`Basin`](crate::Basin), from the `basin`
+//! module, is what turns a `(staggering, i, j)` into the `(x, y)` in metres
+//! the trait is asked about.
 //!
 //! # Why the basin's walls carry no stress
 //!
@@ -48,175 +49,11 @@
 use std::fmt;
 
 use termocline_grid::{Field2D, Grid, Staggering, U_STAGGERING, V_STAGGERING};
-use termocline_numerics::Spacing;
+
+use crate::basin::Basin;
 
 /// Stress of a calm ocean surface, in Pa.
 const CALM: f64 = 0.0;
-
-/// Half of something, in the "midpoint of an extent" sense.
-const HALF: f64 = 0.5;
-
-/// Why a basin could not be placed on the plane.
-///
-/// This describes invalid *scenario input* — a run asking for a basin at a
-/// position that is not a position — so it is returned rather than panicked,
-/// and it names the offending value (CODING_STANDARDS.md § Correctness and
-/// failure).
-#[derive(Debug, Clone, PartialEq)]
-pub enum BasinError {
-    /// One of the basin's two edges was not a finite position.
-    NotFinite {
-        /// Name of the parameter, matching its accessor.
-        parameter: &'static str,
-        /// The value supplied, in metres.
-        value_m: f64,
-    },
-}
-
-impl fmt::Display for BasinError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotFinite { parameter, value_m } => {
-                write!(f, "{parameter} is {value_m}; it must be a finite position")
-            }
-        }
-    }
-}
-
-impl std::error::Error for BasinError {}
-
-/// Where a basin sits in the plane, and therefore where each C-grid point of
-/// it is.
-///
-/// The grid knows the *shape* of a basin in cells and the spacing knows how
-/// wide a cell is; neither knows where the basin's southwest corner lies, and
-/// a forcing stated as `τ(x, y, t)` cannot be sampled without it. `Basin` is
-/// that missing origin, and the map from `(staggering, i, j)` to metres that
-/// it implies.
-///
-/// `y` is measured north from the equator, so that
-/// [`Basin::y_of_row_m`] and
-/// [`BetaPlane::y_of_row_m`](crate::BetaPlane::y_of_row_m) agree on a basin
-/// built from the same southern edge: the forcing and the rotation must not
-/// disagree about which row is the equator.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Basin {
-    /// Shape of the basin, in cells.
-    grid: Grid,
-    /// Cell width and height, in metres.
-    spacing: Spacing,
-    /// Position of the basin's western boundary, in metres.
-    western_edge_x_m: f64,
-    /// Position of the basin's southern boundary, in metres north of the
-    /// equator — negative for a basin whose southern edge is in the southern
-    /// hemisphere, which is the usual case.
-    southern_edge_y_m: f64,
-}
-
-impl Basin {
-    /// A basin of `grid` cells at `spacing`, with its southwest corner at
-    /// `(western_edge_x_m, southern_edge_y_m)`.
-    ///
-    /// # Errors
-    /// [`BasinError::NotFinite`] if either edge is not a finite position.
-    pub fn new(
-        grid: Grid,
-        spacing: Spacing,
-        western_edge_x_m: f64,
-        southern_edge_y_m: f64,
-    ) -> Result<Self, BasinError> {
-        check_finite("western_edge_x_m", western_edge_x_m)?;
-        check_finite("southern_edge_y_m", southern_edge_y_m)?;
-        Ok(Self {
-            grid,
-            spacing,
-            western_edge_x_m,
-            southern_edge_y_m,
-        })
-    }
-
-    /// A basin straddling the equator symmetrically, with its western
-    /// boundary at `x = 0`.
-    ///
-    /// The idealized configuration the Epic 02 and 03 tests run in, and the
-    /// one [`BetaPlane::centered_on_equator`](crate::BetaPlane::centered_on_equator)
-    /// assumes: the equatorial waveguide is centred on the basin, so no wave
-    /// is trapped against a wall. The real Pacific's truncation arrives with
-    /// T-04.1.
-    #[must_use]
-    pub fn centered_on_equator(grid: Grid, spacing: Spacing) -> Self {
-        Self {
-            grid,
-            spacing,
-            western_edge_x_m: 0.0,
-            southern_edge_y_m: -HALF * grid.ny() as f64 * spacing.dy_m(),
-        }
-    }
-
-    /// Shape of this basin, in cells.
-    #[must_use]
-    pub const fn grid(self) -> Grid {
-        self.grid
-    }
-
-    /// Cell width and height of this basin, in metres.
-    #[must_use]
-    pub const fn spacing(self) -> Spacing {
-        self.spacing
-    }
-
-    /// Position of the basin's western boundary, in metres.
-    #[must_use]
-    pub const fn western_edge_x_m(self) -> f64 {
-        self.western_edge_x_m
-    }
-
-    /// Position of the basin's southern boundary, in metres north of the
-    /// equator.
-    #[must_use]
-    pub const fn southern_edge_y_m(self) -> f64 {
-        self.southern_edge_y_m
-    }
-
-    /// Width of the basin, in metres — the `L` of the analytic tilt.
-    #[must_use]
-    pub fn zonal_extent_m(self) -> f64 {
-        self.grid.nx() as f64 * self.spacing.dx_m()
-    }
-
-    /// Height of the basin, in metres.
-    #[must_use]
-    pub fn meridional_extent_m(self) -> f64 {
-        self.grid.ny() as f64 * self.spacing.dy_m()
-    }
-
-    /// Zonal position of the column `i` of a field at `staggering`, in metres.
-    ///
-    /// The half-cell offset that separates a cell-center column from an
-    /// east/west-face column comes from [`Staggering::offset_in_cells`] rather
-    /// than from a literal here, per CODING_STANDARDS.md § Scope guards: the
-    /// grid knows about staggering, the physics does not.
-    #[must_use]
-    pub fn x_of_column_m(self, staggering: Staggering, i: usize) -> f64 {
-        let (offset_in_cells, _) = staggering.offset_in_cells();
-        self.western_edge_x_m + (i as f64 + offset_in_cells) * self.spacing.dx_m()
-    }
-
-    /// Meridional position of the row `j` of a field at `staggering`, in
-    /// metres north of the equator.
-    #[must_use]
-    pub fn y_of_row_m(self, staggering: Staggering, j: usize) -> f64 {
-        let (_, offset_in_cells) = staggering.offset_in_cells();
-        self.southern_edge_y_m + (j as f64 + offset_in_cells) * self.spacing.dy_m()
-    }
-}
-
-fn check_finite(parameter: &'static str, value_m: f64) -> Result<(), BasinError> {
-    if value_m.is_finite() {
-        return Ok(());
-    }
-    Err(BasinError::NotFinite { parameter, value_m })
-}
 
 /// A prescribed surface wind stress, as a function of position and time.
 ///
@@ -305,9 +142,10 @@ pub struct SteadyTradeWinds {
     /// Zonal stress `τ₀` on the equator, in Pa. Strictly negative.
     equatorial_zonal_stress_pa: f64,
     /// Meridional decay scale `Ly`, in metres — the `y` at which the stress
-    /// has fallen to `1/e` of its equatorial value. Infinite for a uniform
-    /// field.
-    meridional_decay_scale_m: f64,
+    /// has fallen to `1/e` of its equatorial value. `None` for a field with no
+    /// meridional structure at all, which is not the same thing as a scale of
+    /// any particular size.
+    meridional_decay_scale_m: Option<f64>,
 }
 
 impl SteadyTradeWinds {
@@ -327,7 +165,7 @@ impl SteadyTradeWinds {
         check_easterly(equatorial_zonal_stress_pa)?;
         Ok(Self {
             equatorial_zonal_stress_pa,
-            meridional_decay_scale_m: f64::INFINITY,
+            meridional_decay_scale_m: None,
         })
     }
 
@@ -356,7 +194,7 @@ impl SteadyTradeWinds {
         }
         Ok(Self {
             equatorial_zonal_stress_pa,
-            meridional_decay_scale_m,
+            meridional_decay_scale_m: Some(meridional_decay_scale_m),
         })
     }
 
@@ -366,22 +204,24 @@ impl SteadyTradeWinds {
         self.equatorial_zonal_stress_pa
     }
 
-    /// Meridional decay scale `Ly`, in metres; infinite for a uniform field.
+    /// Meridional decay scale `Ly`, in metres, or `None` for a field with no
+    /// meridional structure.
     #[must_use]
-    pub const fn meridional_decay_scale_m(self) -> f64 {
+    pub const fn meridional_decay_scale_m(self) -> Option<f64> {
         self.meridional_decay_scale_m
     }
 }
 
 impl WindStress for SteadyTradeWinds {
     fn stress(&self, _x_m: f64, y_m: f64, _t_s: f64) -> (f64, f64) {
-        // `y / ∞ = 0` and `exp(−0) = 1`, so the uniform case falls out of the
-        // same expression rather than needing a branch of its own.
-        let scaled = y_m / self.meridional_decay_scale_m;
-        (
-            self.equatorial_zonal_stress_pa * (-scaled * scaled).exp(),
-            CALM,
-        )
+        let decay = match self.meridional_decay_scale_m {
+            None => 1.0,
+            Some(scale_m) => {
+                let scaled = y_m / scale_m;
+                (-scaled * scaled).exp()
+            }
+        };
+        (self.equatorial_zonal_stress_pa * decay, CALM)
     }
 }
 
@@ -415,11 +255,12 @@ impl WindStressField {
     /// The unforced limit the wave tests of Epic 07 run in.
     #[must_use]
     pub fn calm(grid: Grid) -> Self {
-        Self::uniform(grid, CALM, CALM)
+        Self::uniform_including_walls(grid, CALM, CALM)
     }
 
     /// A stress of `tau_x_pa` by `tau_y_pa` pascals at *every* face of `grid`,
     /// the basin's walls included.
+    ///
     ///
     /// The raw constructor, and the one the Epic 02 right-hand-side tests use
     /// to ask what the momentum equations do with a stress at a wall. A field
@@ -427,7 +268,7 @@ impl WindStressField {
     /// [`WindStressField::sample`] and this module's header for why the
     /// difference matters.
     #[must_use]
-    pub fn uniform(grid: Grid, tau_x_pa: f64, tau_y_pa: f64) -> Self {
+    pub fn uniform_including_walls(grid: Grid, tau_x_pa: f64, tau_y_pa: f64) -> Self {
         Self {
             grid,
             tau_x_pa: grid.allocate(U_STAGGERING, tau_x_pa),
