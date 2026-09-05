@@ -39,3 +39,11 @@ jobs:
 
       - name: Test
         run: cargo test --workspace --all-features
+
+      # ADR-0006: the visualizer runs in a browser, where there is no
+      # filesystem, so `termocline-format` has to build without the `fs`
+      # feature that `RunReader::open` lives behind. Nothing else in the
+      # workspace builds that way, so nothing else would notice the day a
+      # `std::fs` import leaked into the core reader.
+      - name: Check the format crate without its filesystem feature
+        run: cargo check -p termocline-format --no-default-features
