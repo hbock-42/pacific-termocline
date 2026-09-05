@@ -41,7 +41,7 @@
 use std::fmt;
 use std::path::Path;
 
-use termocline_format::{BasinExtent, FormatError, GridSpec, RunHeader};
+use termocline_format::{FormatError, GridSpec, RunHeader};
 
 use crate::coriolis::BetaPlane;
 use crate::forcing::WindStressField;
@@ -178,7 +178,6 @@ pub fn run_scenario(
     let grid = basin.grid();
     let params = scenario.physical_params();
     let schedule = scenario.output_schedule();
-    let bounds = scenario.bounds();
 
     // The beta-plane is placed by the basin's southern boundary rather than
     // centred on the grid, so a scenario that does not straddle the equator
@@ -188,16 +187,7 @@ pub fn run_scenario(
     let mut solver = Solver::new(grid, basin.spacing(), params, plane, schedule.dt_s())?;
 
     let header = RunHeader::new(
-        GridSpec::new(
-            grid.nx(),
-            grid.ny(),
-            BasinExtent::new(
-                bounds.western_longitude_deg(),
-                bounds.eastern_longitude_deg(),
-                bounds.southern_latitude_deg(),
-                bounds.northern_latitude_deg(),
-            ),
-        )?,
+        GridSpec::new(grid.nx(), grid.ny(), scenario.bounds().into())?,
         params.into(),
         description,
         schedule.timing(),

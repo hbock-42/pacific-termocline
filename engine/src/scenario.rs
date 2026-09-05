@@ -264,14 +264,6 @@ impl BasinSection {
             self.resolution_deg,
         )?)
     }
-
-    /// The [`Basin`] this section describes, in metres.
-    ///
-    /// # Errors
-    /// Whatever [`BasinSection::bounds`] objected to.
-    pub fn build(&self) -> Result<Basin, ScenarioError> {
-        Ok(self.bounds()?.basin())
-    }
 }
 
 /// The `[physics]` section: the constants of the scenario's ocean.

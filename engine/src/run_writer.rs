@@ -65,6 +65,7 @@ use termocline_format::{
     HEADER_FILE_NAME,
 };
 
+use crate::basin::BasinBounds;
 use crate::forcing::WindStressField;
 use crate::params::PhysicalParams;
 use crate::state::OceanState;
@@ -84,6 +85,26 @@ impl From<PhysicalParams> for termocline_format::PhysicalParams {
             rayleigh_damping_per_s: params.rayleigh_damping_per_s(),
             reference_density_kg_per_m3: params.reference_density_kg_per_m3(),
         }
+    }
+}
+
+/// The engine's basin as the format records its position.
+///
+/// The four degrees of [`BasinBounds`] and the four of
+/// [`termocline_format::BasinExtent`] are the same four boundaries; this
+/// conversion is the one place a scenario's basin crosses from the input's
+/// vocabulary into the file's, beside the parameters above, so a header can
+/// never disagree about which stretch of ocean the run covers. The
+/// resolution does not cross with them: the format states the grid as a cell
+/// count, which [`termocline_format::GridSpec`] carries.
+impl From<BasinBounds> for termocline_format::BasinExtent {
+    fn from(bounds: BasinBounds) -> Self {
+        Self::new(
+            bounds.western_longitude_deg(),
+            bounds.eastern_longitude_deg(),
+            bounds.southern_latitude_deg(),
+            bounds.northern_latitude_deg(),
+        )
     }
 }
 

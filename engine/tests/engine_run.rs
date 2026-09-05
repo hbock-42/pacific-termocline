@@ -34,10 +34,17 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command};
-use std::sync::atomic::{AtomicU32, Ordering};
 
 use engine::{Scenario, ScenarioConfig, Staggering, FRAME_FILE_NAME, HEADER_FILE_NAME};
 use termocline_format::{RunReader, Variable, FORMAT_VERSION};
+
+mod common;
+
+use common::ScratchDir;
+
+/// This file's ticket, which labels the directories it leaves in the system
+/// temp directory.
+const TICKET: &str = "t061";
 
 /// The three example scenarios of T-03.4, by file stem. The list is written
 /// out rather than read from the directory so that an example silently
@@ -166,7 +173,7 @@ fn every_shipped_example_is_a_scenario_the_engine_will_run() {
 #[test]
 fn each_example_scenario_produces_a_readable_run_directory() {
     for stem in EXAMPLE_STEMS {
-        let scratch = ScratchDir::new(stem);
+        let scratch = ScratchDir::new(TICKET, stem);
         let source = shortened_example(stem);
         let out = run_scenario_text(&source, scratch.path(), stem);
 
@@ -297,7 +304,7 @@ fn the_steady_trades_run_tilts_the_thermocline_up_to_the_east() {
     // docs/planning/01-scientific-model.md). This is the sign of the response,
     // which is fixed by the sign of the stress; the magnitude after one day is
     // not what is being checked.
-    let scratch = ScratchDir::new("tilt");
+    let scratch = ScratchDir::new(TICKET, "tilt");
     let out = run_scenario_text(
         &shortened_example("steady-trades"),
         scratch.path(),
@@ -341,7 +348,7 @@ fn the_same_scenario_twice_writes_the_same_bytes() {
     // CODING_STANDARDS.md § *Correctness and failure*: identical scenario in,
     // byte-identical output. Two runs of one config into two directories, then
     // both files compared byte for byte.
-    let scratch = ScratchDir::new("deterministic");
+    let scratch = ScratchDir::new(TICKET, "deterministic");
     let source = shortened_example("wind-burst");
 
     let first_dir = scratch.path().join("first");
@@ -366,7 +373,7 @@ fn a_config_that_is_not_there_is_reported_rather_than_panicked() {
     // CODING_STANDARDS.md § *Correctness and failure*: invalid user input is a
     // `Result` all the way up, so what reaches the terminal names the file
     // rather than unwinding.
-    let scratch = ScratchDir::new("missing");
+    let scratch = ScratchDir::new(TICKET, "missing");
     let missing = scratch.path().join("not-a-scenario.toml");
 
     let output = run_cli(&missing, &scratch.path().join("run"));
@@ -390,7 +397,7 @@ fn an_unstable_timestep_is_refused_before_anything_is_written() {
     // it. The run must be refused rather than shortened
     // (CODING_STANDARDS.md § *No silent clamping*), and refused before the
     // header is written, since a run directory that exists should hold a run.
-    let scratch = ScratchDir::new("unstable");
+    let scratch = ScratchDir::new(TICKET, "unstable");
     let mut config = ScenarioConfig::from_toml(&example_source("steady-trades"))
         .expect("a shipped example is a scenario");
     config.run.dt_s = 86_400.0;
@@ -416,33 +423,4 @@ fn an_unstable_timestep_is_refused_before_anything_is_written() {
         !out.join(HEADER_FILE_NAME).exists(),
         "a refused run should not have left a header behind"
     );
-}
-
-/// A directory of one's own under the system temp directory, removed when the
-/// test that made it ends. The runs here write real files, and two tests
-/// running at once must not share one.
-struct ScratchDir {
-    path: PathBuf,
-}
-
-impl ScratchDir {
-    fn new(name: &str) -> Self {
-        static COUNTER: AtomicU32 = AtomicU32::new(0);
-        let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("termocline-t061-{name}-{}-{unique}", process::id()));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).expect("the system temp directory is writable");
-        Self { path }
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for ScratchDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
 }
