@@ -9,6 +9,10 @@ description = "Reads the engine's output files and renders them. Never touches t
 
 [dependencies]
 termocline-format.workspace = true
+# Named for the C-grid staggering the wind overlay averages across; the crate
+# is data structures and indexing only, so it costs the browser build nothing
+# (ADR-0006).
+termocline-grid.workspace = true
 # `wgpu`, not `glow`: it is the backend that reaches WebGPU, and the one whose
 # native and web behaviour agree most closely (ADR-0006).
 eframe = { version = "0.33", default-features = false, features = [

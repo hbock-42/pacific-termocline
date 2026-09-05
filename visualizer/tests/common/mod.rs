@@ -94,20 +94,62 @@ pub fn encoded_frames_with_h(
     count: u64,
     h_m: impl Fn(u64) -> Vec<f64>,
 ) -> Vec<u8> {
+    encoded_frames_with_fields(header, count, |index| FrameFields {
+        h_m: h_m(index),
+        ..FrameFields::calm(header)
+    })
+}
+
+/// The fields of one frame that a test cares about: the anomaly the map draws
+/// and the stress the overlay draws. The currents are not among them — nothing
+/// in the visualizer reads `u` or `v` yet — so they are zero-filled below.
+pub struct FrameFields {
+    /// Thermocline depth anomaly `h`, in metres, at cell centres.
+    pub h_m: Vec<f64>,
+    /// Zonal wind stress `τx`, in pascals, at east/west faces.
+    pub tau_x_pa: Vec<f64>,
+    /// Meridional wind stress `τy`, in pascals, at north/south faces.
+    pub tau_y_pa: Vec<f64>,
+}
+
+impl FrameFields {
+    /// An ocean at rest under no wind, on `header`'s grid.
+    pub fn calm(header: &RunHeader) -> Self {
+        let field = |variable| vec![0.0; header.grid.field_len(variable)];
+        Self {
+            h_m: field(Variable::ThermoclineDepthAnomaly),
+            tau_x_pa: field(Variable::ZonalWindStress),
+            tau_y_pa: field(Variable::MeridionalWindStress),
+        }
+    }
+}
+
+/// `count` encoded frames on `header`'s grid, spaced by its output interval,
+/// carrying the fields `fields(index)` gives for each.
+pub fn encoded_frames_with_fields(
+    header: &RunHeader,
+    count: u64,
+    fields: impl Fn(u64) -> FrameFields,
+) -> Vec<u8> {
     let grid = header.grid;
-    let field = |variable| vec![0.0; grid.field_len(variable)];
+    let zero = |variable| vec![0.0; grid.field_len(variable)];
     let mut frames = Vec::new();
     for index in 0..count {
         #[allow(clippy::cast_precision_loss)]
         let t_s = index as f64 * header.output.interval_s;
+        let FrameFields {
+            h_m,
+            tau_x_pa,
+            tau_y_pa,
+        } = fields(index);
         let frame = Frame::new(
             t_s,
             &grid,
-            h_m(index),
-            field(Variable::ZonalCurrentAnomaly),
-            field(Variable::MeridionalCurrentAnomaly),
-            field(Variable::ZonalWindStress),
-            field(Variable::MeridionalWindStress),
+            h_m,
+            zero(Variable::ZonalCurrentAnomaly),
+            zero(Variable::MeridionalCurrentAnomaly),
+            tau_x_pa,
+            tau_y_pa,
         )
         .expect("fields sized from the grid fit it");
         frames.extend(
