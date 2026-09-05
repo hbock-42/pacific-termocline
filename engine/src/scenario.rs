@@ -35,13 +35,12 @@
 //! # The file
 //!
 //! ```toml
-//! [basin]
-//! nx = 200                     # cells east–west
-//! ny = 60                      # cells north–south
-//! dx_m = 50000.0
-//! dy_m = 50000.0
-//! # western_edge_x_m  — optional, defaults to 0
-//! # southern_edge_y_m — optional, defaults to −ny·dy/2 (centred on the equator)
+//! [basin]                      # every key optional; the whole section too
+//! western_longitude_deg = 120.0   # 120°E
+//! eastern_longitude_deg = -80.0   # 80°W, counted eastward across the dateline
+//! southern_latitude_deg = -25.0
+//! northern_latitude_deg = 25.0
+//! resolution_deg = 0.5            # cell size, both axes
 //!
 //! [physics]
 //! reduced_gravity_m_per_s2 = 0.06
@@ -73,10 +72,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use termocline_grid::{Grid, GridError};
-use termocline_numerics::{check_timestep, CflError, Spacing, SpacingError, WaveSpeed};
+use termocline_numerics::{check_timestep, CflError, WaveSpeed};
 
-use crate::basin::{Basin, BasinError};
+use crate::basin::{Basin, BasinBounds, BasinBoundsError};
 use crate::forcing::{
     CompositeWind, SeasonalTradeWinds, SteadyTradeWinds, WindBurstAnomaly, WindStress,
     WindStressError,
@@ -110,12 +108,9 @@ pub enum ScenarioError {
     Malformed(toml::de::Error),
     /// A valid scenario could not be written back out as TOML.
     Unwritable(toml::ser::Error),
-    /// `[basin]` asked for a grid with no cells on an axis.
-    Grid(GridError),
-    /// `[basin]` asked for a cell spacing that is not a positive distance.
-    Spacing(SpacingError),
-    /// `[basin]` placed a wall somewhere that is not a position.
-    Basin(BasinError),
+    /// `[basin]` described something that is not a basin: a boundary that is
+    /// not a position on the planet, or a resolution that does not divide it.
+    Basin(BasinBoundsError),
     /// `[physics]` asked for an unphysical ocean.
     PhysicalParams(PhysicalParamsError),
     /// A `[[wind]]` entry described a forcing that cannot exist.
@@ -139,8 +134,6 @@ impl fmt::Display for ScenarioError {
             }
             Self::Malformed(source) => write!(f, "this is not a scenario: {source}"),
             Self::Unwritable(source) => write!(f, "could not write the scenario: {source}"),
-            Self::Grid(source) => write!(f, "[basin]: {source}"),
-            Self::Spacing(source) => write!(f, "[basin]: {source}"),
             Self::Basin(source) => write!(f, "[basin]: {source}"),
             Self::PhysicalParams(source) => write!(f, "[physics]: {source}"),
             Self::Wind(source) => write!(f, "[[wind]]: {source}"),
@@ -156,8 +149,6 @@ impl std::error::Error for ScenarioError {
             Self::Unreadable { source, .. } => Some(source),
             Self::Malformed(source) => Some(source),
             Self::Unwritable(source) => Some(source),
-            Self::Grid(source) => Some(source),
-            Self::Spacing(source) => Some(source),
             Self::Basin(source) => Some(source),
             Self::PhysicalParams(source) => Some(source),
             Self::Wind(source) => Some(source),
@@ -173,20 +164,8 @@ impl From<toml::de::Error> for ScenarioError {
     }
 }
 
-impl From<GridError> for ScenarioError {
-    fn from(source: GridError) -> Self {
-        Self::Grid(source)
-    }
-}
-
-impl From<SpacingError> for ScenarioError {
-    fn from(source: SpacingError) -> Self {
-        Self::Spacing(source)
-    }
-}
-
-impl From<BasinError> for ScenarioError {
-    fn from(source: BasinError) -> Self {
+impl From<BasinBoundsError> for ScenarioError {
+    fn from(source: BasinBoundsError) -> Self {
         Self::Basin(source)
     }
 }
@@ -215,56 +194,76 @@ impl From<CflError> for ScenarioError {
     }
 }
 
-/// The `[basin]` section: the shape of the basin, the size of a cell, and
-/// where its southwest corner sits.
+/// The `[basin]` section: which part of the ocean the scenario runs on, in
+/// degrees, and how finely it is cut into cells.
+///
+/// Every key is optional and defaults to the equatorial Pacific of
+/// `CONTEXT.md` (*Basin*), so a scenario states a bound only when it means
+/// something other than the basin this project is about.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, default)]
 pub struct BasinSection {
-    /// Cells east–west.
-    pub nx: usize,
-    /// Cells north–south.
-    pub ny: usize,
-    /// Cell width, in metres.
-    pub dx_m: f64,
-    /// Cell height, in metres.
-    pub dy_m: f64,
-    /// Position of the western wall, in metres. Omitted means `0`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub western_edge_x_m: Option<f64>,
-    /// Position of the southern wall, in metres north of the equator. Omitted
-    /// means `−ny·dy/2`: the basin straddles the equator symmetrically, which
-    /// is [`Basin::centered_on_equator`] and the configuration the idealized
-    /// scenarios run in.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub southern_edge_y_m: Option<f64>,
+    /// Western boundary, in degrees east. Omitted means
+    /// [`PACIFIC_WESTERN_LONGITUDE_DEG`](crate::basin::PACIFIC_WESTERN_LONGITUDE_DEG).
+    pub western_longitude_deg: f64,
+    /// Eastern boundary, in degrees east — counted eastward from the western
+    /// one, so `-80.0` and `280.0` are the same meridian and a basin may
+    /// cross the dateline. Omitted means [`PACIFIC_EASTERN_LONGITUDE_DEG`](crate::basin::PACIFIC_EASTERN_LONGITUDE_DEG).
+    pub eastern_longitude_deg: f64,
+    /// Southern boundary, in degrees north. Omitted means
+    /// [`PACIFIC_SOUTHERN_LATITUDE_DEG`](crate::basin::PACIFIC_SOUTHERN_LATITUDE_DEG).
+    pub southern_latitude_deg: f64,
+    /// Northern boundary, in degrees north. Omitted means
+    /// [`PACIFIC_NORTHERN_LATITUDE_DEG`](crate::basin::PACIFIC_NORTHERN_LATITUDE_DEG).
+    pub northern_latitude_deg: f64,
+    /// Cell size, in degrees, on both axes. Omitted means
+    /// [`PACIFIC_RESOLUTION_DEG`](crate::basin::PACIFIC_RESOLUTION_DEG).
+    pub resolution_deg: f64,
+}
+
+impl Default for BasinSection {
+    /// The Pacific, read off [`BasinBounds::pacific`] rather than restated
+    /// here so the file format and the basin cannot drift apart about what the
+    /// default basin is.
+    fn default() -> Self {
+        Self::of(BasinBounds::pacific())
+    }
 }
 
 impl BasinSection {
-    /// The [`Basin`] this section describes.
+    /// The section that states `bounds`.
+    #[must_use]
+    pub fn of(bounds: BasinBounds) -> Self {
+        Self {
+            western_longitude_deg: bounds.western_longitude_deg(),
+            eastern_longitude_deg: bounds.eastern_longitude_deg(),
+            southern_latitude_deg: bounds.southern_latitude_deg(),
+            northern_latitude_deg: bounds.northern_latitude_deg(),
+            resolution_deg: bounds.resolution_deg(),
+        }
+    }
+
+    /// The [`BasinBounds`] this section describes.
     ///
     /// # Errors
-    /// [`ScenarioError::Grid`] for an axis with no cells,
-    /// [`ScenarioError::Spacing`] for a cell that is not a positive size, and
-    /// [`ScenarioError::Basin`] for a wall that is not at a position.
-    pub fn build(&self) -> Result<Basin, ScenarioError> {
-        let grid = Grid::new(self.nx, self.ny)?;
-        let spacing = Spacing::new(self.dx_m, self.dy_m)?;
-        // The defaults are read off `Basin::centered_on_equator` rather than
-        // restated here, so the file format and the basin cannot drift apart
-        // about where an unplaced basin sits.
-        let default_placement = Basin::centered_on_equator(grid, spacing);
-        let western_edge_x_m = self
-            .western_edge_x_m
-            .unwrap_or(default_placement.western_edge_x_m());
-        let southern_edge_y_m = self
-            .southern_edge_y_m
-            .unwrap_or(default_placement.southern_edge_y_m());
-        Ok(Basin::new(
-            grid,
-            spacing,
-            western_edge_x_m,
-            southern_edge_y_m,
+    /// [`ScenarioError::Basin`], naming the boundary or the resolution that is
+    /// not one.
+    pub fn bounds(&self) -> Result<BasinBounds, ScenarioError> {
+        Ok(BasinBounds::new(
+            self.western_longitude_deg,
+            self.eastern_longitude_deg,
+            self.southern_latitude_deg,
+            self.northern_latitude_deg,
+            self.resolution_deg,
         )?)
+    }
+
+    /// The [`Basin`] this section describes, in metres.
+    ///
+    /// # Errors
+    /// Whatever [`BasinSection::bounds`] objected to.
+    pub fn build(&self) -> Result<Basin, ScenarioError> {
+        Ok(self.bounds()?.basin())
     }
 }
 
@@ -484,7 +483,8 @@ impl WindStress for ScenarioWind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScenarioConfig {
-    /// The `[basin]` section.
+    /// The `[basin]` section. Omitted entirely means the Pacific.
+    #[serde(default)]
     pub basin: BasinSection,
     /// The `[physics]` section.
     pub physics: PhysicsSection,

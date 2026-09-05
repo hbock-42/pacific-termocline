@@ -1,4 +1,4 @@
-# Control scenario: steady easterly alizés over an idealized equatorial basin.
+# Control scenario: steady easterly alizés over the equatorial Pacific basin.
 #
 # The Ly of the trade winds is the equatorial deformation radius
 # Le = √(c/β) = √(3.0 / 2.3e-11) ≈ 3.61e5 m for the g' and H below
@@ -6,12 +6,15 @@
 # the waveguide it is meant to drive.
 
 [basin]
-# 200 × 60 cells of 50 km: 10 000 km of Pacific by 3 000 km of latitude,
-# straddling the equator (the default southern edge is −ny·dy/2).
-nx = 200
-ny = 60
-dx_m = 50000.0
-dy_m = 50000.0
+# The equatorial Pacific of CONTEXT.md, *Basin*: 120°E–80°W by 25°S–25°N, in
+# cells of half a degree (≈ 55.6 km of arc), which is 320 × 100 cells. Every
+# value here is the default; they are written out so the file records which
+# basin the run was on.
+western_longitude_deg = 120.0
+eastern_longitude_deg = -80.0
+southern_latitude_deg = -25.0
+northern_latitude_deg = 25.0
+resolution_deg = 0.5
 
 [physics]
 # g' = 0.06 m/s² and H = 150 m give c = √(g'H) = 3.0 m/s, the observed
@@ -22,7 +25,7 @@ mean_thermocline_depth_m = 150.0
 rayleigh_damping_per_s = 1.0e-7
 
 [run]
-# dt = 1 h is well inside the CFL bound of 0.8·dx/c ≈ 13 333 s for this grid.
+# dt = 1 h is well inside the CFL bound of 0.8·dx/c ≈ 14 800 s for this grid.
 dt_s = 3600.0
 # 17 520 steps of 1 h = 730 days, two years of spin-up; a frame a day.
 total_steps = 17520
