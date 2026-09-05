@@ -15,6 +15,7 @@
 //! [ADR-0006]: ../../docs/planning/adr/0006-web-visualizer.md
 
 mod app;
+mod chart;
 mod cross_section;
 mod heatmap;
 mod loading;
@@ -22,6 +23,7 @@ mod pending;
 mod playback;
 mod run;
 mod scrubber;
+mod time_series;
 mod wind;
 
 pub use app::VisualizerApp;
@@ -34,6 +36,7 @@ pub use pending::PendingRun;
 pub use playback::{Playback, MAX_STALL_S, PLAYBACK_SPEEDS_FPS};
 pub use run::{LoadedRun, MetadataRow, RunBytes};
 pub use scrubber::Scrubber;
+pub use time_series::{BasinPoint, PointSeries, SeriesSample, SstScale};
 pub use wind::{
     StressScale, WindArrow, WindOverlay, ARROW_SPACING_CELLS, MAX_ARROW_LENGTH_CELLS,
     MIN_ARROW_LENGTH_CELLS,
