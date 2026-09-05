@@ -190,6 +190,8 @@
 //!
 //! [ADR-0003]: ../../docs/planning/adr/0003-numerical-scheme.md
 
+mod support;
+
 use std::sync::OnceLock;
 
 use engine::{
@@ -197,25 +199,7 @@ use engine::{
     WindStressField, H_STAGGERING, U_STAGGERING,
 };
 
-/// Reduced gravity `g'` of the equatorial Pacific's first baroclinic mode, in
-/// m/s². Standard value for the 1.5-layer model (Gill, *Atmosphere–Ocean
-/// Dynamics*, ch. 11; Cane & Sarachik 1981).
-const PACIFIC_REDUCED_GRAVITY_M_PER_S2: f64 = 0.05;
-/// Mean thermocline depth `H` of the equatorial Pacific, in metres — the
-/// canonical 150 m upper layer of the same 1.5-layer configuration.
-const PACIFIC_MEAN_DEPTH_M: f64 = 150.0;
-/// The equatorial beta-plane gradient, in m⁻¹s⁻¹ — `CONTEXT.md`, *Beta-plane*.
-const BETA_PER_M_PER_S: f64 = engine::EQUATORIAL_BETA_PER_M_PER_S;
-/// Reference seawater density `ρ₀`, in kg/m³ — `CONTEXT.md` and Gill, appendix 3.
-const REFERENCE_DENSITY_KG_PER_M3: f64 = engine::SEAWATER_REFERENCE_DENSITY_KG_PER_M3;
-/// Rayleigh damping `r` of this experiment, in s⁻¹.
-///
-/// Zero. Damping decays a wave without moving it, but it decays the incident
-/// and the reflected halves of the run by different factors and would leave
-/// the reflected packet's amplitude a function of the damping rather than of
-/// the reflection; the speeds this file measures are cleanest in the undamped
-/// limit, and nothing here needs a steady state to exist.
-const UNDAMPED_PER_S: f64 = 0.0;
+use support::{gaussian_envelope, pacific_params, Invariants, MeridionalStructure};
 
 /// Cells along x of the reflection basin: 26 000 km of it.
 ///
@@ -357,44 +341,6 @@ const WESTWARD_SHARE_BEFORE_REFLECTION: f64 = 1.0e-3;
 /// the reflection, so this is bounded the same way and at the same figure.
 const EASTWARD_SHARE_AFTER_REFLECTION: f64 = WESTWARD_SHARE_BEFORE_REFLECTION;
 
-/// One of the two meridional structures this file projects a run onto.
-///
-/// Named rather than indexed by `n`, because `n` is not the interesting thing
-/// about either of them: [`MeridionalStructure::Gravest`] is the Kelvin wave's
-/// shape and the gravest Rossby mode's leading one, and
-/// [`MeridionalStructure::Second`] is the partner that makes the Rossby mode's
-/// thermocline anomaly deepest off the equator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MeridionalStructure {
-    /// `ψ_0(η) = e^{−η²/2}`.
-    Gravest,
-    /// `ψ_2(η) = (4η² − 2)·e^{−η²/2}`.
-    Second,
-}
-
-impl MeridionalStructure {
-    /// This structure at `y` metres from the equator, for a waveguide of the
-    /// given deformation radius.
-    fn at(self, y_m: f64, deformation_radius_m: f64) -> f64 {
-        let eta = y_m / deformation_radius_m;
-        let envelope = (-0.5 * eta * eta).exp();
-        match self {
-            Self::Gravest => envelope,
-            Self::Second => (4.0 * eta * eta - 2.0) * envelope,
-        }
-    }
-}
-
-/// The two `ψ_0` invariants of a state, column by column: the eastward
-/// `P₀[u/c + h/H]` and the westward `P₀[u/c − h/H]` of the module header.
-#[derive(Debug, Clone)]
-struct Invariants {
-    /// Where the Kelvin wave is, and how much of it there is.
-    eastward: Vec<f64>,
-    /// The same for the gravest Rossby mode.
-    westward: Vec<f64>,
-}
-
 /// One reflection experiment: a basin, an ocean, and an incident pulse of a
 /// given width.
 ///
@@ -416,14 +362,7 @@ struct Experiment {
 impl Experiment {
     /// The experiment with an incident pulse `incident_width_m` wide.
     fn new(incident_width_m: f64) -> Self {
-        let params = PhysicalParams::new(
-            PACIFIC_REDUCED_GRAVITY_M_PER_S2,
-            PACIFIC_MEAN_DEPTH_M,
-            UNDAMPED_PER_S,
-            BETA_PER_M_PER_S,
-            REFERENCE_DENSITY_KG_PER_M3,
-        )
-        .expect("the published equatorial-Pacific parameters are physical");
+        let params = pacific_params();
         let grid = Grid::new(BASIN_NX, BASIN_NY).expect("extents are non-zero");
         let spacing = Spacing::new(CELL_WIDTH_M, CELL_HEIGHT_M).expect("cell sizes are positive");
         let basin = Basin::new(grid, spacing, 0.0, -0.5 * BASIN_LY_M)
@@ -477,51 +416,16 @@ impl Experiment {
         .map(|transits| transits * self.transit_s())
     }
 
-    /// `ψ_n` sampled on the cell-center rows, which is where both `h` and `u`
-    /// sit meridionally.
-    fn row_structure(self, structure: MeridionalStructure) -> Vec<f64> {
-        (0..self.basin.grid().ny())
-            .map(|j| {
-                structure.at(
-                    self.basin.y_of_row_m(H_STAGGERING, j),
-                    self.deformation_radius_m,
-                )
-            })
-            .collect()
-    }
-
-    /// The `ψ_n` coefficient, column by column, of a cell-centered field given
-    /// as `value(i, j)`.
-    ///
-    /// The `ψ_n` are orthogonal on the line and the basin reaches 5.8 `Le`, so
-    /// this discrete inner product is the modal coefficient to the accuracy of
-    /// the row quadrature — the row spacing cancels between the projection and
-    /// its normalisation.
-    fn project_columns(
-        self,
-        structure: MeridionalStructure,
-        value: impl Fn(usize, usize) -> f64,
-    ) -> Vec<f64> {
-        let weights = self.row_structure(structure);
-        let normalisation: f64 = weights.iter().map(|weight| weight * weight).sum();
-        (0..self.basin.grid().nx())
-            .map(|i| {
-                let projection: f64 = weights
-                    .iter()
-                    .enumerate()
-                    .map(|(j, weight)| value(i, j) * weight)
-                    .sum();
-                projection / normalisation
-            })
-            .collect()
-    }
-
     /// The thermocline depth anomaly's `ψ_n` coefficient, column by column, in
     /// units of the mean depth `H`.
     fn depth_projection(self, state: &OceanState, structure: MeridionalStructure) -> Vec<f64> {
-        self.project_columns(structure, |i, j| {
-            state.h().get(i, j).expect("a cell center") / self.params.mean_thermocline_depth_m()
-        })
+        support::depth_projection(
+            self.basin,
+            self.deformation_radius_m,
+            self.params,
+            state,
+            structure,
+        )
     }
 
     /// The two `ψ_0` invariants of `state` (module header).
@@ -529,24 +433,13 @@ impl Experiment {
     /// `u` is averaged from its two faces onto the cell center so that both
     /// invariants are read at one set of positions.
     fn invariants(self, state: &OceanState) -> Invariants {
-        let zonal_current = self.project_columns(MeridionalStructure::Gravest, |i, j| {
-            let west = state.u().get(i, j).expect("an east/west face");
-            let east = state.u().get(i + 1, j).expect("an east/west face");
-            0.5 * (west + east) / self.wave_speed_m_per_s()
-        });
-        let depth_anomaly = self.depth_projection(state, MeridionalStructure::Gravest);
-        Invariants {
-            eastward: zonal_current
-                .iter()
-                .zip(&depth_anomaly)
-                .map(|(current, depth)| current + depth)
-                .collect(),
-            westward: zonal_current
-                .iter()
-                .zip(&depth_anomaly)
-                .map(|(current, depth)| current - depth)
-                .collect(),
-        }
+        support::invariants(
+            self.basin,
+            self.deformation_radius_m,
+            self.params,
+            state,
+            self.wave_speed_m_per_s(),
+        )
     }
 
     /// The columns of `profile` west of `eastern_limit_m`, as
@@ -569,25 +462,16 @@ impl Experiment {
     /// The centroid of a linear wave packet moves at its energy-weighted mean
     /// group velocity, which is what both speed measurements read.
     fn energy_centroid_m(self, profile: &[f64]) -> f64 {
-        let (weighted_position, weight) = self
-            .columns_west_of(profile, self.coastal_mask_x_m())
-            .fold((0.0, 0.0), |(moment, total), (x_m, amplitude)| {
-                let energy = amplitude * amplitude;
-                (moment + x_m * energy, total + energy)
-            });
-        assert!(
-            weight > 0.0,
-            "the profile carries no energy west of the coastal mask, so it has no centroid"
-        );
-        weighted_position / weight
+        support::energy_centroid_m(self.columns_west_of(profile, self.coastal_mask_x_m()))
     }
 
     /// `Σ profile²` over the same columns — the quantity that centroid weights
     /// by, and the one the before-and-after energy shares compare.
     fn energy(self, profile: &[f64]) -> f64 {
-        self.columns_west_of(profile, self.coastal_mask_x_m())
-            .map(|(_, amplitude)| amplitude * amplitude)
-            .sum()
+        support::energy(
+            self.columns_west_of(profile, self.coastal_mask_x_m())
+                .map(|(_, amplitude)| amplitude),
+        )
     }
 
     /// The incident Kelvin pulse: a Gaussian in `x` on the `ψ_0` waveguide,
@@ -601,10 +485,7 @@ impl Experiment {
         let centre_x_m = self.incident_centre_x_m();
         let current_amplitude_m_per_s = INCIDENT_AMPLITUDE_M * self.wave_speed_m_per_s()
             / self.params.mean_thermocline_depth_m();
-        let profile = |x_m: f64| {
-            let offset = (x_m - centre_x_m) / self.incident_width_m;
-            (-0.5 * offset * offset).exp()
-        };
+        let profile = |x_m: f64| gaussian_envelope(x_m, centre_x_m, self.incident_width_m);
 
         for j in 0..state.h().ny() {
             let waveguide = MeridionalStructure::Gravest.at(

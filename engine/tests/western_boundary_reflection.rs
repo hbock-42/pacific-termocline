@@ -121,7 +121,7 @@
 //! - **Reflected Kelvin speed**: `(Δy/Le)²`, the leading truncation error of
 //!   the second-order meridional discretisation of the waveguide. `ψ₀` varies
 //!   on the scale `Le` itself, so its `O(1)` constant is taken as one; the
-//!   general form is [`MeridionalMode::truncation_richness`]. The zonal
+//!   general form is [`MeridionalStructure::truncation_richness`]. The zonal
 //!   contribution is `(k·Δx)²/24 ≈ 5×10⁻⁵` at this packet's dominant
 //!   wavenumber and the RK4 time error is fourth order, so both are far below
 //!   it. The point check is therefore generous on purpose; the *order* is
@@ -129,7 +129,7 @@
 //!   CODING_STANDARDS.md § *Convergence over point checks*.
 //! - **Incident Rossby speed**: the same truncation, but `ψ₂` oscillates on
 //!   the scale `Le/√5` rather than `Le`, so its bound is `5·(Δy/Le)²` — see
-//!   [`MeridionalMode::truncation_richness`]. On top of it, and *one-sided*,
+//!   [`MeridionalStructure::truncation_richness`]. On top of it, and *one-sided*,
 //!   the bias a finite packet carries: the gravest mode's group speed is
 //!   `c_g/c = −(3 − κ²)/(κ² + 3)²` with `κ = k·Le`, which is `−(1/3)(1 − κ²)`
 //!   to leading order, and a Gaussian envelope of e-folding half-width `σ` has
@@ -144,6 +144,8 @@
 //!
 //! [ADR-0003]: ../../docs/planning/adr/0003-numerical-scheme.md
 
+mod support;
+
 use std::sync::OnceLock;
 
 use engine::{
@@ -151,22 +153,10 @@ use engine::{
     Spacing, WaveSpeed, WindStressField, H_STAGGERING, U_STAGGERING,
 };
 
-/// Reduced gravity `g'` of the equatorial Pacific's first baroclinic mode, in
-/// m/s². Standard value for the 1.5-layer model (Gill, *Atmosphere–Ocean
-/// Dynamics*, ch. 11; Cane & Sarachik 1981).
-const PACIFIC_REDUCED_GRAVITY_M_PER_S2: f64 = 0.05;
-/// Mean thermocline depth `H` of the equatorial Pacific, in metres — the
-/// canonical 150 m upper layer of the same 1.5-layer configuration.
-const PACIFIC_MEAN_DEPTH_M: f64 = 150.0;
-/// The equatorial beta-plane gradient, in m⁻¹s⁻¹ — `CONTEXT.md`, *Beta-plane*.
-const BETA_PER_M_PER_S: f64 = engine::EQUATORIAL_BETA_PER_M_PER_S;
-/// Reference seawater density `ρ₀`, in kg/m³ — `CONTEXT.md` and Gill, appendix 3.
-const REFERENCE_DENSITY_KG_PER_M3: f64 = engine::SEAWATER_REFERENCE_DENSITY_KG_PER_M3;
-/// Rayleigh damping `r` of this validation, in s⁻¹. The reflection is a
-/// statement about *speeds*, and the analytic wave speeds above are the
-/// undamped ones; damping would decay the packet without moving it, so it is
-/// switched off rather than corrected for.
-const UNDAMPED_PER_S: f64 = 0.0;
+use support::{
+    column_nearest, gaussian_envelope, pacific_params, peak_index, peak_time_s,
+    MeridionalStructure, Waveguide, PACIFIC_MEAN_DEPTH_M,
+};
 
 /// Cell size of the coarse run, in metres — square, so that neither axis is
 /// resolved at the other's expense. At `Le ≈ 345 km` this is 3.45 cells per
@@ -287,177 +277,12 @@ const KELVIN_DOMINANCE: f64 = 2.0;
 /// measured speed for entirely the wrong reason.
 const SEEDED_KELVIN_CEILING: f64 = 0.01;
 
-/// The equatorial-Pacific parameter set this validation runs in.
-fn pacific_params() -> PhysicalParams {
-    PhysicalParams::new(
-        PACIFIC_REDUCED_GRAVITY_M_PER_S2,
-        PACIFIC_MEAN_DEPTH_M,
-        UNDAMPED_PER_S,
-        BETA_PER_M_PER_S,
-        REFERENCE_DENSITY_KG_PER_M3,
-    )
-    .expect("the published equatorial-Pacific parameters are physical")
-}
-
-/// One of the two meridional structures this validation separates `q` into.
-///
-/// Each names a wave by the Hermite function its `q` sits on, which is what
-/// makes the two measurements independent: the Hermite functions are
-/// orthogonal, so projecting onto one removes the other exactly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MeridionalMode {
-    /// The equatorially trapped Kelvin wave, `q ∝ ψ₀` — the wave the western
-    /// boundary radiates.
-    Kelvin,
-    /// The gravest meridional Rossby mode, `n = 1`. The ladder relations put
-    /// its `q` on `ψₙ₊₁ = ψ₂`; it is the wave that arrives.
-    GravestRossby,
-}
-
-impl MeridionalMode {
-    /// Index `m` of the Hermite function `ψₘ` this mode's `q` sits on.
-    const fn hermite_order(self) -> usize {
-        match self {
-            Self::Kelvin => 0,
-            Self::GravestRossby => 2,
-        }
-    }
-
-    /// The physicists' Hermite polynomial `Hₘ(ŷ)` of that order — the
-    /// polynomial the equatorial wave problem separates in.
-    fn hermite_polynomial(self, y_over_le: f64) -> f64 {
-        match self {
-            Self::Kelvin => 1.0,
-            Self::GravestRossby => 4.0 * y_over_le * y_over_le - 2.0,
-        }
-    }
-
-    /// The Hermite function `ψₘ(ŷ) = Hₘ(ŷ)·exp(−ŷ²/2)`.
-    fn hermite_function(self, y_over_le: f64) -> f64 {
-        self.hermite_polynomial(y_over_le) * (-0.5 * y_over_le * y_over_le).exp()
-    }
-
-    /// `∫ψₘ² dŷ = 2ᵐ·m!·√π`, the normalisation a projection divides by.
-    ///
-    /// Written as the product `∏ₖ₌₁..ₘ 2k`, which is that value, so the two
-    /// orders share one definition instead of carrying a tabulated constant
-    /// each.
-    fn hermite_norm(self) -> f64 {
-        let weight: f64 = (1..=self.hermite_order()).map(|k| 2.0 * k as f64).product();
-        weight * std::f64::consts::PI.sqrt()
-    }
-
-    /// How much finer this mode's meridional structure is than the
-    /// deformation radius, as the factor `2m + 1` multiplying `(Δy/Le)²` in
-    /// its truncation bound.
-    ///
-    /// `ψₘ` oscillates on the scale `Le/√(2m+1)` — its classical turning point
-    /// is at `ŷ = √(2m+1)` — so a second-order scheme's truncation error on it
-    /// grows with the square of that local wavenumber. `ψ₀` gives one, which
-    /// is why the Kelvin bound is `(Δy/Le)²` with no factor; `ψ₂` gives five,
-    /// and taking one there would be optimistic rather than conservative.
-    fn truncation_richness(self) -> f64 {
-        (2 * self.hermite_order() + 1) as f64
-    }
-}
-
-/// The equatorial waveguide of one run, as far as a meridional projection
-/// needs to know it: the scale the Hermite functions are stretched by, and the
-/// rows a column of `q` is sampled on.
-struct Waveguide {
-    /// Equatorial deformation radius `Le = √(c/β)`, in metres (`CONTEXT.md`).
-    le_m: f64,
-    /// Cell height, in metres — the quadrature weight of one row.
-    dy_m: f64,
-    /// Meridional positions of the cell-centre rows, in metres north of the
-    /// equator.
-    row_y_m: Vec<f64>,
-}
-
-impl Waveguide {
-    /// The waveguide of `basin`, sampled on its cell-centre rows.
-    fn new(basin: Basin, params: PhysicalParams) -> Self {
-        Self {
-            le_m: (params.kelvin_wave_speed_m_per_s() / params.beta_per_m_per_s()).sqrt(),
-            dy_m: basin.spacing().dy_m(),
-            row_y_m: (0..basin.grid().ny())
-                .map(|j| basin.y_of_row_m(H_STAGGERING, j))
-                .collect(),
-        }
-    }
-
-    /// The coefficient of `ψₘ` in a meridional column of `q`, by discrete
-    /// quadrature of `∫q·ψₘ dŷ / ∫ψₘ² dŷ`.
-    ///
-    /// The midpoint rule on the cell-centre rows, which is second order and
-    /// symmetric about the equator — the same order as the scheme whose output
-    /// it reads.
-    fn coefficient(&self, column: &[f64], mode: MeridionalMode) -> f64 {
-        let integral: f64 = column
-            .iter()
-            .zip(&self.row_y_m)
-            .map(|(value, y_m)| value * mode.hermite_function(y_m / self.le_m))
-            .sum();
-        integral * (self.dy_m / self.le_m) / mode.hermite_norm()
-    }
-
-    /// The second-order meridional truncation bound for `mode`, as a fraction
-    /// of a wave speed: `(2m + 1)·(Δy/Le)²`, with the remaining `O(1)`
-    /// constant taken as one.
-    fn truncation_bound(&self, mode: MeridionalMode) -> f64 {
-        mode.truncation_richness() * (self.dy_m / self.le_m).powi(2)
-    }
-
-    /// The fraction by which a Gaussian packet of e-folding half-width `σ`
-    /// lags the long-wave Rossby speed: `⟨κ²⟩ = Le²/(2σ²)`, from the
-    /// leading-order group speed `c_g = −(c/3)(1 − κ²)`.
-    fn packet_width_bias(&self) -> f64 {
-        let width_in_radii = PULSE_ZONAL_WIDTH_M / self.le_m;
-        0.5 / (width_in_radii * width_in_radii)
-    }
-}
-
-/// Index of the cell-centre column whose position is closest to `x_m`.
-fn column_nearest(x_m: f64, cell_m: f64) -> usize {
-    (x_m / cell_m - 0.5).round().max(0.0) as usize
-}
-
-/// The time, in seconds, at which `series` peaks, refined below the sampling
-/// interval by fitting a parabola through the largest sample and its two
-/// neighbours.
-///
-/// # Panics
-/// If the peak sits on either end of the record, which would mean the run is
-/// too short or a station is misplaced rather than that the wave is slow.
-fn peak_time_s(series: &[f64], dt_s: f64) -> f64 {
-    let peak = peak_index(series);
-    assert!(
-        peak > 0 && peak + 1 < series.len(),
-        "the packet peaks at sample {peak} of {}, on the edge of the record: \
-         the run is too short, or the station is in the wrong place",
-        series.len()
-    );
-    let (before, at, after) = (series[peak - 1], series[peak], series[peak + 1]);
-    let curvature = before - 2.0 * at + after;
-    assert!(
-        curvature < 0.0,
-        "the three samples around the largest one are not concave, so the record has no \
-         resolved peak to time"
-    );
-    (peak as f64 + 0.5 * (before - after) / curvature) * dt_s
-}
-
-/// Index of the largest value in `values`.
-fn peak_index(values: &[f64]) -> usize {
-    values
-        .iter()
-        .enumerate()
-        .max_by(|(_, left), (_, right)| {
-            left.partial_cmp(right)
-                .expect("an undamped linear run produces no NaN")
-        })
-        .map(|(index, _)| index)
-        .expect("a recorded series is never empty")
+/// The fraction by which a Gaussian packet of e-folding half-width `σ` lags the
+/// long-wave Rossby speed: `⟨κ²⟩ = Le²/(2σ²)`, from the leading-order group
+/// speed `c_g = −(c/3)(1 − κ²)`.
+fn packet_width_bias(waveguide: &Waveguide) -> f64 {
+    let width_in_radii = PULSE_ZONAL_WIDTH_M / waveguide.le_m;
+    0.5 / (width_in_radii * width_in_radii)
 }
 
 /// What one zonal station saw over a run.
@@ -559,10 +384,7 @@ fn incident_rossby_packet(
     let wave_speed_m_per_s = params.kelvin_wave_speed_m_per_s();
     let amplitude = PULSE_EQUATORIAL_AMPLITUDE_M / mean_depth_m;
 
-    let envelope = |x_m: f64| {
-        let offset = (x_m - PULSE_CENTER_X_M) / PULSE_ZONAL_WIDTH_M;
-        (-0.5 * offset * offset).exp()
-    };
+    let envelope = |x_m: f64| gaussian_envelope(x_m, PULSE_CENTER_X_M, PULSE_ZONAL_WIDTH_M);
 
     let (h_nx, h_ny) = grid.field_shape(H_STAGGERING);
     for j in 0..h_ny {
@@ -660,10 +482,10 @@ fn run_reflection(refinement: usize) -> ReflectionRun {
             }
             record
                 .kelvin
-                .push(waveguide.coefficient(&column, MeridionalMode::Kelvin));
+                .push(waveguide.coefficient(&column, MeridionalStructure::Gravest));
             record
                 .gravest_rossby
-                .push(waveguide.coefficient(&column, MeridionalMode::GravestRossby));
+                .push(waveguide.coefficient(&column, MeridionalStructure::Second));
             record.columns.push(column.clone());
         }
 
@@ -715,7 +537,7 @@ fn the_western_boundary_returns_the_incident_rossby_packet_as_an_eastward_kelvin
          boundary can only radiate the eastward branch"
     );
 
-    let tolerance = run.waveguide.truncation_bound(MeridionalMode::Kelvin);
+    let tolerance = run.waveguide.truncation_bound(MeridionalStructure::Gravest);
     let error = (measured_m_per_s - expected_m_per_s).abs() / expected_m_per_s;
     assert!(
         error <= tolerance,
@@ -774,10 +596,8 @@ fn the_incident_rossby_packet_travels_west_at_a_third_of_the_kelvin_speed() {
     // packet of finite zonal width carries has a sign — a finite packet is
     // slower than the long-wave limit, never faster — so it widens the slow
     // side alone.
-    let truncation = run
-        .waveguide
-        .truncation_bound(MeridionalMode::GravestRossby);
-    let slowest_m_per_s = expected_m_per_s * (1.0 - truncation - run.waveguide.packet_width_bias());
+    let truncation = run.waveguide.truncation_bound(MeridionalStructure::Second);
+    let slowest_m_per_s = expected_m_per_s * (1.0 - truncation - packet_width_bias(&run.waveguide));
     let fastest_m_per_s = expected_m_per_s * (1.0 + truncation);
     assert!(
         measured_speed_m_per_s >= slowest_m_per_s && measured_speed_m_per_s <= fastest_m_per_s,
