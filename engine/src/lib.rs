@@ -52,7 +52,7 @@ pub use state::OceanState;
 
 /// Re-exported so a scenario, the forcing and the rotation all name one
 /// basin geometry.
-pub use basin::{Basin, BasinError};
+pub use basin::{Basin, BasinBounds, BasinBoundsError, BasinError};
 
 /// Re-exported so a scenario names one wind forcing: the [`forcing::WindStress`]
 /// trait a scenario implements, the scenarios that implement it, the

@@ -6,10 +6,15 @@
 # positive while theirs is negative.
 
 [basin]
-nx = 200
-ny = 60
-dx_m = 50000.0
-dy_m = 50000.0
+# The equatorial Pacific of CONTEXT.md, *Basin*: 120°E–80°W by 25°S–25°N, in
+# cells of half a degree (≈ 55.6 km of arc), which is 320 × 100 cells. Every
+# value here is the default; they are written out so the file records which
+# basin the run was on.
+western_longitude_deg = 120.0
+eastern_longitude_deg = -80.0
+southern_latitude_deg = -25.0
+northern_latitude_deg = 25.0
+resolution_deg = 0.5
 
 [physics]
 reduced_gravity_m_per_s2 = 0.06
@@ -31,7 +36,8 @@ type = "wind_burst_anomaly"
 # +0.04 Pa reverses the local stress: −0.05 Pa of trades plus 0.04 Pa of burst
 # still leaves the equator easterly, which is the observed regime.
 peak_zonal_stress_pa = 0.04
-# Centred in the western Pacific, a fifth of the way across a 10 000 km basin.
+# Centred 2 000 km east of the western boundary — about 138°E, the warm pool
+# where observed bursts sit — in a basin 17 800 km wide.
 center_x_m = 2000000.0
 zonal_scale_m = 1000000.0
 # The waveguide the burst is meant to excite: Le = √(c/β) ≈ 3.61e5 m.

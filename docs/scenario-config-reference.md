@@ -15,11 +15,12 @@ per scenario of `docs/planning/01-scientific-model.md`.
 
 <!-- scenario -->
 ```toml
-[basin]                          # required, exactly once
-nx = 200
-ny = 60
-dx_m = 50000.0
-dy_m = 50000.0
+[basin]                          # optional; omitted, it is the Pacific below
+western_longitude_deg = 120.0    # 120°E
+eastern_longitude_deg = -80.0    # 80°W, counted eastward across the dateline
+southern_latitude_deg = -25.0
+northern_latitude_deg = 25.0
+resolution_deg = 0.5             # cell size, both axes
 
 [physics]                        # required, exactly once
 reduced_gravity_m_per_s2 = 0.06
@@ -41,7 +42,7 @@ meridional_decay_scale_m = 361000.0
 
 | Section | Required | Meaning |
 | --- | --- | --- |
-| `basin` | required | The shape of the basin, the size of a cell, and where its southwest corner sits. |
+| `basin` | optional | Which stretch of ocean the run covers, in degrees, and how finely it is cut into cells. Omitted means the equatorial Pacific of `CONTEXT.md` — 120°E–80°W by 25°S–25°N at half a degree. |
 | `physics` | required | The constants of the scenario's ocean. |
 | `run` | required | How long the run is, and how often it is saved. |
 | `wind` | optional | The `[[wind]]` entries, in the order they are summed. Omitted or empty is a calm ocean — the undriven limit of the model, not a mistake. |
@@ -59,29 +60,116 @@ field's suffix is its unit.
 
 ## `[basin]`
 
-The grid the solver runs on and where it sits relative to the equator. `y` is
-measured north from the equator, so a basin straddling it has a negative
-southern edge.
+Which stretch of ocean the scenario runs on, in degrees, and how finely it is
+cut into cells. The section is optional, and so is every key in it: omitted,
+each falls back to the equatorial Pacific of `CONTEXT.md` (*Basin*) —
+120°E–80°W by 25°S–25°N in cells of half a degree. A scenario states a
+boundary only when it means something other than the basin this project is
+about.
+
+Longitude is degrees east and it wraps: `-80.0` and `280.0` name the same
+meridian, and the zonal span is always measured **eastward from the western
+boundary**, so a basin may cross the dateline — the Pacific has to. Two equal
+longitudes are therefore a basin of zero width, not one wrapped around the
+planet. Latitude is degrees north, so a basin straddling the equator has a
+negative southern boundary.
 
 <!-- fields: BasinSection -->
 
 | Field | Type | Required | Unit | Valid values |
 | --- | --- | --- | --- | --- |
-| `nx` | integer | required | cells | At least 1. `nx = 0` is refused with *"nx is 0; a grid needs at least 1 cell on each axis"*. A negative or fractional value is a TOML type error. |
-| `ny` | integer | required | cells | At least 1, refused the same way as `nx`. |
-| `dx_m` | float | required | m | Finite and strictly greater than 0. Cell width east–west. |
-| `dy_m` | float | required | m | Finite and strictly greater than 0. Cell height north–south. |
-| `western_edge_x_m` | float | optional | m | Any finite position. Omitted means `0.0`. Zonal position of the basin's western wall; `x` increases eastward. |
-| `southern_edge_y_m` | float | optional | m | Any finite position. Omitted means `−ny·dy_m/2`, which straddles the equator symmetrically ([`Basin::centered_on_equator`](../engine/src/basin.rs)) — the configuration the idealized scenarios run in, with the equatorial waveguide centred so no wave is trapped against a wall. |
+| `western_longitude_deg` | float | optional | degrees east | Any finite longitude. Omitted means `120.0` — the Maritime Continent edge of the Pacific. |
+| `eastern_longitude_deg` | float | optional | degrees east | Any finite longitude, counted eastward from the western one. Omitted means `-80.0`, the South American coast; `280.0` is the same meridian written the other way. |
+| `southern_latitude_deg` | float | optional | degrees north | Finite and on the planet, `−90 ≤ φ ≤ 90`. Omitted means `-25.0`. |
+| `northern_latitude_deg` | float | optional | degrees north | Finite, on the planet, and strictly north of `southern_latitude_deg`. Omitted means `25.0`. Equal or inverted latitudes are refused with *"northern_latitude_deg is …, which is not north of southern_latitude_deg …"*. |
+| `resolution_deg` | float | optional | degrees | Finite, strictly greater than 0, and dividing *both* spans into a whole number of cells. Omitted means `0.5`. |
 
 <!-- end fields -->
 
-The basin's zonal extent is `nx·dx_m` and its meridional extent is `ny·dy_m`.
-The example above is 200 × 60 cells of 50 km: 10 000 km of Pacific by 3 000 km
-of latitude.
+`resolution_deg` is one number and not two because the cells are square: on
+the equatorial beta-plane a degree of longitude and a degree of latitude are
+the same degree of arc, so a basin stated in degrees has `dx = dy`. An
+anisotropic grid is a numerical decision, and it would arrive with the ADR
+that justifies it rather than as a second key.
 
-Both edges must be finite; an infinity or a NaN is refused with *"…is …; it
-must be a finite position"*.
+### From degrees to metres
+
+The solver works in metres, and the projection is one multiplication:
+
+```text
+metres per degree of arc = R·π/180 ≈ 111 195.08 m     with R = 6 371 008.8 m
+```
+
+`R` is the IUGG mean radius of WGS-84 — the same radius `β = 2Ω·cos φ / R` is
+quoted from, so the geometry and the rotation describe one planet. The
+`cos(φ)` convergence of the meridians is exactly the term the beta-plane
+approximation drops, so it is deliberately not applied here: reintroducing it
+would place the grid on a geometry the equations are not solved on.
+
+That gives the derived quantities the rest of the file depends on:
+
+```text
+nx            = zonal span / resolution_deg            cells, east–west
+ny            = meridional span / resolution_deg       cells, north–south
+dx_m = dy_m   = resolution_deg · 111 195.08            metres
+```
+
+`x` is measured **east from the western boundary**, which is therefore
+`x = 0`; `y` is measured **north from the equator**, so the southern boundary
+of the default basin sits at `−25 · 111 195.08 ≈ −2.78 × 10⁶ m`. Every `_x_m`
+and `_y_m` elsewhere in the file — a wind burst's centre, for instance — is in
+that frame.
+
+The default basin is 160° by 50° at 0.5°, which is **320 × 100 cells** of
+55 597.54 m: about 17 791 km of Pacific by 5 560 km of latitude.
+
+Because every key defaults, a scenario that wants that basin need not say so —
+and one that wants a coarser version of it states the single key it changes:
+
+<!-- scenario -->
+```toml
+# No [basin]: the equatorial Pacific, at half a degree.
+
+[physics]
+reduced_gravity_m_per_s2 = 0.06
+mean_thermocline_depth_m = 150.0
+rayleigh_damping_per_s = 1.0e-7
+
+[run]
+dt_s = 3600.0
+total_steps = 17520
+output_every_n_steps = 24
+
+[[wind]]
+type = "seasonal_trade_winds"
+equatorial_zonal_stress_pa = -0.05
+meridional_decay_scale_m = 361000.0
+relative_amplitude = 0.2
+peak_time_s = 18144000.0
+```
+
+The three files in [`engine/scenarios/`](../engine/scenarios/) write the five
+keys out anyway, so that a run's file records which basin it was on rather
+than inheriting one that a later default could change.
+
+### What is refused
+
+A span that is not a whole number of cells is **refused, never rounded** —
+rounding it would silently run a basin nobody asked for:
+
+*"the basin spans 160.3 degrees of longitude, which is not a whole number of
+cells of resolution_deg 0.5"*.
+
+Whole is judged to a relative tolerance of `1e-9` of the cell count, which is
+seven orders of magnitude looser than the binary rounding of decimal degrees
+and still far tighter than any mis-specification worth catching: `1e-9` of a
+half-degree cell is 56 µm. So a basin written in round degrees is never
+refused, at any resolution.
+
+The other refusals name their value the same way: a non-finite boundary or
+resolution (*"…it must be a finite number of degrees"*), a latitude off the
+planet, a non-positive `resolution_deg`, an axis shorter than a single cell,
+and a resolution so fine that the cell count does not fit in a machine index.
 
 ## `[physics]`
 
@@ -168,12 +256,14 @@ known:
 max_stable_dt = 0.8 · 2√2 / (c · κ_max)          with c = √(g'·H)
 ```
 
-Both axes enter through `κ_max`, so on an anisotropic grid the bound is
-stricter than the smaller spacing alone would suggest: the fastest mode is the
-diagonal one.
+Both axes enter through `κ_max`. A basin stated in degrees has square cells,
+so the two terms are equal and the bound collapses to `0.8·dx_m/c`; the
+general form is kept because the check is written against a `Spacing`, which
+does not have to be square.
 
-For the example — `dx = dy = 50 km`, `c = 3.0 m/s` — the bound is ≈ 13 333 s,
-so `dt_s = 3600.0` sits well inside it.
+For the example — `resolution_deg = 0.5`, so `dx = dy = 55 597.54 m`, and
+`c = 3.0 m/s` — the bound is ≈ 14 826 s, so `dt_s = 3600.0` sits well inside
+it.
 
 #### The rotation bound
 
@@ -185,18 +275,18 @@ wall lies further from the equator (see
 [ADR-0007](planning/adr/0007-rotation-timestep-bound.md)):
 
 ```text
-|f|_max              = β · max(|southern_edge_y_m|, |southern_edge_y_m + ny·dy_m|)
+|f|_max                = β · max(|southern_latitude_deg|, |northern_latitude_deg|) · 111 195.08
 max_stable_dt_rotation = 0.8 · 2√2 / |f|_max
 ```
 
 Neither the spacing nor the wave speed appears: this bound depends on how far
 north and south the basin reaches, so a meridionally tall basin is limited by
-rotation while a wide, shallow one is limited by CFL. For the example — an
-equator-centred basin reaching `±1.5 × 10⁶ m`, so `|f|_max = 3.45 × 10⁻⁵ s⁻¹` —
-the rotation bound is ≈ 65 585 s, five times looser than the CFL bound, which
-is why the CFL one is the binding constraint in all three worked scenarios. A
-basin with both walls exactly on the equator has `f ≡ 0` and no rotation limit
-at all.
+rotation while a wide, shallow one is limited by CFL. For the example — walls
+at 25°S and 25°N, so `|f|_max = 6.39 × 10⁻⁵ s⁻¹` — the rotation bound is
+≈ 35 390 s, more than twice the CFL bound, which is why the CFL one is the
+binding constraint in all three worked scenarios. A basin whose walls are both
+on the equator has `f ≡ 0` and no rotation limit at all; widening one to 60°
+of latitude would make rotation the binding bound instead.
 
 Neither bound is ever applied silently. A timestep past either is **refused,
 never shortened**: the error names the value asked for and the largest one this
@@ -291,7 +381,7 @@ is normally listed after a trade-wind entry rather than instead of one.
 | Field | Type | Required | Unit | Valid values |
 | --- | --- | --- | --- | --- |
 | `peak_zonal_stress_pa` | float | required | Pa | Finite and **strictly positive**. The peak stress `τ_burst`. A westerly burst blows against the alizés, so a negative or zero value is refused: it would describe a strengthening of the trades, or no burst at all. |
-| `center_x_m` | float | required | m | Any finite position. The zonal centre `x₀` of the burst, in the same coordinate as `western_edge_x_m`. |
+| `center_x_m` | float | required | m | Any finite position. The zonal centre `x₀` of the burst, in metres east of the basin's western boundary, which is `x = 0`. |
 | `zonal_scale_m` | float | required | m | Finite and strictly greater than 0. The `e`-folding scale `Lx`: the distance east or west of `x₀` at which the stress has fallen to `1/e` of its peak. |
 | `meridional_scale_m` | float | required | m | Finite and strictly greater than 0. The `e`-folding scale `Ly` about the equator. The physically motivated choice is the deformation radius `Le = √(c/β)`, the waveguide the burst is meant to excite. |
 | `peak_time_s` | float | required | s | Any finite instant, in seconds into the run. The moment `t₀` of the burst's peak. |
@@ -312,10 +402,11 @@ and instant. The westerly-burst example is exactly that:
 <!-- scenario -->
 ```toml
 [basin]
-nx = 200
-ny = 60
-dx_m = 50000.0
-dy_m = 50000.0
+western_longitude_deg = 120.0
+eastern_longitude_deg = -80.0
+southern_latitude_deg = -25.0
+northern_latitude_deg = 25.0
+resolution_deg = 0.5
 
 [physics]
 reduced_gravity_m_per_s2 = 0.06
@@ -358,7 +449,9 @@ it violated — never a panic, and never a substituted "safe" value.
 The sections are validated in a fixed order, and the first failure is the one
 reported:
 
-1. `[basin]` — cell counts, then cell spacing, then edge positions.
+1. `[basin]` — boundaries finite and on the planet, then `resolution_deg`
+   positive, then the latitudes ordered, then each span a whole number of
+   cells.
 2. `[physics]` — each parameter in the order of the table above.
 3. `[run]` — timestep positive, then output cadence non-zero.
 4. `[[wind]]` — each entry in file order.
