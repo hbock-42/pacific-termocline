@@ -9,8 +9,10 @@
 //! integrator, the prognostic [`OceanState`], the [`PhysicalParams`] the
 //! equations are written in terms of, the [`Solver`] that puts them together
 //! into one time step of the linear shallow-water core, the [`WindStress`]
-//! forcing that drives it — steady or seasonal — and the [`RunWriter`] that
-//! saves the result at a configurable output cadence.
+//! forcing that drives it — steady, seasonal, or a burst stacked on either —
+//! and the [`RunWriter`] that saves the result at a configurable output
+//! cadence; and, on the CLI side, the `inspect` command that reports a written
+//! run's header back to a terminal.
 
 // The acceptance criterion of T-02.1 is that every field states its unit; the
 // lint is what keeps that true as the crate grows.
@@ -19,6 +21,7 @@
 pub mod basin;
 pub mod coriolis;
 pub mod forcing;
+pub mod inspect;
 pub mod integrator;
 pub mod params;
 pub mod run_writer;
@@ -28,6 +31,10 @@ pub mod state;
 
 pub use coriolis::{BetaPlane, BetaPlaneError, CoriolisTerm};
 pub use integrator::{Rk4, StateVector};
+
+/// Re-exported so the `inspect` command and its tests name one rendering of a
+/// run's header.
+pub use inspect::{inspect_run, render_header};
 
 pub use run_writer::{OutputSchedule, OutputScheduleError, RunWriteError, RunWriter};
 
@@ -55,10 +62,12 @@ pub use forcing::{
     WindStressError, WindStressField, TROPICAL_YEAR_S,
 };
 
-/// Re-exported so binaries and the visualizer agree on one format version, and
-/// on where a run's two files live (ADR-0004: the format crate is the one
-/// place either is defined).
-pub use termocline_format::{FORMAT_VERSION, FRAME_FILE_NAME, HEADER_FILE_NAME};
+/// Re-exported so binaries and the visualizer agree on one format version, on
+/// where a run's two files live, and on the one reader that opens them
+/// (ADR-0004: the format crate is the one place any of them is defined).
+pub use termocline_format::{
+    RunReadError, RunReader, FORMAT_VERSION, FRAME_FILE_NAME, HEADER_FILE_NAME,
+};
 
 /// Re-exported so the solver, its tests and the scenario loader all share one
 /// definition of what a grid cell is and where each variable sits on it.
