@@ -184,6 +184,24 @@ impl OceanState {
             .chain(self.sst_anomaly_k.as_mut())
     }
 
+    /// Round every prognostic field to `width`, in place — the *store* that
+    /// T-10.4's probe narrows (`crate::precision`).
+    ///
+    /// Compiled only into a probe build, so a shipped engine does not merely
+    /// skip the rounding, it does not carry the code that would do it.
+    ///
+    /// It lives here rather than in `precision` so that there is one list of
+    /// what a state's components are: [`OceanState::components_mut`], whose
+    /// order the extension's bit-exactness already depends on. A probe holding
+    /// its own copy of that list would silently stop narrowing a fifth field
+    /// the day one is added, and would say nothing about it.
+    #[cfg(f32_storage_probe)]
+    pub(crate) fn round_components_to(&mut self, width: crate::precision::StorageWidth) {
+        for component in self.components_mut() {
+            width.round_field(component);
+        }
+    }
+
     /// Panic unless `other` covers the same basin as `self` and agrees with it
     /// about whether the SST anomaly is being integrated.
     ///

@@ -23,14 +23,15 @@
 //! [`FIELD_STORAGE`] is [`StorageWidth::F64`] in every build the project
 //! produces, which is CODING_STANDARDS.md § *Physical quantities* — `f64`
 //! throughout the solver — and `engine/tests/f32_field_storage.rs` guards it.
-//! The `f32-storage-probe` feature is off by default, is never enabled by any
-//! target in this repository, and exists so that the *validation suite itself*
+//! The `f32_storage_probe` `--cfg` is set by no build this repository
+//! performs — `--all-features`, which CI runs, cannot reach a `--cfg` — and it
+//! exists so that the *validation suite itself*
 //! can be re-run at the narrower width.
 //!
 //! # What the probe emulates, and why it is exact
 //!
 //! The ticket's proposal is `f32` **field storage** with `f64`
-//! **accumulation**: the bulk grid data is narrow, the arithmetic over it is
+//! **arithmetic**: the bulk grid data is narrow, the operations over it are
 //! not. That combination has an exact emulation in `f64`:
 //!
 //! - a value read from a narrow field widens to `f64` losslessly, because
@@ -55,23 +56,30 @@
 //! [`WindStressField`](crate::WindStressField), and the gradient written into
 //! the tendency before being turned into an acceleration in place.
 //!
-//! Every one of those is a rounding the probe does not do, so what it measures
-//! is a **lower bound** on the error a narrowed engine would make. That is the
-//! useful direction, and it is the direction the conclusion in
-//! `docs/performance-notes.md` is written in: a lower bound that already
-//! crowds a validated budget settles the question, and no amount of care in
-//! the implementation recovers the margin.
+//! Every one of those is a rounding the probe does not do, so the round-off it
+//! injects is at most the round-off a narrowed engine would. That bounds the
+//! *magnitude* of an error from below and nothing else: a quantity that is not
+//! monotone in added round-off — a convergence rate, say — can move either way
+//! under a fuller narrowing. `docs/performance-notes.md` § *After T-10.4* keeps
+//! that distinction, and closes the ticket on a magnitude.
+//!
+//! What the probe narrows is **every** stored state, RK4's accumulator
+//! included, because a state field held as `f32` has nowhere else to keep the
+//! result of `state += w·dt·k`. A layout that kept a *wide* accumulator beside
+//! the narrow fields is a different one, and this instrument does not measure
+//! it — the note says so where it says what is left open.
 //!
 //! # Running it
 //!
 //! ```sh
-//! cargo test -p engine --features f32-storage-probe
+//! RUSTFLAGS="--cfg f32_storage_probe" cargo test -p engine --no-fail-fast
 //! ```
 //!
 //! That is Epic 07's suite — every tolerance exactly as it was derived, not
 //! one of them touched — over an engine whose fields are stored at `f32`.
 
 use crate::state::OceanState;
+#[cfg(f32_storage_probe)]
 use termocline_grid::Field2D;
 
 /// The width a field is stored at between one kernel and the next.
@@ -114,11 +122,11 @@ impl StorageWidth {
 
     /// Round every point of `field` to this width, in place.
     ///
-    /// Only [`narrow_stored_state`] calls this, and only the probe build
-    /// compiles that call, so without the feature there is nothing left to
-    /// reach it — which is the point rather than an oversight.
-    #[cfg_attr(not(feature = "f32-storage-probe"), allow(dead_code))]
-    fn round_field(self, field: &mut Field2D<f64>) {
+    /// `pub(crate)` for `OceanState::round_components_to`, which is where the
+    /// walk over a state's components lives so that there is only one such
+    /// walk, and compiled only into a probe build for the same reason it is.
+    #[cfg(f32_storage_probe)]
+    pub(crate) fn round_field(self, field: &mut Field2D<f64>) {
         if self == Self::F64 {
             return;
         }
@@ -130,10 +138,10 @@ impl StorageWidth {
 
 /// The width this build stores its fields at.
 ///
-/// [`StorageWidth::F64`] in every build the project ships; the
-/// `f32-storage-probe` feature is what a measurement turns on, and nothing
-/// else does.
-pub const FIELD_STORAGE: StorageWidth = if cfg!(feature = "f32-storage-probe") {
+/// [`StorageWidth::F64`] in every build the project ships; setting the
+/// `f32_storage_probe` `--cfg` is what a measurement turns on, and nothing else
+/// does.
+pub const FIELD_STORAGE: StorageWidth = if cfg!(f32_storage_probe) {
     StorageWidth::F32
 } else {
     StorageWidth::F64
@@ -150,17 +158,8 @@ pub const FIELD_STORAGE: StorageWidth = if cfg!(feature = "f32-storage-probe") {
 /// `cfg`-ed away entirely, so the shipped engine has no rounding in it at all.
 #[inline]
 pub fn narrow_stored_state(state: &mut OceanState) {
-    #[cfg(feature = "f32-storage-probe")]
-    {
-        FIELD_STORAGE.round_field(state.h_mut());
-        FIELD_STORAGE.round_field(state.u_mut());
-        FIELD_STORAGE.round_field(state.v_mut());
-        if let Some(sst_anomaly_k) = state.sst_anomaly_k_mut() {
-            FIELD_STORAGE.round_field(sst_anomaly_k);
-        }
-    }
-    #[cfg(not(feature = "f32-storage-probe"))]
-    {
-        let _ = state;
-    }
+    #[cfg(f32_storage_probe)]
+    state.round_components_to(FIELD_STORAGE);
+    #[cfg(not(f32_storage_probe))]
+    let _ = state;
 }

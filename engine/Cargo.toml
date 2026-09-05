@@ -7,14 +7,20 @@ license.workspace = true
 repository.workspace = true
 description = "Headless simulation core: runs a scenario forward in time and writes the ocean state to disk."
 
-[features]
-# T-10.4's instrument, and nothing else: it stores every prognostic state at
-# `f32` so that Epic 07's validation suite can be re-run at the width the
-# ticket proposes, with none of its tolerances touched. Off in every build the
-# project produces, and enabled by no target here — `engine/src/precision.rs`
-# says what it emulates and `docs/performance-notes.md` reports what it
-# measured. Turning it on makes the engine unscientific on purpose.
-f32-storage-probe = []
+# T-10.4's instrument is a `--cfg` flag rather than a cargo feature, and
+# deliberately so: CI runs `cargo test --workspace --all-features`, which would
+# switch a feature on, and the whole point of this probe is that it stores every
+# prognostic state at `f32` — an engine no Epic 07 budget is derived against.
+# `--all-features` cannot reach a `--cfg`, so the gate stays a gate.
+#
+#     RUSTFLAGS="--cfg f32_storage_probe" cargo test -p engine --no-fail-fast
+#
+# `engine/src/precision.rs` says what it emulates, `docs/performance-notes.md`
+# reports what it measured, and `engine/tests/f32_field_storage.rs` guards that
+# an ordinary build does not carry it. Turning it on makes the engine
+# unscientific on purpose.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(f32_storage_probe)'] }
 
 [dependencies]
 bincode = { version = "2", features = ["serde"] }

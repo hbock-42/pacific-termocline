@@ -9,25 +9,30 @@
 //! An instrument that could be left switched on by accident would be worse
 //! than no instrument: every budget in Epic 07 is derived against `f64`'s unit
 //! round-off, and a suite silently running at `2²⁹` times that would be
-//! asserting something nobody wrote down. So the probe is a non-default
-//! feature, and this file is the guard that says the default is the default —
-//! `cargo test` proves the shipped engine is the `f64` one, and
-//! `cargo test -p engine --features f32-storage-probe` is the measurement.
+//! asserting something nobody wrote down. So the probe is a `--cfg` flag rather
+//! than a cargo feature — CI runs `cargo test --workspace --all-features`,
+//! which would switch a feature on and cannot reach a `--cfg` — and this file
+//! is the guard that the default is the default. `cargo test` proves the
+//! shipped engine is the `f64` one;
+//! `RUSTFLAGS="--cfg f32_storage_probe" cargo test -p engine --no-fail-fast`
+//! is the measurement.
 //!
 //! CODING_STANDARDS.md § *Physical quantities* is the rule this holds:
 //! **`f64` throughout the solver.**
 
 use engine::StorageWidth;
-#[cfg(not(feature = "f32-storage-probe"))]
+#[cfg(not(f32_storage_probe))]
 use engine::FIELD_STORAGE;
 
 /// The width the engine stores its fields at, asserted rather than assumed.
 ///
-/// Under `--features f32-storage-probe` this test is *expected* to fail: that
-/// build is the measurement, not the engine, and a red line here is what says
-/// so out loud rather than letting a probe run pass for a validation run.
+/// Compiled only into an unprobed build, which is the only build whose passing
+/// means anything: a probe run is the measurement rather than the engine, so
+/// this assertion would be a claim about the wrong thing there. What says a
+/// probe run is a probe run is that the rest of the suite goes red — the
+/// finding `docs/performance-notes.md` § *After T-10.4* records.
 #[test]
-#[cfg(not(feature = "f32-storage-probe"))]
+#[cfg(not(f32_storage_probe))]
 fn the_shipped_engine_stores_its_fields_at_f64() {
     assert_eq!(
         FIELD_STORAGE,
@@ -41,7 +46,7 @@ fn the_shipped_engine_stores_its_fields_at_f64() {
 /// round-off is `2²⁹` times `f64`'s.
 ///
 /// Written out because it is the number every argument in
-/// `docs/performance-notes.md` § *T-10.4* is scaled by, and because it is the
+/// `docs/performance-notes.md` § *After T-10.4* is scaled by, and because it is the
 /// one thing about the two widths that no measurement can move.
 #[test]
 fn the_narrow_width_rounds_off_two_to_the_twenty_ninth_more_coarsely() {

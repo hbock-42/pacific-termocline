@@ -534,8 +534,9 @@ for n in 1 2 4 10; do RAYON_NUM_THREADS=$n cargo run --release -p termocline-gri
 cargo run --release -p termocline-grid --example width_scaling
 
 # and what it costs: Epic 07's suite, tolerances untouched, over an engine
-# whose prognostic states are stored at f32
-cargo test -p engine --features f32-storage-probe --no-fail-fast
+# whose prognostic states are stored at f32. A `--cfg` and not a cargo
+# feature, because CI runs `--all-features` and this is not a build to gate on
+RUSTFLAGS="--cfg f32_storage_probe" cargo test -p engine --no-fail-fast
 ```
 
 The `profiling` cargo profile is release code plus the debug info a sampler
@@ -736,17 +737,30 @@ the shape of every kernel in the term table above, at the engine's own
 *ceiling*: no boundary handling, no interpolation, no scratch, nothing but
 streaming.
 
-**The cost** — `engine/src/precision.rs`, behind the non-default
-`f32-storage-probe` feature. It stores every prognostic state at `f32` and
-leaves the arithmetic at `f64`, which is precisely what the ticket asks for
-("`f32` for the bulk grid data while keeping `f64` accumulation where precision
-matters"), and it is an *exact* emulation of that rather than an approximation
+**The cost** — `engine/src/precision.rs`, behind the `f32_storage_probe`
+`--cfg`. It stores every prognostic state at `f32` and leaves the arithmetic at
+`f64`, and it is an *exact* emulation of that pair rather than an approximation
 of it: an `f32` widens to an `f64` losslessly, the arithmetic between two
 stores is `f64` in both worlds, and rounding at every store leaves the field
-holding the bits an `f32` field would hold. With the feature off the rounding
-is not cheap, it is absent — the body is compiled out — so the engine that
-ships is the engine `cargo test` validates, and `engine/tests/f32_field_storage.rs`
+holding the bits an `f32` field would hold. Without the `--cfg` the rounding is
+not cheap, it is absent — the code is not compiled — so the engine that ships
+is the engine `cargo test` validates, and `engine/tests/f32_field_storage.rs`
 guards that.
+
+A `--cfg` rather than a cargo feature for one reason: CI runs
+`cargo test --workspace --all-features`, which would switch a feature on. An
+instrument that the project's own gate enables is not an instrument.
+
+**Be precise about which configuration this is.** The ticket describes "`f32`
+for the bulk grid data while keeping `f64` accumulation where precision
+matters (e.g. long-run energy conservation, per T-07.5)". What is measured here
+is the first half taken to its conclusion: *every* stored state narrow,
+including the one RK4 accumulates the step into, because a state field stored as
+`f32` has nowhere else to keep the result of `state += w·dt·k`. Keeping an
+accumulator wide is a different layout — it needs a second, wide copy of the
+state, which is where the *"compensated accumulation"* bullet at the end of this
+section goes — and this measurement does not settle it. It settles the layout
+the ticket's own title names.
 
 The point of a probe rather than a rewrite is that it re-runs **Epic 07's own
 suite**, at the narrower width, with **not one tolerance touched**. A rewrite
@@ -781,8 +795,8 @@ most this, on at most 97% of a step.
 
 ### The cost: eight derived budgets, one of them Epic 07's
 
-`cargo test -p engine --features f32-storage-probe --no-fail-fast`. Thirteen
-tests fail. Five of them are the probe's own reach rather than the engine's
+`RUSTFLAGS="--cfg f32_storage_probe" cargo test -p engine --no-fail-fast`.
+Thirteen tests fail. Five of them are the probe's own reach rather than the engine's
 accuracy — `tests/step_profile.rs` and `tests/wind_stress_cache.rs` compare the
 solver against hand-built reference steppers (`StepProfiler`, `UncachedStepper`)
 that sit outside `solver::integrate` and so are not narrowed with it, and a
@@ -803,8 +817,18 @@ somebody derived:
 | T-03.3 `wind_burst` | a burst superposes exactly on the trades | 10⁻¹⁰ of the tilt | **43.136696 m against 43.136726 m** — the seventh figure, where the budget allows the eleventh |
 | T-01.2 `time_stepping` | one step of a uniform `h` is RK4's amplification polynomial | 10⁻¹⁴ relative | **8.0×10⁻⁸** — 8×10⁶ |
 
-The Epic 07 row is the one that closes the ticket, and how it fails is worth
-spelling out, because the *point* check passed.
+**T-07.5 passes.** The spec names long-run energy conservation as the
+precision-critical case, so it is worth reporting that all four tests in
+`engine/tests/conservation.rs` are green at `f32`, including the eight-crossing
+undamped drift against its derived bound and its second-order refinement check.
+That is the one budget in the suite with an 11× margin, and 11× is enough to
+absorb this. It is also the reason the ticket could not be closed on T-07.5
+alone: the budgets that fail are the *tight* ones, and they are tight because
+somebody derived where the run should land rather than allowing for where it
+might.
+
+The two T-07.4 rows are what close the ticket, and how they fail is worth
+spelling out, because that file's *point* check passed.
 
 **T-07.4's headline comparison — the settled tilt against the analytic damped
 closed form — passes at `f32`.** It lands at 2.489×10⁻⁵ of the tilt against
@@ -853,10 +877,21 @@ narrow the divergence scratch of `ShallowWaterRhs`, the two interpolation
 buffers of `CoriolisTerm`, the sampled `WindStressField`, and the gradient
 written into the tendency before being turned into an acceleration in place.
 
-Every one of those is a rounding not performed here, so the eight failures
-above are a **lower bound** on what a narrowed engine would do. That is the
-direction that settles the question: a lower bound already 3.4× outside an
-Epic 07 budget is not recoverable by implementing the change more carefully.
+Every one of those is a rounding not performed here, so the round-off a
+narrowed engine injects is at least the round-off injected above.
+
+That argument is about *magnitudes*, and it should not be stretched past them.
+Six of the eight rows are magnitudes — a leak, a residual, a discrepancy — and
+for those the bound reads straight: more rounding does not make a basin leak
+less volume or a superposition close better. The two rows that are *rates* —
+the convergence ratio and the measured order — are not monotone in added
+round-off, and could move either way under a fuller narrowing.
+
+Which is why it matters that the ticket does not close on a rate. Both T-07.4
+rows are named above; the second, *a steady closed basin holds no net
+thermocline anomaly*, is a magnitude, and `f32` storage misses it by 4.0×. The
+convergence row is the more *interesting* failure — it is the one that explains
+what went wrong — but the deciding one would still be there without it.
 
 ### What this closes, and what it does not
 
@@ -888,12 +923,16 @@ own measurement:
   polynomial — rather than on quantities that are already approximations.
   A layout narrowing only the fields no identity is written in would have to
   name which those are, and Epic 07 currently says: fewer than one might hope.
-- **Compensated accumulation.** The RK4 stage algebra is 30% of a step and one
-  multiply-add per element. Whether a narrow field with a Kahan-summed
-  accumulator recovers the convergence rate is a real question, and this
-  measurement does not answer it. It is also a considerably larger change than
-  the one that was just rejected, and it should be argued from a profile of its
-  own.
+- **Compensated accumulation** — the ticket's own "`f64` accumulation where
+  precision matters", spelled out as a layout. The RK4 stage algebra is 30% of
+  a step and one multiply-add per element, and every row above that fails on an
+  *exact identity* of the scheme fails on something that identity accumulates.
+  Whether narrow fields with a wide or Kahan-summed accumulator recover those
+  identities is a real question, and this measurement does not answer it — it
+  measures the layout with no wide accumulator anywhere. It is also a
+  considerably larger change than the one just rejected, since a wide
+  accumulator is a second copy of the state and gives back some of the traffic
+  the narrowing bought, so it should be argued from a profile of its own.
 
 **And it does not close the machine question**, which every section of this
 note carries: these are one laptop's figures, and the 1.95× ceiling in
