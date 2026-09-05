@@ -26,6 +26,8 @@ dependencies = [
 name = "engine"
 version = "0.1.0"
 dependencies = [
+ "bincode",
+ "serde_json",
  "termocline-format",
  "termocline-grid",
  "termocline-numerics",

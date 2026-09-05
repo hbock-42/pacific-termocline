@@ -15,10 +15,16 @@
 //! fails without it, and cargo's feature unification then carries it to every
 //! reader in the workspace.
 //!
-//! The types here are data and nothing else: they carry no solver, and they do
-//! not choose an encoding. The header is JSON and the frames are `bincode`
-//! because the *writer* (T-05.2) and *reader* (T-05.3) say so; every type in
-//! this crate is plain `serde`, and round-trips losslessly through either.
+//! # One place the format is defined
+//!
+//! The types here are data and nothing else: they carry no solver and no UI.
+//! What they *do* carry, alongside the types, is the rest of what a run is on
+//! disk — the two file names of [`HEADER_FILE_NAME`] and [`FRAME_FILE_NAME`],
+//! and the `bincode` configuration of [`frame_encoding`]. None of that is
+//! recoverable from the bytes, so a writer (T-05.2) and a reader (T-05.3) that
+//! each chose their own would disagree silently. ADR-0004 asks for exactly one
+//! place the format is defined; this crate is it, and that has to include the
+//! choices the `serde` types alone do not express.
 //!
 //! [ADR-0001]: ../../docs/planning/adr/0001-engine-visualizer-split.md
 //! [ADR-0004]: ../../docs/planning/adr/0004-data-interchange-format.md
@@ -36,6 +42,28 @@ pub use variable::{Variable, VariableSpec};
 /// Version of the on-disk format, written into every run's header so a reader
 /// can tell whether it understands a file rather than guessing.
 pub const FORMAT_VERSION: u32 = 1;
+
+/// Name of the JSON [`RunHeader`] inside a run directory.
+///
+/// A run on a filesystem is a directory of two files; on the web it is two
+/// byte sources (ADR-0006) and these names are what a fetch path or a pair of
+/// dropped files is matched against.
+pub const HEADER_FILE_NAME: &str = "header.json";
+
+/// Name of the binary [`Frame`] sequence inside a run directory.
+pub const FRAME_FILE_NAME: &str = "frames.bin";
+
+/// The `bincode` configuration every [`Frame`] is encoded and decoded with.
+///
+/// Half of the frame encoding lives in the `serde` derive on [`Frame`] and the
+/// other half lives here: nothing in the bytes records which configuration
+/// wrote them, so a reader that picks a different one decodes garbage without
+/// noticing. It is a function rather than a `const` because
+/// `bincode::config::standard` is not one.
+#[must_use]
+pub fn frame_encoding() -> bincode::config::Configuration {
+    bincode::config::standard()
+}
 
 #[cfg(test)]
 mod tests {
