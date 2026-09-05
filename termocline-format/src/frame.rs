@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{FormatError, GridSpec, Variable};
+use crate::{FormatError, GridSpec, RunHeader, Variable};
 
 /// The ocean state and the forcing at one instant of model time.
 ///
@@ -72,7 +72,7 @@ impl Frame {
     ///
     /// The only way a frame comes to hold `T'`, and the only difference
     /// between a coupled run's frames and an uncoupled run's: a writer builds
-    /// the core frame either way and adds the fourth field when — and only
+    /// the core frame either way and adds the sixth field when — and only
     /// when — the run has one to add.
     ///
     /// # Errors
@@ -113,6 +113,31 @@ impl Frame {
                     expected,
                     actual,
                 });
+            }
+        }
+        Ok(())
+    }
+
+    /// Check this frame against the whole of `header`: the grid its fields
+    /// must cover, and the variables its run declared.
+    ///
+    /// What a reader calls, because a frame is bytes until the header says
+    /// what shape they should be *and* what they should mean. A frame carrying
+    /// a variable its header does not list would be a field nothing announced;
+    /// one missing a variable its header lists would be a run that promised
+    /// data it does not have. Either way the run is refused rather than read
+    /// under labels that do not fit it.
+    ///
+    /// # Errors
+    /// The errors of [`Frame::validate`], and
+    /// [`FormatError::UndeclaredVariable`] naming the first variable the frame
+    /// and the header disagree about.
+    pub fn validate_against(&self, header: &RunHeader) -> Result<(), FormatError> {
+        self.validate(&header.grid)?;
+        for variable in Variable::ALL {
+            let declared = header.carries(variable);
+            if self.field(variable).is_some() != declared {
+                return Err(FormatError::UndeclaredVariable { variable, declared });
             }
         }
         Ok(())

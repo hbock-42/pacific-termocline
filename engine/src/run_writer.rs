@@ -302,11 +302,12 @@ pub enum RunWriteError {
     /// anomaly: a coupled run's header must list `T'` and an uncoupled run's
     /// must not, because the header's variable list is what a reader believes
     /// about every frame beside it.
+    ///
+    /// One boolean, not two: the error exists only where the two differ, so
+    /// the header's answer is the state's negated.
     SstAnomalyMismatch {
         /// Whether the header says the run's frames carry `T'`.
         header_carries: bool,
-        /// Whether the state offered has a `T'` to write.
-        state_carries: bool,
     },
     /// The run finished before writing every frame its header promised, which
     /// would leave a reader reading off the end of the frame file.
@@ -331,14 +332,18 @@ impl fmt::Display for RunWriteError {
                  a further frame would be one no reader ever sees"
             ),
             Self::SstAnomalyMismatch {
-                header_carries,
-                state_carries,
+                header_carries: true,
             } => write!(
                 f,
-                "the run's header {} the SST anomaly and the state offered {} one; \
-                 a run couples SST or it does not, and its header says which",
-                lists(*header_carries),
-                has(*state_carries)
+                "the run's header lists the SST anomaly and the state offered has none; \
+                 a run couples SST or it does not, and its header says which"
+            ),
+            Self::SstAnomalyMismatch {
+                header_carries: false,
+            } => write!(
+                f,
+                "the state offered carries an SST anomaly and the run's header does not \
+                 list one; a run couples SST or it does not, and its header says which"
             ),
             Self::MissingFrames { promised, written } => write!(
                 f,
@@ -360,25 +365,6 @@ impl std::error::Error for RunWriteError {
             | Self::SstAnomalyMismatch { .. }
             | Self::MissingFrames { .. } => None,
         }
-    }
-}
-
-/// "lists" or "does not list", so that the mismatch message above reads as a
-/// sentence rather than as two booleans.
-const fn lists(carries: bool) -> &'static str {
-    if carries {
-        "lists"
-    } else {
-        "does not list"
-    }
-}
-
-/// "has" or "does not have", the state's half of the same sentence.
-const fn has(carries: bool) -> &'static str {
-    if carries {
-        "has"
-    } else {
-        "does not have"
     }
 }
 
@@ -489,7 +475,6 @@ impl<W: Write> RunWriter<W> {
         if self.carries_sst_anomaly != state.couples_sst() {
             return Err(RunWriteError::SstAnomalyMismatch {
                 header_carries: self.carries_sst_anomaly,
-                state_carries: state.couples_sst(),
             });
         }
         let frame = Frame::new(

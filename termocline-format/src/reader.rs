@@ -39,9 +39,11 @@
 //! # What the header is trusted for
 //!
 //! Everything the frames do not say themselves. The bytes of a frame record
-//! neither the grid nor the number of frames beside them, so the reader takes
-//! both from the header and holds the file to them: a frame whose fields do
-//! not cover the header's basin is [`RunReadError::Frame`], a run whose frames
+//! neither the grid, nor the variables they carry, nor the number of frames
+//! beside them, so the reader takes all three from the header and holds the
+//! file to them: a frame whose fields do not cover the header's basin, or
+//! which carries a variable the header never declared, is
+//! [`RunReadError::Frame`], a run whose frames
 //! stop early is [`RunReadError::Truncated`], and bytes past the promised
 //! count are [`RunReadError::TrailingBytes`] — the mirror of the writer's
 //! refusal to append past them. A truncated run that ended the iteration
@@ -195,13 +197,13 @@ impl From<std::io::Error> for RunReadError {
 /// or run out part-way through one — a caller decoding a single frame is not
 /// counting against a promised total, so nothing here is
 /// [`RunReadError::Truncated`] — and [`RunReadError::Frame`] if the frame does
-/// not fit the header's grid.
+/// not fit the header's grid or does not carry the header's variables.
 pub fn decode_frame(bytes: &[u8], header: &RunHeader) -> Result<(Frame, usize), RunReadError> {
     let layout = FrameLayout::of_version(header.format_version)?;
     let (frame, used) = layout
         .decode_from_slice(bytes)
         .map_err(RunReadError::Decode)?;
-    frame.validate(&header.grid)?;
+    frame.validate_against(header)?;
     Ok((frame, used))
 }
 
@@ -362,7 +364,7 @@ impl<R: Read> RunReader<R> {
                     RunReadError::Decode(error)
                 }
             })?;
-        frame.validate(&self.header.grid)?;
+        frame.validate_against(&self.header)?;
         Ok(frame)
     }
 

@@ -16,6 +16,19 @@ use crate::Variable;
 pub enum FormatError {
     /// The grid the header describes is not a valid basin.
     Grid(GridError),
+    /// A frame and its header disagreed about which variables the run wrote:
+    /// the frame carried a variable the header does not declare, or lacked one
+    /// it does.
+    ///
+    /// The header's variable list is what a reader indexes a run by, so a
+    /// frame that does not match it would be read under the wrong labels — or,
+    /// worse, would offer a field the run never announced.
+    UndeclaredVariable {
+        /// The variable the two disagree about.
+        variable: Variable,
+        /// Whether the header declares it.
+        declared: bool,
+    },
     /// A frame's field did not carry one value per point of its staggered
     /// position on the grid.
     FieldShape {
@@ -32,6 +45,22 @@ impl fmt::Display for FormatError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Grid(err) => err.fmt(f),
+            Self::UndeclaredVariable {
+                variable,
+                declared: true,
+            } => write!(
+                f,
+                "the header lists {} among the run's variables and the frame does not carry it",
+                variable.symbol()
+            ),
+            Self::UndeclaredVariable {
+                variable,
+                declared: false,
+            } => write!(
+                f,
+                "the frame carries {} and the header does not list it among the run's variables",
+                variable.symbol()
+            ),
             Self::FieldShape {
                 variable,
                 expected,
@@ -49,7 +78,7 @@ impl std::error::Error for FormatError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Grid(err) => Some(err),
-            Self::FieldShape { .. } => None,
+            Self::UndeclaredVariable { .. } | Self::FieldShape { .. } => None,
         }
     }
 }

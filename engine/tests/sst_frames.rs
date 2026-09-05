@@ -181,8 +181,7 @@ fn a_state_that_disagrees_with_its_header_about_the_coupling_is_refused_by_name(
         matches!(
             error,
             RunWriteError::SstAnomalyMismatch {
-                header_carries: false,
-                state_carries: true
+                header_carries: false
             }
         ),
         "{error:?}"
@@ -198,8 +197,7 @@ fn a_state_that_disagrees_with_its_header_about_the_coupling_is_refused_by_name(
         matches!(
             error,
             RunWriteError::SstAnomalyMismatch {
-                header_carries: true,
-                state_carries: false
+                header_carries: true
             }
         ),
         "{error:?}"

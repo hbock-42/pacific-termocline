@@ -199,15 +199,13 @@ impl RunHeader {
     /// The same header, declaring that the run's frames also carry the
     /// mixed-layer SST anomaly `T'` of the Epic 12 coupling.
     ///
-    /// Appended after the linear core rather than inserted among it, so that
-    /// the first five entries of a coupled run's list are exactly an
-    /// uncoupled run's — the extension is additive on the page as well as in
-    /// the equations.
+    /// A coupled run writes every variable the format knows, so the list is
+    /// [`Variable::ALL`] — whose first five entries are exactly
+    /// [`Variable::LINEAR_CORE`], in order, so the extension is additive on
+    /// the page as well as in the equations.
     #[must_use]
     pub fn with_sst_anomaly(mut self) -> Self {
-        if !self.carries(Variable::SstAnomaly) {
-            self.variables.push(VariableSpec::of(Variable::SstAnomaly));
-        }
+        self.variables = Variable::ALL.map(VariableSpec::of).to_vec();
         self
     }
 

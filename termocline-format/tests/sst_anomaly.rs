@@ -233,6 +233,62 @@ fn an_uncoupled_frame_pays_one_byte_for_the_field_it_does_not_have() {
 }
 
 #[test]
+fn a_frame_carrying_a_variable_its_header_never_declared_is_refused() {
+    // The header's variable list is what a reader indexes a run by, so the
+    // reader holds the frames to it as well as to the grid. A run offering a
+    // `T'` its header never announced is a run whose frames and whose labels
+    // disagree, and reading it would mean reporting a field under a heading
+    // that does not exist.
+    let (header_bytes, frame_bytes) = run_bytes(&header(1), &[coupled_frame(0.0)]);
+
+    let mut reader = RunReader::new(Cursor::new(header_bytes), Cursor::new(frame_bytes))
+        .expect("the header itself is valid");
+    let error = reader
+        .next()
+        .expect("the header promises a frame")
+        .expect_err("an undeclared anomaly is not read as data");
+
+    assert!(
+        matches!(
+            error,
+            RunReadError::Frame(FormatError::UndeclaredVariable {
+                variable: Variable::SstAnomaly,
+                declared: false,
+            })
+        ),
+        "{error:?}"
+    );
+    assert!(error.to_string().contains("sst"), "{error}");
+}
+
+#[test]
+fn a_frame_missing_a_variable_its_header_declared_is_refused() {
+    // The other direction, and the one the ticket's trap is about: a header
+    // promising `T'` beside frames that have none would leave a reader with a
+    // declared variable and nothing behind it — which is exactly where a
+    // buffer of zeros would get invented to fill the hole.
+    let (header_bytes, frame_bytes) = run_bytes(&header(1).with_sst_anomaly(), &[core_frame(0.0)]);
+
+    let mut reader = RunReader::new(Cursor::new(header_bytes), Cursor::new(frame_bytes))
+        .expect("the header itself is valid");
+    let error = reader
+        .next()
+        .expect("the header promises a frame")
+        .expect_err("a promised anomaly that is not there is not read as absent");
+
+    assert!(
+        matches!(
+            error,
+            RunReadError::Frame(FormatError::UndeclaredVariable {
+                variable: Variable::SstAnomaly,
+                declared: true,
+            })
+        ),
+        "{error:?}"
+    );
+}
+
+#[test]
 fn an_anomaly_that_does_not_cover_the_basin_is_refused_by_name() {
     // Invalid input returns a Result naming the offending value and the bound
     // it violated (CODING_STANDARDS.md), rather than writing a short field.
