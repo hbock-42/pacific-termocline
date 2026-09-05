@@ -7,10 +7,14 @@ license.workspace = true
 repository.workspace = true
 description = "On-disk format shared by the engine and the visualizer: JSON header plus binary frames."
 
+[features]
+default = ["fs"]
+# `RunReader::open`, the native path-taking convenience. Off in the browser,
+# which has no filesystem to open (ADR-0006).
+fs = []
+
 [dependencies]
 bincode = { version = "2", features = ["serde"] }
 serde = { version = "1.0.229", features = ["derive"] }
-termocline-grid.workspace = true
-
-[dev-dependencies]
 serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
+termocline-grid.workspace = true
