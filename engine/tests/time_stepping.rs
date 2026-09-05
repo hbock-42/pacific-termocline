@@ -60,7 +60,7 @@ use std::cell::RefCell;
 
 use engine::{
     max_stable_dt, step, BetaPlane, CflError, Field2D, Grid, OceanState, PhysicalParams, Solver,
-    SolverError, Spacing, Staggering, WaveSpeed, WindStress, H_STAGGERING, U_STAGGERING,
+    SolverError, Spacing, Staggering, WaveSpeed, WindStressField, H_STAGGERING, U_STAGGERING,
 };
 
 /// Reduced gravity `g'` of the equatorial Pacific's first baroclinic mode, in
@@ -219,7 +219,7 @@ fn one_step_of_a_uniform_thermocline_anomaly_is_the_rk4_amplification_polynomial
 
     let mut state = OceanState::at_rest(grid);
     state.h_mut().as_mut_slice().fill(H_AMPLITUDE_M);
-    let calm = WindStress::calm(grid);
+    let calm = WindStressField::calm(grid);
 
     let advanced = step(
         &state,
@@ -276,7 +276,7 @@ fn a_step_accelerates_a_thermocline_slope_down_its_own_gradient() {
     let mut state = gravest_zonal_mode(grid, spacing);
 
     let mut solver = solver_for(grid, spacing, params, PRESSURE_GRADIENT_STEP_S);
-    let calm = WindStress::calm(grid);
+    let calm = WindStressField::calm(grid);
     solver.step(&mut state, 0.0, |_t_s| &calm);
 
     let wavenumber_per_m = std::f64::consts::PI / BASIN_LX_M;
@@ -342,7 +342,7 @@ fn a_step_rotates_a_meridional_current_into_a_zonal_one() {
     state.v_mut().as_mut_slice().fill(V_AMPLITUDE_M_PER_S);
 
     let mut solver = solver_for(grid, spacing, params, CORIOLIS_STEP_S);
-    let calm = WindStress::calm(grid);
+    let calm = WindStressField::calm(grid);
     solver.step(&mut state, 0.0, |_t_s| &calm);
 
     for j in 0..state.u().ny() {
@@ -391,7 +391,8 @@ fn a_constant_wind_stress_accelerates_a_basin_at_rest() {
     let mut state = OceanState::at_rest(grid);
 
     let mut solver = solver_for(grid, spacing, params, WIND_STEP_S);
-    let trade_winds = WindStress::uniform(grid, TRADE_WIND_STRESS_X_PA, TRADE_WIND_STRESS_Y_PA);
+    let trade_winds =
+        WindStressField::uniform(grid, TRADE_WIND_STRESS_X_PA, TRADE_WIND_STRESS_Y_PA);
     solver.step(&mut state, 0.0, |_t_s| &trade_winds);
 
     let layer_mass_kg_per_m2 = REFERENCE_DENSITY_KG_PER_M3 * PACIFIC_MEAN_DEPTH_M;
@@ -427,7 +428,7 @@ fn the_wind_stress_function_is_sampled_at_the_four_rk4_stage_times() {
 
     let mut state = OceanState::at_rest(grid);
     let mut solver = solver_for(grid, spacing, params, dt_s);
-    let calm = WindStress::calm(grid);
+    let calm = WindStressField::calm(grid);
     let sampled_at_s = RefCell::new(Vec::new());
     solver.step(&mut state, start_s, |t_s| {
         sampled_at_s.borrow_mut().push(t_s);
@@ -538,7 +539,7 @@ fn energy_drift(cells: usize) -> f64 {
     let mut state = gravest_zonal_mode(grid, spacing);
     let initial = wave_energy(&state, params);
     let mut solver = solver_for(grid, spacing, params, dt_s);
-    let calm = WindStress::calm(grid);
+    let calm = WindStressField::calm(grid);
 
     let mut worst = 0.0_f64;
     for n in 0..steps {
@@ -612,7 +613,7 @@ fn a_multi_step_run_at_the_cfl_safe_timestep_stays_finite() {
     let mut state = gravest_zonal_mode(grid, spacing);
     let initial = wave_energy(&state, undamped);
     let mut solver = solver_for(grid, spacing, undamped, dt_s);
-    let calm = WindStress::calm(grid);
+    let calm = WindStressField::calm(grid);
     for n in 0..STABILITY_RUN_STEPS {
         solver.step(&mut state, n as f64 * dt_s, |_t_s| &calm);
         assert_finite(&state, n);
@@ -631,7 +632,8 @@ fn a_multi_step_run_at_the_cfl_safe_timestep_stays_finite() {
     let dt_s = cfl_safe_dt_s(spacing, damped);
     let mut state = OceanState::at_rest(grid);
     let mut solver = solver_for(grid, spacing, damped, dt_s);
-    let trade_winds = WindStress::uniform(grid, TRADE_WIND_STRESS_X_PA, TRADE_WIND_STRESS_Y_PA);
+    let trade_winds =
+        WindStressField::uniform(grid, TRADE_WIND_STRESS_X_PA, TRADE_WIND_STRESS_Y_PA);
     for n in 0..STABILITY_RUN_STEPS {
         solver.step(&mut state, n as f64 * dt_s, |_t_s| &trade_winds);
         assert_finite(&state, n);
@@ -747,7 +749,8 @@ fn two_identical_runs_produce_identical_states() {
     let (grid, spacing) = basin(STABILITY_BASIN_CELLS, STABILITY_BASIN_CELLS);
     let params = pacific_params(STRONG_DAMPING_PER_S);
     let dt_s = cfl_safe_dt_s(spacing, params);
-    let trade_winds = WindStress::uniform(grid, TRADE_WIND_STRESS_X_PA, TRADE_WIND_STRESS_Y_PA);
+    let trade_winds =
+        WindStressField::uniform(grid, TRADE_WIND_STRESS_X_PA, TRADE_WIND_STRESS_Y_PA);
 
     let run = || {
         let mut state = gravest_zonal_mode(grid, spacing);
@@ -777,7 +780,8 @@ fn the_convenience_step_is_the_same_computation_as_the_reusable_solver() {
     let params = pacific_params(STRONG_DAMPING_PER_S);
     let dt_s = cfl_safe_dt_s(spacing, params);
     let plane = equatorial_plane(params, spacing, grid);
-    let trade_winds = WindStress::uniform(grid, TRADE_WIND_STRESS_X_PA, TRADE_WIND_STRESS_Y_PA);
+    let trade_winds =
+        WindStressField::uniform(grid, TRADE_WIND_STRESS_X_PA, TRADE_WIND_STRESS_Y_PA);
     let initial = gravest_zonal_mode(grid, spacing);
 
     let wrapped = step(&initial, dt_s, params, spacing, plane, |_t_s| &trade_winds)

@@ -61,11 +61,11 @@
 use termocline_grid::Grid;
 
 use crate::coriolis::{BetaPlane, CoriolisTerm};
+use crate::forcing::WindStressField;
 use crate::integrator::Rk4;
 use crate::params::PhysicalParams;
 use crate::shallow_water::ShallowWaterRhs;
 use crate::state::OceanState;
-use crate::wind::WindStress;
 use termocline_numerics::{
     check_timestep, CflError, Spacing, WaveSpeed, CFL_SAFETY_FACTOR, RK4_IMAGINARY_AXIS_LIMIT,
 };
@@ -206,10 +206,11 @@ impl Solver {
     ///
     /// `wind_stress_at(t)` supplies the surface stress at a given time in
     /// seconds; it is called once per RK4 stage, at the tableau's nodes `t`,
-    /// `t + dt/2`, `t + dt/2` and `t + dt`. Epic 02 runs it as a constant stub
-    /// — `|_t| &stress` — but the argument is a function of time because
-    /// Epic 03's scenarios are, and a step that sampled the stress once would
-    /// integrate the wrong forcing.
+    /// `t + dt/2`, `t + dt/2` and `t + dt`. A steady scenario samples its
+    /// [`WindStress`](crate::WindStress) once and hands back the same field at
+    /// every stage — `|_t| &stress` — but the argument is a function of time
+    /// because the seasonal and burst scenarios of Epic 03 are, and a step
+    /// that sampled a varying stress once would integrate the wrong forcing.
     ///
     /// # Panics
     /// If `state` or a returned wind stress covers a different basin from the
@@ -218,7 +219,7 @@ impl Solver {
     /// § Correctness and failure).
     pub fn step<'w, W>(&mut self, state: &mut OceanState, t_s: f64, wind_stress_at: W)
     where
-        W: Fn(f64) -> &'w WindStress,
+        W: Fn(f64) -> &'w WindStressField,
     {
         // Destructured so the closure below can borrow the two evaluators while
         // the integrator is borrowed mutably: they are disjoint fields.
@@ -266,7 +267,7 @@ pub fn step<'w, W>(
     wind_stress_at: W,
 ) -> Result<OceanState, SolverError>
 where
-    W: Fn(f64) -> &'w WindStress,
+    W: Fn(f64) -> &'w WindStressField,
 {
     let mut solver = Solver::new(state.grid(), spacing, params, plane, dt_s)?;
     let mut advanced = state.clone();
