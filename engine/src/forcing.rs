@@ -8,6 +8,13 @@
 //! [`SteadyTradeWinds`] is the control scenario: a steady easterly stress,
 //! `τx < 0`, optionally decaying away from the equator.
 //!
+//! [`SeasonalTradeWinds`] is the second scenario of the scientific model doc:
+//! the same field breathing with the year, `1 + a·cos(2π(t − t_peak)/T_year)`.
+//! It is a wrapper rather than a variant of [`SteadyTradeWinds`] because the
+//! two answer different questions — what the alizés look like in space, and
+//! how strong they are this month — and keeping them apart is what lets the
+//! composable burst of T-03.3 stack on either.
+//!
 //! The solver cannot integrate a function, though. It needs the stress at the
 //! points its momentum equations live on, which on the Arakawa C-grid of
 //! [ADR-0003] are the east/west faces for `τx` and the north/south faces for
@@ -46,6 +53,7 @@
 //!
 //! [ADR-0003]: ../../docs/planning/adr/0003-numerical-scheme.md
 
+use std::f64::consts::TAU;
 use std::fmt;
 
 use termocline_grid::{Field2D, Grid, Staggering, U_STAGGERING, V_STAGGERING};
@@ -54,6 +62,20 @@ use crate::basin::Basin;
 
 /// Stress of a calm ocean surface, in Pa.
 const CALM: f64 = 0.0;
+
+/// One mean solar day, in seconds.
+const SOLAR_DAY_S: f64 = 86_400.0;
+
+/// The tropical year `T_year`, in seconds — the period of the seasonal cycle.
+///
+/// 365.2422 mean solar days, the mean tropical year of the *Astronomical
+/// Almanac*: the equinox-to-equinox year the seasons follow, rather than the
+/// sidereal year or the calendar's 365. It is a `const` and not scenario input
+/// because the year is not a knob — T-03.2 asks for the *amplitude* and
+/// *phase* of the annual harmonic to be configurable, and a scenario wanting
+/// some other period is asking for a different forcing, not for a differently
+/// tuned season.
+pub const TROPICAL_YEAR_S: f64 = 365.2422 * SOLAR_DAY_S;
 
 /// A prescribed surface wind stress, as a function of position and time.
 ///
@@ -99,6 +121,20 @@ pub enum WindStressError {
         /// The value supplied, in metres.
         value_m: f64,
     },
+    /// The seasonal modulation amplitude was not a fraction of the steady
+    /// field. Outside `[0, 1]` the annual harmonic `1 + a·cos(…)` turns
+    /// negative somewhere in the year, which flips the stress westerly; a
+    /// westerly stress is the wind burst of T-03.3, not a season, and a
+    /// scenario named for the alizés must not quietly become one.
+    ModulationNotAFraction {
+        /// The value supplied, dimensionless.
+        relative_amplitude: f64,
+    },
+    /// The seasonal phase was not a finite instant.
+    PhaseNotFinite {
+        /// The value supplied, in seconds.
+        peak_time_s: f64,
+    },
 }
 
 impl fmt::Display for WindStressError {
@@ -112,6 +148,15 @@ impl fmt::Display for WindStressError {
             Self::ScaleNotPositive { parameter, value_m } => write!(
                 f,
                 "{parameter} is {value_m} m; it must be a finite, strictly positive distance"
+            ),
+            Self::ModulationNotAFraction { relative_amplitude } => write!(
+                f,
+                "relative_amplitude is {relative_amplitude}; it must be a fraction between 0 \
+                 and 1, or the modulated alizés would turn westerly within the year"
+            ),
+            Self::PhaseNotFinite { peak_time_s } => write!(
+                f,
+                "peak_time_s is {peak_time_s} s; it must be a finite instant"
             ),
         }
     }
@@ -222,6 +267,113 @@ impl WindStress for SteadyTradeWinds {
             }
         };
         (self.equatorial_zonal_stress_pa * decay, CALM)
+    }
+}
+
+/// The trade winds breathing with the year — the seasonal-cycle scenario of
+/// `docs/planning/01-scientific-model.md`.
+///
+/// A [`SteadyTradeWinds`] field scaled by an annual harmonic, the same factor
+/// everywhere in the basin at a given instant:
+///
+/// ```text
+/// τ(x, y, t) = τ_steady(x, y) · (1 + a·cos(2π·(t − t_peak)/T_year))
+/// ```
+///
+/// with `a` the relative amplitude, `t_peak` the phase — written as the
+/// instant the alizés are *strongest* rather than as an angle, so that it
+/// carries a unit like every other quantity here — and `T_year` the
+/// [`TROPICAL_YEAR_S`].
+///
+/// The modulation is a pure scaling, so it does not move the wind's structure
+/// in `y`: the alizés of March and of September have the same shape and
+/// different strength. Meridional migration of the wind belt is a real feature
+/// of the seasonal cycle and deliberately not modelled here — the ticket asks
+/// for an annual harmonic on the steady field, and a migrating belt is a
+/// different scenario.
+///
+/// `a` is required to be a fraction, so the harmonic never turns negative and
+/// the stress never reverses. At `a = 1` the basin goes momentarily calm once
+/// a year, which is the strongest season this scenario can describe; anything
+/// beyond it is a westerly wind burst wearing a season's name, and bursts are
+/// T-03.3's, superimposed rather than substituted.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SeasonalTradeWinds {
+    /// The field the harmonic modulates.
+    steady: SteadyTradeWinds,
+    /// Relative amplitude `a` of the annual harmonic, dimensionless, in
+    /// `[0, 1]`.
+    relative_amplitude: f64,
+    /// Phase, in seconds: the instant at which the harmonic peaks and the
+    /// alizés are therefore strongest.
+    peak_time_s: f64,
+}
+
+impl SeasonalTradeWinds {
+    /// `steady` modulated by an annual harmonic of relative amplitude
+    /// `relative_amplitude`, peaking `peak_time_s` seconds into the run.
+    ///
+    /// # Errors
+    /// [`WindStressError::ModulationNotAFraction`] unless the amplitude is a
+    /// number in `[0, 1]`, and [`WindStressError::PhaseNotFinite`] unless the
+    /// phase is a finite instant.
+    pub fn new(
+        steady: SteadyTradeWinds,
+        relative_amplitude: f64,
+        peak_time_s: f64,
+    ) -> Result<Self, WindStressError> {
+        if !(0.0..=1.0).contains(&relative_amplitude) {
+            return Err(WindStressError::ModulationNotAFraction { relative_amplitude });
+        }
+        if !peak_time_s.is_finite() {
+            return Err(WindStressError::PhaseNotFinite { peak_time_s });
+        }
+        Ok(Self {
+            steady,
+            relative_amplitude,
+            peak_time_s,
+        })
+    }
+
+    /// The steady field this season modulates.
+    #[must_use]
+    pub const fn steady(self) -> SteadyTradeWinds {
+        self.steady
+    }
+
+    /// Relative amplitude `a` of the annual harmonic, dimensionless.
+    #[must_use]
+    pub const fn relative_amplitude(self) -> f64 {
+        self.relative_amplitude
+    }
+
+    /// Phase, in seconds: the instant the alizés are strongest.
+    #[must_use]
+    pub const fn peak_time_s(self) -> f64 {
+        self.peak_time_s
+    }
+
+    /// Period of the modulation, in seconds — the [`TROPICAL_YEAR_S`].
+    #[must_use]
+    pub const fn period_s(self) -> f64 {
+        TROPICAL_YEAR_S
+    }
+
+    /// The harmonic `1 + a·cos(2π(t − t_peak)/T_year)` at `t_s`, dimensionless.
+    ///
+    /// Never negative, because `a ∈ [0, 1]` and `cos ≥ −1`: that is what keeps
+    /// the modulated alizés easterly.
+    fn modulation(self, t_s: f64) -> f64 {
+        let phase_rad = TAU * (t_s - self.peak_time_s) / TROPICAL_YEAR_S;
+        self.relative_amplitude.mul_add(phase_rad.cos(), 1.0)
+    }
+}
+
+impl WindStress for SeasonalTradeWinds {
+    fn stress(&self, x_m: f64, y_m: f64, t_s: f64) -> (f64, f64) {
+        let modulation = self.modulation(t_s);
+        let (tau_x_pa, tau_y_pa) = self.steady.stress(x_m, y_m, t_s);
+        (tau_x_pa * modulation, tau_y_pa * modulation)
     }
 }
 

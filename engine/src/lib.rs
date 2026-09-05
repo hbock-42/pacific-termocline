@@ -9,8 +9,8 @@
 //! integrator, the prognostic [`OceanState`], the [`PhysicalParams`] the
 //! equations are written in terms of, the [`Solver`] that puts them together
 //! into one time step of the linear shallow-water core, the [`WindStress`]
-//! forcing that drives it, and the [`RunWriter`] that saves the result at a
-//! configurable output cadence.
+//! forcing that drives it — steady or seasonal — and the [`RunWriter`] that
+//! saves the result at a configurable output cadence.
 
 // The acceptance criterion of T-02.1 is that every field states its unit; the
 // lint is what keeps that true as the crate grows.
@@ -46,9 +46,13 @@ pub use state::OceanState;
 pub use basin::{Basin, BasinError};
 
 /// Re-exported so a scenario names one wind forcing: the [`forcing::WindStress`]
-/// trait a scenario implements and the [`forcing::WindStressField`] the solver
+/// trait a scenario implements, the scenarios that implement it, and the
+/// [`forcing::WindStressField`] the solver
 /// actually reads.
-pub use forcing::{SteadyTradeWinds, WindStress, WindStressError, WindStressField};
+pub use forcing::{
+    SeasonalTradeWinds, SteadyTradeWinds, WindStress, WindStressError, WindStressField,
+    TROPICAL_YEAR_S,
+};
 
 /// Re-exported so binaries and the visualizer agree on one format version, and
 /// on where a run's two files live (ADR-0004: the format crate is the one
