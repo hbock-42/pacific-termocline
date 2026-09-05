@@ -22,6 +22,17 @@
 //! and the frame times a reader plots against have to be the times the forcing
 //! was actually sampled at.
 //!
+//! # The SST coupling
+//!
+//! A scenario's `[sst]` section is read here and nowhere else: it decides
+//! which solver is built and which state is allocated, and the time loop is
+//! the same either way. `T'` is *not* written to the run's frames — the
+//! interchange format of [ADR-0004] describes the three variables of the
+//! linear core, and extending it is a change to the contract the visualizer
+//! reads, not a side effect of adding a term (T-12.3's business).
+//!
+//! [ADR-0004]: ../../docs/planning/adr/0004-data-interchange-format.md
+//!
 //! # What is allocated, and when
 //!
 //! The state, the solver's stage buffers, the composite wind and the stress
@@ -219,7 +230,17 @@ pub fn run_scenario_observed(
     // plane the scenario loader checked the rotation bound against, because
     // both ask the basin for it.
     let plane = BetaPlane::of_basin(params, basin);
-    let mut solver = Solver::new(grid, basin.spacing(), params, plane, schedule.dt_s())?;
+    // The Epic 12 switch, and the whole of it: a scenario with an `[sst]`
+    // section integrates the mixed-layer anomaly `T'` alongside the core, one
+    // without integrates the three-variable model of Epics 01-07. The two
+    // branches differ in one term of the right-hand side and one field of the
+    // state; everything below is the same loop (T-12.1).
+    let mut solver = match scenario.sst_params() {
+        Some(sst) => {
+            Solver::coupled_to_sst(grid, basin.spacing(), params, plane, schedule.dt_s(), sst)?
+        }
+        None => Solver::new(grid, basin.spacing(), params, plane, schedule.dt_s())?,
+    };
 
     let header = RunHeader::new(
         GridSpec::new(grid.nx(), grid.ny(), scenario.bounds().into())?,
@@ -228,7 +249,11 @@ pub fn run_scenario_observed(
         schedule.timing(),
     );
 
-    let mut state = OceanState::at_rest(grid);
+    let mut state = if solver.couples_sst() {
+        OceanState::at_rest_with_sst_anomaly(grid)
+    } else {
+        OceanState::at_rest(grid)
+    };
     // The run's forcing: the scenario's wind and the one field it is sampled
     // into, held here rather than inside the solver so that it survives the
     // whole time loop. A steady wind is therefore sampled once for the run

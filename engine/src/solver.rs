@@ -13,6 +13,11 @@
 //! ∂h/∂t =       −H·(∂u/∂x + ∂v/∂y)    − r·h
 //! ```
 //!
+//! A scenario that asks for the Epic 12 coupling gets a fourth term on top:
+//! [`Solver::coupled_to_sst`] adds the mixed-layer SST anomaly equation of
+//! [`crate::sst`], which writes only `∂T'/∂t` and leaves the three equations
+//! above bit-for-bit as they were.
+//!
 //! Two ways in exist, and they differ only in how the forcing arrives.
 //! [`Solver::step`] takes a [`WindStressField`] already sampled onto the
 //! C-grid, which is what the Epic 02 term tests want; [`Solver::step_forced_by`]
@@ -89,6 +94,7 @@ use crate::forcing::{BorrowedForcing, StageForcing, WindForcing, WindStress, Win
 use crate::integrator::Rk4;
 use crate::params::PhysicalParams;
 use crate::shallow_water::ShallowWaterRhs;
+use crate::sst::{SstParams, SstTerm};
 use crate::state::OceanState;
 use termocline_numerics::{
     check_timestep, CflError, Spacing, WaveSpeed, CFL_SAFETY_FACTOR, RK4_IMAGINARY_AXIS_LIMIT,
@@ -236,6 +242,11 @@ pub struct Solver {
     rhs: ShallowWaterRhs,
     /// The beta-plane rotation terms, added on top of them.
     coriolis: CoriolisTerm,
+    /// The Epic 12 SST anomaly equation, when a scenario asked for the
+    /// coupling. `None` is the validated linear core of Epics 01-07, and the
+    /// only difference a `None` makes to a step is that one more term is not
+    /// added — nothing about `h`, `u` or `v` is decided differently.
+    sst: Option<SstTerm>,
     /// The integrator and its stage buffers, sized for this basin.
     integrator: Rk4<OceanState>,
     /// The surface stress of the current RK4 stage, re-sampled in place by
@@ -272,9 +283,54 @@ impl Solver {
             dt_s,
             rhs: ShallowWaterRhs::new(grid, spacing, params),
             coriolis: CoriolisTerm::new(grid, spacing, plane),
+            sst: None,
             integrator: Rk4::new(&OceanState::at_rest(grid)),
             stage_stress: WindStressField::calm(grid),
         })
+    }
+
+    /// [`Solver::new`], with the Epic 12 SST anomaly equation of [`crate::sst`]
+    /// added to the right-hand side.
+    ///
+    /// The only difference from an uncoupled solver is one more term added to
+    /// the tendency, and that term writes nothing but the SST rate. A run
+    /// built this way steps a state from
+    /// [`OceanState::at_rest_with_sst_anomaly`] and gets exactly the `h`, `u`
+    /// and `v` an uncoupled run of the same scenario gets — which is the
+    /// acceptance criterion of T-12.1, and why the extension can be trusted
+    /// beside the validated core rather than instead of it.
+    ///
+    /// The SST equation's own rates — the entrainment `w/H_m` and the thermal
+    /// damping `ε_T` — are of order `10⁻⁶ s⁻¹`, three orders of magnitude
+    /// slower than the gravity waves the CFL bound is derived for, so it adds
+    /// no third bound on the timestep.
+    ///
+    /// # Errors
+    /// The errors of [`Solver::new`]: an unstable timestep is refused, never
+    /// shortened.
+    pub fn coupled_to_sst(
+        grid: Grid,
+        spacing: Spacing,
+        params: PhysicalParams,
+        plane: BetaPlane,
+        dt_s: f64,
+        sst: SstParams,
+    ) -> Result<Self, SolverError> {
+        Ok(Self {
+            sst: Some(SstTerm::new(grid, spacing, plane, params, sst)),
+            // RK4's stage buffers take their shape from a prototype, and a
+            // coupled run's states carry a fourth field — so the prototype has
+            // to carry it too, or the stages would silently be a different
+            // state type from the one being stepped.
+            integrator: Rk4::new(&OceanState::at_rest_with_sst_anomaly(grid)),
+            ..Self::new(grid, spacing, params, plane, dt_s)?
+        })
+    }
+
+    /// Whether this solver integrates the Epic 12 SST anomaly.
+    #[must_use]
+    pub const fn couples_sst(&self) -> bool {
+        self.sst.is_some()
     }
 
     /// Length of one step, in seconds.
@@ -315,6 +371,7 @@ impl Solver {
             dt_s,
             rhs,
             coriolis,
+            sst,
             integrator,
             stage_stress: _,
         } = self;
@@ -325,10 +382,15 @@ impl Solver {
             *dt_s,
             &mut |now: &OceanState, stage_t_s: f64, tendency: &mut OceanState| {
                 // Order matters: the shallow-water evaluator writes every point
-                // of the tendency, the Coriolis term adds to what it wrote, and
-                // the boundary condition has the last word over both.
-                rhs.evaluate(now, wind_stress_at(stage_t_s), tendency);
+                // of the tendency, the Coriolis term and the SST equation add
+                // to what it wrote, and the boundary condition has the last
+                // word over all three.
+                let stress = wind_stress_at(stage_t_s);
+                rhs.evaluate(now, stress, tendency);
                 coriolis.add_to_tendency(now, tendency);
+                if let Some(sst) = sst.as_mut() {
+                    sst.add_to_tendency(now, stress, tendency);
+                }
                 NoNormalFlow::apply_to_tendency(tendency);
             },
         );
@@ -364,6 +426,7 @@ impl Solver {
             dt_s,
             rhs,
             coriolis,
+            sst,
             integrator,
             stage_stress,
         } = self;
@@ -379,6 +442,7 @@ impl Solver {
             *dt_s,
             rhs,
             coriolis,
+            sst.as_mut(),
             integrator,
             &mut BorrowedForcing::new(basin, wind, stage_stress),
         );
@@ -432,10 +496,20 @@ impl Solver {
             dt_s,
             rhs,
             coriolis,
+            sst,
             integrator,
             stage_stress: _,
         } = self;
-        integrate(state, t_s, *dt_s, rhs, coriolis, integrator, forcing);
+        integrate(
+            state,
+            t_s,
+            *dt_s,
+            rhs,
+            coriolis,
+            sst.as_mut(),
+            integrator,
+            forcing,
+        );
     }
 }
 
@@ -451,12 +525,14 @@ impl Solver {
 /// A free function taking the solver's pieces rather than a method, because
 /// the forcing may borrow one of those pieces — `step_forced_by`'s does — and
 /// the borrow checker needs to see them apart.
+#[allow(clippy::too_many_arguments)]
 fn integrate(
     state: &mut OceanState,
     t_s: f64,
     dt_s: f64,
     rhs: &mut ShallowWaterRhs,
     coriolis: &mut CoriolisTerm,
+    mut sst: Option<&mut SstTerm>,
     integrator: &mut Rk4<OceanState>,
     forcing: &mut impl StageForcing,
 ) {
@@ -466,8 +542,12 @@ fn integrate(
         t_s,
         dt_s,
         &mut |now: &OceanState, stage_t_s: f64, tendency: &mut OceanState| {
-            rhs.evaluate(now, forcing.at(stage_t_s), tendency);
+            let stress = forcing.at(stage_t_s);
+            rhs.evaluate(now, stress, tendency);
             coriolis.add_to_tendency(now, tendency);
+            if let Some(sst) = sst.as_deref_mut() {
+                sst.add_to_tendency(now, stress, tendency);
+            }
             NoNormalFlow::apply_to_tendency(tendency);
         },
     );

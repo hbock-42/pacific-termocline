@@ -13,8 +13,9 @@
 //! ∂h/∂t = −H·(∂u/∂x + ∂v/∂y)    − r·h
 //! ```
 //!
-//! The Coriolis terms (T-02.2) fold into the same evaluation later; nothing
-//! else belongs here. In particular the v1 core is linear
+//! The Coriolis terms (T-02.2) fold into the same evaluation later, and the
+//! Epic 12 SST equation is added on top of the tendency this writes
+//! ([`crate::sst`]); nothing else belongs here. In particular the v1 core is linear
 //! (CODING_STANDARDS.md § Scope guards): the divergence carries the *mean*
 //! depth `H`, never the total `H + h`, and there is no advection.
 //!
@@ -108,6 +109,11 @@ impl ShallowWaterRhs {
         self.check_grid("state", state.grid());
         self.check_grid("wind stress", wind_stress.grid());
         self.check_grid("tendency", tendency.grid());
+        assert!(
+            state.couples_sst() == tendency.couples_sst(),
+            "state and tendency disagree about the Epic 12 SST anomaly; a coupled state is \
+             integrated with a coupled tendency or neither is"
+        );
 
         // Momentum: the pressure gradient lands straight on the velocity
         // faces, so it is written into the tendency and then turned into an
@@ -154,6 +160,16 @@ impl ShallowWaterRhs {
             *rate = minus_mean_depth_m * (zonal + meridional);
         }
         subtract_damping(tendency.h_mut(), state.h(), damping_per_s);
+
+        // No term of the shallow-water equations touches the Epic 12 SST
+        // anomaly, and this evaluator promises to write *every* point of the
+        // tendency — so on a coupled run it writes the one rate it does not
+        // contribute to as the zero it contributes, leaving
+        // [`SstTerm`](crate::SstTerm) to add the SST equation on top exactly
+        // as the Coriolis term adds rotation.
+        if let Some(rate_k_per_s) = tendency.sst_anomaly_k_mut() {
+            rate_k_per_s.as_mut_slice().fill(0.0);
+        }
     }
 
     /// Panic unless `grid` is the basin this evaluator was built for.

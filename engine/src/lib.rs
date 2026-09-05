@@ -42,6 +42,7 @@ pub mod run_writer;
 pub mod scenario;
 pub mod shallow_water;
 pub mod solver;
+pub mod sst;
 pub mod state;
 
 pub use coriolis::{BetaPlane, BetaPlaneError, CoriolisTerm};
@@ -74,7 +75,14 @@ pub use params::{
     SEAWATER_REFERENCE_DENSITY_KG_PER_M3,
 };
 pub use shallow_water::{shallow_water_rhs, ShallowWaterRhs};
+
 pub use solver::{check_rotation_timestep, step, RotationLimitError, Solver, SolverError};
+/// Re-exported so a scenario, the solver and its tests name one mixed-layer
+/// coupling: the [`sst::SstParams`] a `[sst]` section builds and the
+/// [`sst::SstTerm`] that adds `∂T'/∂t` to a tendency. The extension is
+/// Epic 12's and switched on per scenario; `CONTEXT.md` keeps `T'` out of the
+/// linear ocean core, and so does the engine.
+pub use sst::{SstParams, SstParamsError, SstTerm, SurfaceLayer, DEFAULT_SURFACE_DRAG_PER_S};
 pub use state::OceanState;
 
 /// Re-exported so a scenario, the forcing and the rotation all name one

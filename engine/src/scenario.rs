@@ -98,6 +98,7 @@ use crate::params::{
 };
 use crate::run_writer::{OutputSchedule, OutputScheduleError};
 use crate::solver::{check_rotation_timestep, RotationLimitError};
+use crate::sst::{SstParams, SstParamsError, DEFAULT_SURFACE_DRAG_PER_S};
 
 /// Why a scenario could not be read.
 ///
@@ -151,6 +152,8 @@ pub enum ScenarioError {
     /// `[run]` asked for a timestep longer than the basin's rotation allows
     /// (ADR-0007).
     Rotation(RotationLimitError),
+    /// `[sst]` asked for a mixed layer that cannot exist.
+    Sst(SstParamsError),
 }
 
 impl fmt::Display for ScenarioError {
@@ -183,6 +186,7 @@ impl fmt::Display for ScenarioError {
             Self::Schedule(source) => write!(f, "[run]: {source}"),
             Self::Cfl(source) => write!(f, "[run]: {source}"),
             Self::Rotation(source) => write!(f, "[run]: {source}"),
+            Self::Sst(source) => write!(f, "[sst]: {source}"),
         }
     }
 }
@@ -213,6 +217,23 @@ const BYTES_PER_GIB: u64 = 1 << 30;
 /// error in the buffer count moves that line.
 const RESIDENT_BYTES_PER_CELL: u64 = 24 * 8;
 
+/// Bytes of solver state a run with the Epic 12 SST coupling holds resident
+/// per grid cell.
+///
+/// The linear core's [`RESIDENT_BYTES_PER_CELL`] plus what the coupling adds:
+/// the SST anomaly itself in the state and in RK4's five stage buffers (6
+/// fields), and the [`SstTerm`](crate::SstTerm)'s eight — the two mixed-layer
+/// velocity components, the two interpolated stress components, the two
+/// divergence halves, the upwelling, and the zonal current on cell centers.
+/// That is 14 more `f64` a cell, rounded up to 16 for the extra row and column
+/// the four staggered ones carry, on the same reasoning as the count above.
+///
+/// Counted separately rather than folded into one worst case so that a
+/// scenario of the validated linear model is held to the budget it has always
+/// been held to: turning the coupling on is what costs the memory, and it is
+/// the only scenario that should pay for it.
+const COUPLED_RESIDENT_BYTES_PER_CELL: u64 = RESIDENT_BYTES_PER_CELL + 16 * 8;
+
 /// The largest resident solver state this build will start a run with.
 ///
 /// A project policy rather than a measured constant, in the same sense as
@@ -239,6 +260,7 @@ impl std::error::Error for ScenarioError {
             Self::Schedule(source) => Some(source),
             Self::Cfl(source) => Some(source),
             Self::Rotation(source) => Some(source),
+            Self::Sst(source) => Some(source),
             Self::BasinTooLarge { .. } => None,
         }
     }
@@ -283,6 +305,12 @@ impl From<CflError> for ScenarioError {
 impl From<RotationLimitError> for ScenarioError {
     fn from(source: RotationLimitError) -> Self {
         Self::Rotation(source)
+    }
+}
+
+impl From<SstParamsError> for ScenarioError {
+    fn from(source: SstParamsError) -> Self {
+        Self::Sst(source)
     }
 }
 
@@ -578,6 +606,56 @@ impl WindStress for ScenarioWind {
 
 /// A scenario as it is written in a file: four sections, no invariants.
 ///
+/// The `[sst]` section: the Epic 12 mixed-layer coupling, and the switch that
+/// turns it on.
+///
+/// Omitting the section entirely is what keeps a scenario the validated linear
+/// model of Epics 01-07 — `CONTEXT.md` puts the SST anomaly outside the ocean
+/// core, and so does this format. A scenario that carries the section gets the
+/// fourth prognostic variable `T'` and the equation of [`crate::sst`]; one
+/// that does not gets exactly the three-variable run it always got.
+///
+/// The section is the config option the ticket's deliverable asks for, and it
+/// is opt-in rather than a boolean flag beside a set of always-present
+/// parameters: there is no defensible default mixed layer, and a `enabled =
+/// false` sitting above five numbers nobody chose would be a scenario claiming
+/// more than it means.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SstSection {
+    /// Mixed-layer depth `H_m`, in metres.
+    pub mixed_layer_depth_m: f64,
+    /// Zonal gradient of the mean SST, `∂T̄/∂x`, in K/m.
+    pub mean_zonal_sst_gradient_k_per_m: f64,
+    /// Sensitivity `γ = ∂T_sub/∂h` of the entrained water to the thermocline
+    /// depth anomaly, in K/m.
+    pub subsurface_temperature_sensitivity_k_per_m: f64,
+    /// Thermal damping `ε_T` of an SST anomaly, in s⁻¹.
+    pub thermal_damping_per_s: f64,
+    /// Rayleigh drag `r_s` of the wind-driven surface layer, in s⁻¹. Omitted
+    /// means [`DEFAULT_SURFACE_DRAG_PER_S`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface_drag_per_s: Option<f64>,
+}
+
+impl SstSection {
+    /// The validated mixed-layer parameters this section describes.
+    ///
+    /// # Errors
+    /// [`ScenarioError::Sst`], wrapping the [`SstParamsError`] that names the
+    /// offending value and the bound it violated.
+    pub fn build(&self) -> Result<SstParams, ScenarioError> {
+        Ok(SstParams::new(
+            self.mixed_layer_depth_m,
+            self.surface_drag_per_s
+                .unwrap_or(DEFAULT_SURFACE_DRAG_PER_S),
+            self.mean_zonal_sst_gradient_k_per_m,
+            self.subsurface_temperature_sensitivity_k_per_m,
+            self.thermal_damping_per_s,
+        )?)
+    }
+}
+
 /// This is the `serde` record and nothing more. It round-trips through TOML,
 /// so a run can record the scenario that produced it, and it becomes a
 /// runnable [`Scenario`] only through [`ScenarioConfig::build`], which is
@@ -597,6 +675,10 @@ pub struct ScenarioConfig {
     /// `docs/planning/01-scientific-model.md` rather than a mistake.
     #[serde(default)]
     pub wind: Vec<WindSection>,
+    /// The `[sst]` section. Omitted is the validated linear model of
+    /// Epics 01-07; present switches on the Epic 12 mixed-layer coupling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sst: Option<SstSection>,
 }
 
 impl ScenarioConfig {
@@ -645,7 +727,8 @@ impl ScenarioConfig {
     /// [ADR-0007]: ../../docs/planning/adr/0007-rotation-timestep-bound.md
     pub fn build(&self) -> Result<Scenario, ScenarioError> {
         let bounds = self.basin.bounds()?;
-        check_grid_fits_in_memory(bounds.nx(), bounds.ny())?;
+        let sst_params = self.sst.map(|sst| sst.build()).transpose()?;
+        check_grid_fits_in_memory(bounds.nx(), bounds.ny(), sst_params.is_some())?;
         let basin = bounds.basin();
         let physical_params = self.physics.build()?;
         let schedule = self.run.build()?;
@@ -666,6 +749,7 @@ impl ScenarioConfig {
             physical_params,
             winds,
             output_schedule: schedule,
+            sst_params,
         })
     }
 }
@@ -680,9 +764,13 @@ impl ScenarioConfig {
 ///
 /// # Errors
 /// [`ScenarioError::BasinTooLarge`], naming the grid and what it would cost.
-fn check_grid_fits_in_memory(nx: usize, ny: usize) -> Result<(), ScenarioError> {
+fn check_grid_fits_in_memory(nx: usize, ny: usize, couples_sst: bool) -> Result<(), ScenarioError> {
     let cells = (nx as u64).saturating_mul(ny as u64);
-    let resident_bytes = cells.saturating_mul(RESIDENT_BYTES_PER_CELL);
+    let resident_bytes = cells.saturating_mul(if couples_sst {
+        COUPLED_RESIDENT_BYTES_PER_CELL
+    } else {
+        RESIDENT_BYTES_PER_CELL
+    });
     if resident_bytes > MAX_RESIDENT_STATE_BYTES {
         return Err(ScenarioError::BasinTooLarge {
             nx,
@@ -708,6 +796,7 @@ pub struct Scenario {
     physical_params: PhysicalParams,
     winds: Vec<ScenarioWind>,
     output_schedule: OutputSchedule,
+    sst_params: Option<SstParams>,
 }
 
 impl Scenario {
@@ -787,5 +876,16 @@ impl Scenario {
     #[must_use]
     pub const fn output_schedule(&self) -> OutputSchedule {
         self.output_schedule
+    }
+
+    /// The Epic 12 mixed-layer coupling this scenario asked for, or `None` for
+    /// the validated linear model of Epics 01-07.
+    ///
+    /// The one place a run learns whether it integrates `T'`: a `None` here is
+    /// what makes the run allocate three prognostic fields and step the
+    /// three-variable right-hand side it always did.
+    #[must_use]
+    pub const fn sst_params(&self) -> Option<SstParams> {
+        self.sst_params
     }
 }

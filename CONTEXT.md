@@ -120,9 +120,32 @@ El Niño–Southern Oscillation, the coupled ocean–atmosphere oscillation this
 project exists to reproduce. **El Niño** is the warm phase (tilt collapses,
 warm water surfaces in the east); **La Niña** the cold phase (tilt intensifies).
 
+**Mixed layer** (`H_m`):
+The thin, wind-stirred surface layer whose temperature *is* the sea surface
+temperature — tens of metres, an order of magnitude thinner than the upper
+layer, and a different object from it: the upper layer is the whole warm mass
+above the thermocline (`H + h`), the mixed layer is the well-mixed skin at the
+top of it. Introduced only in the Epic 12 coupling extension. This is the one
+place "mixed layer" is the right term; anywhere the thermocline's warm mass is
+meant, the term is *upper layer*.
+
 **SST anomaly** (`T'`):
 Mixed-layer sea-surface temperature anomaly. Introduced only in the Epic 12
 coupling extension, not part of the linear ocean core.
+
+**Upwelling** (`w`):
+The vertical velocity through the base of the mixed layer, positive upward. Not
+a scenario parameter: it is diagnosed from the wind stress as the divergence of
+the wind-driven surface flow, so the easterly alizés upwell along the equator
+and a westerly does not. What it carries into the mixed layer is *entrainment*.
+_Avoid_: Ekman pumping (that is the mid-latitude form, and it is singular at
+the equator, which is where this model needs it)
+
+**Entrainment**:
+Water crossing into the mixed layer from just beneath it, at the upwelling rate
+`w`. Its temperature is set by the thermocline depth anomaly — deeper `h` means
+warmer water underneath — so entrainment is where `T'` is coupled to `h`, and
+it is the ocean half of the Bjerknes feedback.
 
 **Bjerknes feedback**:
 The positive feedback loop that makes ENSO oscillate rather than merely
