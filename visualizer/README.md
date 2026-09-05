@@ -5,7 +5,8 @@ time series, playback. Never touches the physics and never links against the
 engine's simulation code ([ADR-0001](../docs/planning/adr/0001-engine-visualizer-split.md)).
 
 Binary: `termocline-viz`. It loads a run — dropped files, a `?run=` URL, or a
-directory natively — and draws the thermocline depth anomaly `h` of one chosen
+directory natively — and, with *Compare two runs* ticked, a second one beside
+it (`?compare=`, or a second directory on the command line). It draws the thermocline depth anomaly `h` of one chosen
 frame as a colour map over the basin, with the wind stress `τ` that forced it
 drawn over the top as arrows — or plays the run through. Time series and
 cross-sections land in Epic 09.
@@ -46,3 +47,19 @@ Under the steady trades the arrows point west along the equator, which is why
 the thermocline under them tilts. The layer is drawn over the map rather than
 into it, so turning it off leaves the map untouched; `src/wind.rs` has the
 rest.
+
+Two runs are drawn side by side on **one** colour scale — the one that covers
+both of them — because two runs each on its own scale would look identical
+however far apart they are: each would reach the ends of the same ramp. The
+quieter run therefore occupies the middle of the scale, which is the true
+reading, and both runs' own ranges are stated under the panels. The frame
+index, the playback clock and the colour bar are shared too, so there is no
+state in which the two panels could come to show different frames.
+
+Two runs are refused rather than drawn where the side-by-side would claim
+something they do not support: a shared grid — the same place on screen has to
+be the same place in the ocean — or a shared meaning for the frame index, which
+runs written at different cadences do not have. Everything else they may differ
+in is what a comparison is for: the panels cover the frames both runs reach,
+both draw `h`, which every run carries whether or not it couples SST, and what
+else differs is stated beneath. `src/comparison.rs` has the rest.

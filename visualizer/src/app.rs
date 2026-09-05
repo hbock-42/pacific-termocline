@@ -24,8 +24,10 @@ use crate::{
 };
 
 /// What one panel is showing.
+#[derive(Default)]
 enum Shown {
     /// No run yet: the panel explains how to load one.
+    #[default]
     Nothing,
     /// A load is in flight from the named source.
     Loading(String),
@@ -50,6 +52,29 @@ impl Shown {
     }
 }
 
+/// One panel of the shell: what it is showing, and the two ways a run reaches
+/// it.
+///
+/// The three travel together — a run arrives for a panel, is shown in that
+/// panel, and the half-dropped files waiting for their pair are that panel's —
+/// so they are one thing rather than three arrays indexed in step.
+#[derive(Default)]
+struct Panel {
+    /// What this panel is showing.
+    shown: Shown,
+    /// Dropped files seen so far, waiting for their pair.
+    pending: PendingRun,
+    /// The URL a run is served under, as typed or as passed in the query.
+    run_url: String,
+}
+
+impl Panel {
+    /// Empty this panel, as closing the run in it leaves it.
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
 /// The visualizer's application state.
 ///
 /// Everything a panel needs is held per [`Side`], and a single run is the left
@@ -59,16 +84,11 @@ impl Shown {
 /// taught the difference, and each is a place the two panels could come to
 /// disagree.
 pub struct VisualizerApp {
-    /// What each panel is showing.
-    shown: [Shown; 2],
-    /// Dropped files seen so far, waiting for their pair, per panel.
-    pending: [PendingRun; 2],
+    /// The two panels: what each is showing, and how a run reaches it.
+    panels: [Panel; 2],
     /// The one channel every source of run bytes posts to, whichever panel
     /// asked for it.
     loader: Loader,
-    /// The URL a run is served under, as typed or as passed in the query, per
-    /// panel.
-    run_url: [String; 2],
     /// Whether the second panel is open.
     comparing: bool,
     /// Which panel a dropped run is loaded into.
@@ -84,10 +104,8 @@ pub struct VisualizerApp {
 impl Default for VisualizerApp {
     fn default() -> Self {
         Self {
-            shown: [Shown::Nothing, Shown::Nothing],
-            pending: [PendingRun::default(), PendingRun::default()],
+            panels: [Panel::default(), Panel::default()],
             loader: Loader::default(),
-            run_url: [String::new(), String::new()],
             comparing: false,
             drop_side: Side::Left,
             basin_map: BasinMap::default(),
@@ -118,8 +136,8 @@ impl VisualizerApp {
 
     /// Start fetching the run served under `base_url` into `side`.
     fn fetch_into(&mut self, side: Side, base_url: &str, ctx: &egui::Context) {
-        self.run_url[side.index()] = base_url.to_owned();
-        self.shown[side.index()] = Shown::Loading(base_url.to_owned());
+        self.panels[side.index()].run_url = base_url.to_owned();
+        self.panels[side.index()].shown = Shown::Loading(base_url.to_owned());
         let ctx = ctx.clone();
         self.loader
             .fetch(side, base_url, move || ctx.request_repaint());
@@ -146,7 +164,7 @@ impl VisualizerApp {
     #[cfg(not(target_arch = "wasm32"))]
     fn load_directory_into(&mut self, side: Side, directory: &std::path::Path) {
         let source = directory.display().to_string();
-        self.shown[side.index()] = Shown::Loading(source.clone());
+        self.panels[side.index()].shown = Shown::Loading(source.clone());
         self.loader.deliver(
             side,
             source,
@@ -187,7 +205,7 @@ impl VisualizerApp {
             // of the run on screen — and in a comparison the scale is both
             // runs', so the other panel's map is no longer its map either.
             self.basin_map.forget();
-            self.shown[side.index()] = match bytes.and_then(|bytes| {
+            self.panels[side.index()].shown = match bytes.and_then(|bytes| {
                 LoadedRun::from_bytes(source.clone(), bytes).map_err(|error| error.to_string())
             }) {
                 Ok(run) => Shown::Run(Box::new(run)),
@@ -213,8 +231,8 @@ impl VisualizerApp {
             }
             match dropped_file_contents(file) {
                 Ok((name, bytes)) => {
-                    if !self.pending[side.index()].offer(&name, bytes) {
-                        self.shown[side.index()] = Shown::Failed {
+                    if !self.panels[side.index()].pending.offer(&name, bytes) {
+                        self.panels[side.index()].shown = Shown::Failed {
                             source: name.clone(),
                             message: format!(
                                 "{name} is not part of a run; drop {} and {}",
@@ -225,14 +243,14 @@ impl VisualizerApp {
                     }
                 }
                 Err(message) => {
-                    self.shown[side.index()] = Shown::Failed {
+                    self.panels[side.index()].shown = Shown::Failed {
                         source: "dropped file".to_owned(),
                         message,
                     };
                 }
             }
         }
-        if let Some(bytes) = self.pending[side.index()].take_run() {
+        if let Some(bytes) = self.panels[side.index()].pending.take_run() {
             self.loader.deliver(side, "dropped files", Ok(bytes));
         }
     }
@@ -252,10 +270,20 @@ impl VisualizerApp {
             }
             url_has_keyboard |= self.draw_side_controls(ui, side);
         }
-        ui.checkbox(&mut self.comparing, "Compare two runs")
+        let toggled = ui
+            .checkbox(&mut self.comparing, "Compare two runs")
             .on_hover_text(
                 "Show a second run beside this one, on one frame index and one colour scale",
-            );
+            )
+            .changed();
+        if toggled && !self.comparing {
+            // Closing the second panel closes the run in it. Keeping it would
+            // leave a loaded run with nowhere on screen to be, and drops would
+            // still be going to a panel the reader can no longer see.
+            self.panels[Side::Right.index()].clear();
+            self.drop_side = Side::Left;
+            self.basin_map.forget();
+        }
         url_has_keyboard
     }
 
@@ -272,15 +300,15 @@ impl VisualizerApp {
             }
             ui.label("Run URL:");
             let url = ui.add(
-                egui::TextEdit::singleline(&mut self.run_url[side.index()])
+                egui::TextEdit::singleline(&mut self.panels[side.index()].run_url)
                     .hint_text("https://…/run-demo/")
                     .desired_width(260.0),
             );
             let submitted =
                 url.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
             let fetch = ui.button("Fetch").clicked();
-            if (submitted || fetch) && !self.run_url[side.index()].trim().is_empty() {
-                let (url, ctx) = (self.run_url[side.index()].clone(), ui.ctx().clone());
+            if (submitted || fetch) && !self.panels[side.index()].run_url.trim().is_empty() {
+                let (url, ctx) = (self.panels[side.index()].run_url.clone(), ui.ctx().clone());
                 self.fetch_into(side, &url, &ctx);
             }
             url.has_focus()
@@ -326,17 +354,16 @@ impl eframe::App for VisualizerApp {
         // Disjoint borrows: the panels read their runs while the maps they
         // draw cache a texture of one frame each.
         let Self {
-            shown,
-            pending,
+            panels,
             basin_map,
             comparing,
             ..
         } = self;
         egui::CentralPanel::default().show(ctx, |ui| {
             if *comparing {
-                draw_comparison(ui, shown, pending, basin_map, keyboard_free);
+                draw_comparison(ui, panels, basin_map, keyboard_free);
             } else {
-                draw_single(ui, &shown[0], &pending[0], basin_map, keyboard_free);
+                draw_single(ui, &panels[Side::Left.index()], basin_map, keyboard_free);
             }
         });
 
@@ -354,21 +381,15 @@ impl eframe::App for VisualizerApp {
 
 /// The one open panel: its metadata, and under it the basin map of the chosen
 /// frame.
-fn draw_single(
-    ui: &mut egui::Ui,
-    shown: &Shown,
-    pending: &PendingRun,
-    basin_map: &mut BasinMap,
-    keyboard_free: bool,
-) {
-    match shown {
+fn draw_single(ui: &mut egui::Ui, panel: &Panel, basin_map: &mut BasinMap, keyboard_free: bool) {
+    match &panel.shown {
         Shown::Run(run) => {
             draw_run_header(ui, Side::Left, run);
             ui.add_space(12.0);
             ui.separator();
             basin_map.draw(ui, run, keyboard_free);
         }
-        other => draw_waiting(ui, other, pending),
+        other => draw_waiting(ui, other, &panel.pending),
     }
 }
 
@@ -379,19 +400,22 @@ fn draw_single(
 /// waiting for, side by side, so a reader can see which half is missing.
 fn draw_comparison(
     ui: &mut egui::Ui,
-    shown: &[Shown; 2],
-    pending: &[PendingRun; 2],
+    panels: &[Panel; 2],
     basin_map: &mut BasinMap,
     keyboard_free: bool,
 ) {
-    let (Some(left), Some(right)) = (shown[0].run(), shown[1].run()) else {
+    let (Some(left), Some(right)) = (
+        panels[Side::Left.index()].shown.run(),
+        panels[Side::Right.index()].shown.run(),
+    ) else {
         ui.columns(2, |columns| {
             for side in Side::BOTH {
+                let panel = &panels[side.index()];
                 let column = &mut columns[side.index()];
                 column.label(RichText::new(format!("Run {}", side.label())).strong());
-                match &shown[side.index()] {
+                match &panel.shown {
                     Shown::Run(run) => draw_run_header(column, side, run),
-                    other => draw_waiting(column, other, &pending[side.index()]),
+                    other => draw_waiting(column, other, &panel.pending),
                 }
             }
         });
@@ -642,6 +666,22 @@ struct BasinMap {
     bar: Option<ColorBar>,
 }
 
+/// The frame every open panel draws, and the scales they all draw it on.
+///
+/// One value because the three are one decision: in a comparison they are the
+/// pair's rather than either run's (`crate::comparison`), and a panel handed
+/// some of them and not the others could draw the right frame on the wrong
+/// scale.
+#[derive(Debug, Clone, Copy)]
+struct Chosen {
+    /// The frame, by index into the run — or, in a comparison, into both.
+    index: u64,
+    /// The colour scale the map is drawn on.
+    scale: DivergingScale,
+    /// The length scale the wind overlay is drawn on.
+    stress_scale: StressScale,
+}
+
 /// Which layers the reader has asked for, over and under every open map.
 ///
 /// One set for the pair rather than one each: they are a question about what a
@@ -818,11 +858,9 @@ impl FramePanel {
         &mut self,
         ui: &egui::Ui,
         run: &LoadedRun,
-        index: u64,
-        scale: DivergingScale,
-        stress_scale: StressScale,
+        chosen: Chosen,
     ) -> &Result<DrawnFrame, String> {
-        drawn_in(&mut self.attempt, ui, run, index, scale, stress_scale)
+        drawn_in(&mut self.attempt, ui, run, chosen)
     }
 
     /// Draw this panel: the map of frame `index` of `run`, and whichever
@@ -835,9 +873,7 @@ impl FramePanel {
         &mut self,
         ui: &mut egui::Ui,
         run: &LoadedRun,
-        index: u64,
-        scale: DivergingScale,
-        stress_scale: StressScale,
+        chosen: Chosen,
         layers: Layers,
         selected: &mut Option<BasinPoint>,
     ) {
@@ -845,11 +881,11 @@ impl FramePanel {
         // which is of the whole run rather than of that frame — is picked and
         // built beside it.
         let Self { attempt, series } = self;
-        let drawn = match drawn_in(attempt, ui, run, index, scale, stress_scale) {
+        let drawn = match drawn_in(attempt, ui, run, chosen) {
             Ok(drawn) => drawn,
             Err(message) => {
                 ui.label(
-                    RichText::new(format!("Frame {} could not be drawn", index + 1))
+                    RichText::new(format!("Frame {} could not be drawn", chosen.index + 1))
                         .color(Color32::LIGHT_RED)
                         .strong(),
                 );
@@ -927,11 +963,15 @@ impl BasinMap {
             ui.label("This run holds no frames to draw.");
             return;
         };
-        let (scale, stress_scale) = (run.anomaly_scale(), run.wind_stress_scale());
+        let chosen = Chosen {
+            index,
+            scale: run.anomaly_scale(),
+            stress_scale: run.wind_stress_scale(),
+        };
         // Before the frame is read back, because that read borrows the panel
         // for as long as the frame is drawn and this is the one thing left
         // that writes to it.
-        self.ensure_color_bar(ui, scale);
+        self.ensure_color_bar(ui, chosen.scale);
         let Self {
             panels,
             bar,
@@ -944,13 +984,13 @@ impl BasinMap {
         // time in that line is the frame's. Building it here costs nothing:
         // the panel keeps what it built, and drawing it reads that back.
         let Some(t_s) = panel
-            .drawn(ui, run, index, scale, stress_scale)
+            .drawn(ui, run, chosen)
             .as_ref()
             .ok()
             .map(|drawn| drawn.t_s)
         else {
             // The panel says what stopped it, where the map would have been.
-            panel.draw(ui, run, index, scale, stress_scale, *layers, selected);
+            panel.draw(ui, run, chosen, *layers, selected);
             return;
         };
         // Counted from one, as the metadata panel counts the run's frames.
@@ -960,12 +1000,12 @@ impl BasinMap {
             index + 1,
             t_s / SECONDS_PER_DAY
         ));
-        panel.draw(ui, run, index, scale, stress_scale, *layers, selected);
+        panel.draw(ui, run, chosen, *layers, selected);
         draw_color_bar(ui, bar.as_ref().expect("a colour bar was just built"));
         if layers.wind {
             ui.label(format!(
                 "Wind stress τ: the longest arrow is {:.3} N m^-2, the strongest in the run",
-                stress_scale.max_magnitude_pa()
+                chosen.stress_scale.max_magnitude_pa()
             ));
         }
     }
@@ -987,8 +1027,12 @@ impl BasinMap {
             ui.label("These runs share no frames to draw.");
             return;
         };
-        let (scale, stress_scale) = (comparison.scale(), comparison.wind_stress_scale());
-        self.ensure_color_bar(ui, scale);
+        let chosen = Chosen {
+            index,
+            scale: comparison.scale(),
+            stress_scale: comparison.wind_stress_scale(),
+        };
+        self.ensure_color_bar(ui, chosen.scale);
         let Self {
             panels,
             bar,
@@ -1005,7 +1049,7 @@ impl BasinMap {
         let mut times_s = [None, None];
         for side in Side::BOTH {
             times_s[side.index()] = panels[side.index()]
-                .drawn(ui, runs[side.index()], index, scale, stress_scale)
+                .drawn(ui, runs[side.index()], chosen)
                 .as_ref()
                 .ok()
                 .map(|drawn| drawn.t_s);
@@ -1015,7 +1059,7 @@ impl BasinMap {
             for (side, (panel, run)) in Side::BOTH.into_iter().zip(panels.iter_mut().zip(runs)) {
                 let column = &mut columns[side.index()];
                 column.label(RichText::new(run.source()).strong());
-                panel.draw(column, run, index, scale, stress_scale, *layers, selected);
+                panel.draw(column, run, chosen, *layers, selected);
             }
         });
         // Under both panels and across the whole width, because it is the one
@@ -1024,7 +1068,7 @@ impl BasinMap {
         if layers.wind {
             ui.label(format!(
                 "Wind stress τ: the longest arrow is {:.3} N m^-2, the strongest in either run",
-                stress_scale.max_magnitude_pa()
+                chosen.stress_scale.max_magnitude_pa()
             ));
         }
         for difference in comparison.differences() {
@@ -1081,10 +1125,13 @@ fn drawn_in<'a>(
     attempt: &'a mut Option<Attempt>,
     ui: &egui::Ui,
     run: &LoadedRun,
-    index: u64,
-    scale: DivergingScale,
-    stress_scale: StressScale,
+    chosen: Chosen,
 ) -> &'a Result<DrawnFrame, String> {
+    let Chosen {
+        index,
+        scale,
+        stress_scale,
+    } = chosen;
     let stale = attempt.as_ref().is_none_or(|last| {
         last.index != index || last.scale != scale || last.stress_scale != stress_scale
     });
@@ -1093,7 +1140,7 @@ fn drawn_in<'a>(
             index,
             scale,
             stress_scale,
-            outcome: build(ui, run, index, scale, stress_scale),
+            outcome: build(ui, run, chosen),
         });
     }
     &attempt.as_ref().expect("an attempt was just made").outcome
@@ -1132,13 +1179,12 @@ fn frame_line(index: u64, frame_count: u64, times_s: [Option<f64>; 2]) -> String
 
 /// Colour-map frame `index` of `run` on `scale` and upload it, or say what
 /// stopped that.
-fn build(
-    ui: &egui::Ui,
-    run: &LoadedRun,
-    index: u64,
-    scale: DivergingScale,
-    stress_scale: StressScale,
-) -> Result<DrawnFrame, String> {
+fn build(ui: &egui::Ui, run: &LoadedRun, chosen: Chosen) -> Result<DrawnFrame, String> {
+    let Chosen {
+        index,
+        scale,
+        stress_scale,
+    } = chosen;
     let frame = run
         .frame(index)
         .ok_or_else(|| format!("this run holds no frame {index}"))?;
@@ -1841,13 +1887,23 @@ mod tests {
         let (ctx, run) = (egui::Context::default(), run());
         let mut map = BasinMap::default();
         let _ = repaint(&ctx, &mut map, &run);
-        map.panels[Side::Left.index()].series.select(&run, middle_point(&run));
+        map.panels[Side::Left.index()]
+            .series
+            .select(&run, middle_point(&run));
         assert_eq!(panel_series(&map, Side::Left).walks, 1);
-        map.panels[Side::Left.index()].series.select(&run, middle_point(&run));
-        assert_eq!(panel_series(&map, Side::Left).walks, 1, "the same cell is the series in hand");
+        map.panels[Side::Left.index()]
+            .series
+            .select(&run, middle_point(&run));
+        assert_eq!(
+            panel_series(&map, Side::Left).walks,
+            1,
+            "the same cell is the series in hand"
+        );
         // And it is a series of this run: `h` is everywhere the frame's own
         // index in metres, so the samples say which run they came from.
-        let series = panel_series(&map, Side::Left).shown().expect("a point was picked");
+        let series = panel_series(&map, Side::Left)
+            .shown()
+            .expect("a point was picked");
         #[allow(clippy::cast_precision_loss)]
         let expected: Vec<f64> = (0..run.frame_count()).map(|index| index as f64).collect();
         assert_eq!(
@@ -1868,7 +1924,9 @@ mod tests {
         let (ctx, run) = (egui::Context::default(), run());
         let mut map = BasinMap::default();
         let _ = repaint(&ctx, &mut map, &run);
-        map.panels[Side::Left.index()].series.select(&run, middle_point(&run));
+        map.panels[Side::Left.index()]
+            .series
+            .select(&run, middle_point(&run));
         map.scrubber.set_index(2);
         let _ = repaint(&ctx, &mut map, &run);
         map.playback.set_frames_per_second(60.0);
@@ -1888,7 +1946,9 @@ mod tests {
         let (ctx, run) = (egui::Context::default(), run());
         let mut map = BasinMap::default();
         let first = repaint(&ctx, &mut map, &run);
-        map.panels[Side::Left.index()].series.select(&run, middle_point(&run));
+        map.panels[Side::Left.index()]
+            .series
+            .select(&run, middle_point(&run));
         map.layers.series = !map.layers.series;
         assert_eq!(repaint(&ctx, &mut map, &run), first);
         map.layers.series = !map.layers.series;
@@ -1952,7 +2012,10 @@ mod tests {
         // what is asserted is where they stopped, not how fast.
         for _ in 0..10 {
             repaint_comparison(&ctx, &mut map, &left, &right);
-            assert_eq!(panel_h_m(&map, Side::Left) * 10.0, panel_h_m(&map, Side::Right));
+            assert_eq!(
+                panel_h_m(&map, Side::Left) * 10.0,
+                panel_h_m(&map, Side::Right)
+            );
         }
         assert_eq!(map.scrubber.index(), 2, "playback stops at the last frame");
         assert!(!map.playback.is_playing());

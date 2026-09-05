@@ -25,8 +25,8 @@
 mod common;
 
 use common::{
-    encoded_frames_with_h, header_on, EASTERN_WALL_H_M, FRAME_INTERVAL_S, NX, NY, PACIFIC,
-    STEADY_TRADES_PARAMS, WESTERN_WALL_H_M,
+    encoded_frames_with_fields, encoded_frames_with_h, header_on, FrameFields, EASTERN_WALL_H_M,
+    NX, NY, PACIFIC, STEADY_TRADES_PARAMS, WESTERN_WALL_H_M,
 };
 use termocline_format::{BasinExtent, GridSpec, OutputTiming, RunHeader, Variable};
 use visualizer::{Comparison, Difference, Heatmap, LoadedRun, Mismatch, RunBytes};
@@ -73,13 +73,7 @@ fn steady_trades_grid() -> GridSpec {
 /// of one scale across both panels is that the difference in size survives to
 /// the screen.
 fn tilted_run(header: &RunHeader, amplitude: f64) -> LoadedRun {
-    let grid = header.grid;
-    let (nx, ny) = (grid.nx(), grid.ny());
-    let mut field = vec![0.0; grid.field_len(Variable::ThermoclineDepthAnomaly)];
-    for j in 0..ny {
-        field[j * nx] = WESTERN_WALL_H_M * amplitude;
-        field[j * nx + nx - 1] = EASTERN_WALL_H_M * amplitude;
-    }
+    let field = tilt(header.grid, amplitude);
     LoadedRun::from_bytes(
         header.scenario_description.clone(),
         RunBytes {
@@ -88,6 +82,19 @@ fn tilted_run(header: &RunHeader, amplitude: f64) -> LoadedRun {
         },
     )
     .expect("a run written from its own header loads")
+}
+
+/// The steady-trades tilt over `grid`, scaled by `amplitude`: `h` is
+/// `+38.2 · amplitude` m in the westernmost column, `-28.2 · amplitude` m in
+/// the easternmost, and zero between.
+fn tilt(grid: GridSpec, amplitude: f64) -> Vec<f64> {
+    let (nx, ny) = (grid.nx(), grid.ny());
+    let mut field = vec![0.0; grid.field_len(Variable::ThermoclineDepthAnomaly)];
+    for j in 0..ny {
+        field[j * nx] = WESTERN_WALL_H_M * amplitude;
+        field[j * nx + nx - 1] = EASTERN_WALL_H_M * amplitude;
+    }
+    field
 }
 
 /// The header of a steady-trades run of `frame_count` frames, named `scenario`.
@@ -267,7 +274,7 @@ fn a_coupled_run_and_an_uncoupled_one_are_compared_on_h_and_told_apart() {
     let uncoupled_header = header("steady-trades", 3);
     let coupled_header = header("steady-trades-coupled", 3).with_sst_anomaly();
     let uncoupled = tilted_run(&uncoupled_header, 1.0);
-    let coupled = coupled_run(&coupled_header, 1.0);
+    let coupled = coupled_run(&coupled_header);
 
     let comparison =
         Comparison::of(&uncoupled, &coupled).expect("both runs carry the field on screen");
@@ -332,42 +339,22 @@ fn two_runs_of_one_scenario_differ_in_nothing_worth_stating() {
 
 /// A coupled run: the tilt of [`tilted_run`], with a mixed-layer SST anomaly
 /// alongside it so the frames match a `with_sst_anomaly` header.
-fn coupled_run(header: &RunHeader, amplitude: f64) -> LoadedRun {
-    use termocline_format::{frame_encoding, Frame};
-
+///
+/// The anomaly is zero everywhere: what is under test is that the run *carries*
+/// `T'` while its neighbour does not, never what `T'` holds.
+fn coupled_run(header: &RunHeader) -> LoadedRun {
     let grid = header.grid;
-    let (nx, ny) = (grid.nx(), grid.ny());
-    let mut h_m = vec![0.0; grid.field_len(Variable::ThermoclineDepthAnomaly)];
-    for j in 0..ny {
-        h_m[j * nx] = WESTERN_WALL_H_M * amplitude;
-        h_m[j * nx + nx - 1] = EASTERN_WALL_H_M * amplitude;
-    }
-    let zero = |variable| vec![0.0; grid.field_len(variable)];
-    let mut frames = Vec::new();
-    for index in 0..header.output.frame_count {
-        #[allow(clippy::cast_precision_loss)]
-        let t_s = index as f64 * FRAME_INTERVAL_S;
-        let frame = Frame::new(
-            t_s,
-            &grid,
-            h_m.clone(),
-            zero(Variable::ZonalCurrentAnomaly),
-            zero(Variable::MeridionalCurrentAnomaly),
-            zero(Variable::ZonalWindStress),
-            zero(Variable::MeridionalWindStress),
-        )
-        .expect("fields sized from the grid fit it")
-        .with_sst_anomaly(&grid, zero(Variable::SstAnomaly))
-        .expect("an SST field sized from the grid fits it");
-        frames.extend(
-            bincode::serde::encode_to_vec(&frame, frame_encoding()).expect("a frame encodes"),
-        );
-    }
     LoadedRun::from_bytes(
         header.scenario_description.clone(),
         RunBytes {
             header: serde_json::to_vec(header).expect("a header serializes"),
-            frames,
+            frames: encoded_frames_with_fields(header, header.output.frame_count, |_| {
+                FrameFields {
+                    h_m: tilt(grid, 1.0),
+                    sst_anomaly_k: Some(vec![0.0; grid.field_len(Variable::SstAnomaly)]),
+                    ..FrameFields::calm(header)
+                }
+            }),
         },
     )
     .expect("a coupled run written from its own header loads")

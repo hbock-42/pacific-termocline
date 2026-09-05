@@ -50,7 +50,9 @@ cd visualizer && trunk serve
 A browser has no filesystem, so a run reaches the web build by dragging its
 `header.json` and `frames.bin` onto the page, or over HTTP: serve a run
 directory and open `?run=<url>`, e.g. `http://localhost:8080/?run=run-demo/`
-with the run copied into `visualizer/dist/run-demo/`.
+with the run copied into `visualizer/dist/run-demo/`. A second run named in
+`?compare=<url>` opens beside the first, so a comparison of two scenarios is a
+link.
 
 ## Where to start reading
 

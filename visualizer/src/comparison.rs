@@ -38,7 +38,7 @@ use std::fmt;
 
 use termocline_format::{GridSpec, PhysicalParams, Variable};
 
-use crate::run::{grid_description, SECONDS_PER_DAY};
+use crate::run::grid_description;
 use crate::{DivergingScale, LoadedRun, StressScale};
 
 /// Which of the two panels of a comparison something belongs to.
@@ -104,6 +104,11 @@ pub enum Mismatch {
     /// output intervals differ, sharing it syncs the panels to the same
     /// *number* while showing two different moments, which is precisely the
     /// comparison a reader would believe and should not.
+    ///
+    /// The two intervals are compared exactly. They are numbers the scenarios
+    /// stated rather than quantities either run computed, so two runs at one
+    /// cadence carry one number; and a header whose cadence is not a number at
+    /// all is refused here rather than dating frames with it.
     FrameInterval {
         /// The left run's output interval, in seconds.
         left_s: f64,
@@ -158,9 +163,9 @@ pub enum Difference {
         name: &'static str,
         /// Its SI unit.
         unit: &'static str,
-        /// The left run's value.
+        /// The left run's value, in `unit`.
         left: f64,
-        /// The right run's value.
+        /// The right run's value, in `unit`.
         right: f64,
     },
     /// The runs reach different distances from zero, so the shared scale is
@@ -187,11 +192,11 @@ impl fmt::Display for Difference {
                  has nothing to show.",
             ),
             Self::SstAnomaly { left, right } => {
-                let coupled = if *left { "left" } else { "right" };
+                let coupled = if *left { Side::Left } else { Side::Right }.label();
                 debug_assert_ne!(left, right, "an SST difference is a difference");
                 write!(
                     f,
-                    "Only the {coupled} run couples SST: its frames carry T' and the other's do \
+                    "Only run {coupled} couples SST: its frames carry T' and the other's do \
                      not. Both panels draw the thermocline depth anomaly h, which every run \
                      carries, so the two are comparable in what is on screen.",
                 )
@@ -302,18 +307,6 @@ impl<'a> Comparison<'a> {
     #[must_use]
     pub const fn frame_count(&self) -> u64 {
         self.frame_count
-    }
-
-    /// Model time at frame `index`, in days, counting from the start of the
-    /// runs.
-    ///
-    /// One number for both panels: the cadences match, or there would be no
-    /// comparison ([`Mismatch::FrameInterval`]).
-    #[must_use]
-    pub fn model_time_days(&self, index: u64) -> f64 {
-        #[allow(clippy::cast_precision_loss)]
-        let index = index as f64;
-        index * self.left.header().output.interval_s / SECONDS_PER_DAY
     }
 
     /// What the two runs differ in, in the order the panel states it.
