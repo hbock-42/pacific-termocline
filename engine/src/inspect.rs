@@ -10,11 +10,17 @@
 //! # Why only the header
 //!
 //! [`RunReader`](termocline_format::RunReader) decodes the header eagerly and
-//! the frames lazily, so opening a run and never asking for a frame reads only
-//! the header file. That is what keeps the command cheap on a run of any
-//! length, and it is also what makes it useful on a run a crash cut short: the
-//! header is on disk from the run's first moment, so a run whose frames are
-//! missing or truncated still describes its scenario.
+//! the frames lazily, so opening a run and never asking for a frame decodes no
+//! frame at all. That is what keeps the command cheap on a run of any length,
+//! and it is what makes it useful on a run a crash cut short: the header is on
+//! disk from the run's first moment, so a run whose frames are unreadable
+//! still describes its scenario.
+//!
+//! Both of the run's files must still be *there*: opening a run opens both, so
+//! a directory missing [`termocline_format::FRAME_FILE_NAME`] is a run that is
+//! not a run, and it is reported as one rather than half-described. That is
+//! the reader's contract (ADR-0004), and this command reads runs through it
+//! rather than reaching for the header file behind its back.
 //!
 //! # Why the numbers are printed the way they are
 //!
@@ -35,12 +41,13 @@ use termocline_format::{RunHeader, RunReadError, RunReader};
 /// The header of the run in `directory` as a human-readable summary, the first
 /// line naming the directory it was read from.
 ///
-/// Only [`termocline_format::HEADER_FILE_NAME`] is read: the frames are never
-/// decoded, so a run cut short still reports its scenario.
+/// No frame is decoded — only the header — so a run whose frames are corrupt
+/// or cut short still reports its scenario. Both of the run's files must
+/// exist, because opening a run opens both.
 ///
 /// # Errors
-/// The errors of [`RunReader::open`]: [`RunReadError::Open`] if the run's
-/// header could not be opened, [`RunReadError::Header`] if it is not the JSON
+/// The errors of [`RunReader::open`]: [`RunReadError::Open`], naming the
+/// file, if either of the run's two files could not be opened, [`RunReadError::Header`] if it is not the JSON
 /// a header is, and [`RunReadError::UnsupportedVersion`] if the run was
 /// written by a format version this build does not read.
 pub fn inspect_run(directory: &Path) -> Result<String, RunReadError> {

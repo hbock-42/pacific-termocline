@@ -5,7 +5,7 @@
 //! Epic 06.
 //!
 //! Anything the user got wrong — a run that is not there, a header this build
-//! cannot read — leaves through [`std::process::exit`] with a message on
+//! cannot read — comes back as an [`ExitCode::FAILURE`] and a message on
 //! stderr naming the run, per CODING_STANDARDS.md § *Correctness and failure*:
 //! invalid input is a `Result` all the way up, and never a stack trace.
 

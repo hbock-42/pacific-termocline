@@ -108,6 +108,12 @@ variables: h [m], u [m s^-1], v [m s^-1], tau_x [N m^-2], tau_y [N m^-2]
     .to_owned()
 }
 
+/// The whole output of inspecting the run in `directory`: the directory it
+/// was read from, then the summary of its header.
+fn expected_output(directory: &Path) -> String {
+    format!("run: {}\n{}", directory.display(), expected_summary())
+}
+
 fn params() -> PhysicalParams {
     PhysicalParams::new(
         PACIFIC_REDUCED_GRAVITY_M_PER_S2,
@@ -251,10 +257,7 @@ fn inspecting_a_run_directory_reports_its_header() {
 
     let summary = inspect_run(scratch.path()).expect("the run directory holds a readable run");
 
-    assert_eq!(
-        summary,
-        format!("run: {}\n{}", scratch.path().display(), expected_summary())
-    );
+    assert_eq!(summary, expected_output(scratch.path()));
 }
 
 #[test]
@@ -271,7 +274,7 @@ fn the_command_prints_the_summary_and_succeeds() {
     );
     assert_eq!(
         String::from_utf8(output.stdout).expect("the summary is UTF-8"),
-        format!("run: {}\n{}", scratch.path().display(), expected_summary())
+        expected_output(scratch.path())
     );
 }
 
@@ -288,9 +291,29 @@ fn a_run_whose_frames_are_unreadable_still_reports_its_header() {
 
     let summary = inspect_run(scratch.path()).expect("the header is readable on its own");
 
-    assert_eq!(
-        summary,
-        format!("run: {}\n{}", scratch.path().display(), expected_summary())
+    assert_eq!(summary, expected_output(scratch.path()));
+}
+
+#[test]
+fn a_run_missing_its_frame_file_is_an_actionable_error() {
+    // The command reads runs through `RunReader`, which opens both of a run's
+    // files (ADR-0004). A directory holding only a header is half a run, so it
+    // is refused by name rather than reported as if it were whole.
+    let scratch = ScratchDir::new("no-frames");
+    write_run_to_files(scratch.path());
+    let frames = scratch.path().join(FRAME_FILE_NAME);
+    fs::remove_file(&frames).expect("the run wrote a frame file");
+
+    let output = run_cli(scratch.path());
+    let stderr = String::from_utf8(output.stderr).expect("the error message is UTF-8");
+
+    assert!(
+        !output.status.success(),
+        "inspecting a run with no frame file reported success"
+    );
+    assert!(
+        stderr.contains(&frames.display().to_string()),
+        "the error does not name the file it could not open: {stderr}"
     );
 }
 
