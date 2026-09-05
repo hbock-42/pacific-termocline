@@ -46,6 +46,7 @@ meridional_decay_scale_m = 361000.0
 | `physics` | required | The constants of the scenario's ocean. |
 | `run` | required | How long the run is, and how often it is saved. |
 | `wind` | optional | The `[[wind]]` entries, in the order they are summed. Omitted or empty is a calm ocean — the undriven limit of the model, not a mistake. |
+| `sst` | optional | The Epic 12 mixed-layer SST coupling. Omitted is the validated linear model of Epics 01–07 — the three-variable ocean core, unchanged; present adds the SST anomaly `T'` as a fourth prognostic variable. |
 
 <!-- end fields -->
 
@@ -196,6 +197,14 @@ project policy in the same sense as `CFL_SAFETY_FACTOR`: it admits 350 times the
 320 × 100 of the default basin — the Pacific at 0.03°, far finer than the
 deformation radius the model resolves — so a scenario past it is a scenario with
 a mistyped `resolution_deg` rather than an ambitious one.
+
+A scenario that carries an `[sst]` section is counted at **320 B/cell**
+instead, and admits about 6.7 × 10⁶ cells. The extra 128 bytes are the SST
+anomaly in the state and in RK4's five stage buffers, plus the eight fields the
+SST term itself holds resident — 14 more `f64` a cell, rounded up to 16 on the
+same reasoning. The two counts are kept apart on purpose: turning the coupling
+on is what costs the memory, so a run of the linear core is held to exactly the
+budget it always was.
 
 Past the budget, the basin is refused by its cell count and never quietly
 coarsened:
@@ -436,6 +445,86 @@ is never exactly zero, only exponentially small away from `t₀`. Setting
 `peak_time_s` a few `duration_s` into the run lets the trade-driven tilt spin
 up first.
 
+## `[sst]`
+
+The Epic 12 coupling: a mixed-layer sea-surface-temperature anomaly `T'`
+integrated alongside the ocean core, coupled to the thermocline through the
+upwelling the wind implies (`CONTEXT.md`, *SST anomaly*;
+`docs/planning/01-scientific-model.md` § *Phase 2*). The equation is
+
+```text
+∂T'/∂t = −u'·∂T̄/∂x + (w⁺/H_m)·(γ·h − T') − ε_T·T'
+```
+
+— anomalous zonal advection of the mean SST gradient, entrainment of water from
+just below the mixed layer, and thermal relaxation to the climatology. `w` is
+not a parameter: it is diagnosed at every evaluation from the wind stress,
+through the steady Rayleigh-drag balance of the wind-driven surface layer, so
+the alizés upwell at the equator and a westerly does not.
+
+The advection is **zonal only**, deliberately. The mean SST of the equatorial
+Pacific peaks near the equator, so `∂T̄/∂y` changes sign across it and vanishes
+on it; a single constant — which is what the zonal gradient legitimately is,
+the warm pool falling away to the cold tongue almost uniformly along the
+equator — would be the wrong shape for the meridional one, and would advect
+heat across the equator in a direction the real ocean does not. A faithful
+meridional term needs a `T̄(y)` profile rather than a number, which is a larger
+change than this equation and is not what closes the Bjerknes loop.
+
+**The section is the switch.** Omitting it entirely leaves the scenario the
+validated linear model of Epics 01–07 — three prognostic variables, three
+fields allocated, the right-hand side those epics were validated against.
+Writing it adds one term that writes only `∂T'/∂t`; `h`, `u` and `v` come out
+bit for bit identical either way.
+
+`T'` is **not written to the run's frames**. The interchange format of
+[ADR-0004](planning/adr/0004-data-interchange-format.md) describes the three
+variables of the linear core, and extending it is a change to the contract the
+visualizer reads rather than a side effect of adding a term.
+
+<!-- fields: SstSection -->
+
+| Field | Type | Required | Unit | Valid values |
+| --- | --- | --- | --- | --- |
+| `mixed_layer_depth_m` | float | required | m | Finite and strictly greater than 0. Mixed-layer depth `H_m` — a *total* thickness, like `H` and unlike the anomalies the model solves for. It is divided by, so a zero is refused. 50 m is the equatorial-Pacific value of Zebiak & Cane (*Mon. Wea. Rev.* 115, 1987, § 2b). |
+| `mean_zonal_sst_gradient_k_per_m` | float | required | K/m | Any finite number; **either sign**, since which way the ocean warms is the scenario's to say. `∂T̄/∂x` of the prescribed mean state. Negative in the equatorial Pacific, where the ocean cools eastward from the warm pool to the cold tongue — about `−4 × 10⁻⁷` for 6 K over the basin's 15 000 km. |
+| `subsurface_temperature_sensitivity_k_per_m` | float | required | K/m | Finite and at least 0. The sensitivity `γ = ∂T_sub/∂h` of the entrained water's temperature to the thermocline depth anomaly — the coupling to `h`, and the ocean half of the Bjerknes feedback. `0` decouples entrainment from the thermocline while leaving the upwelling in place. Negative is refused: it would make a deeper thermocline colder. `0.1` is the Zebiak–Cane value. |
+| `thermal_damping_per_s` | float | required | s⁻¹ | Finite and at least 0. Thermal damping `ε_T`; its inverse is the relaxation timescale of an anomaly against the climatological surface heat flux. `0` is the undamped limit. Negative is refused, because it would amplify rather than relax. `9.26 × 10⁻⁸` is a 125-day relaxation. |
+| `surface_drag_per_s` | float | optional | s⁻¹ | Finite and strictly greater than 0. The Rayleigh drag `r_s` of the wind-driven surface layer. Omitted means `5.787e-6`, the inverse of two days (Zebiak & Cane 1987, § 2b). It is what keeps the Ekman solution finite at the equator, where `f = 0` and where all of this model's upwelling is; it sets the half-width `r_s/β ≈ 250 km` of the upwelling band, and the equatorial upwelling scales as `1/r_s²`. A zero would divide by zero on the equator. |
+
+<!-- end fields -->
+
+A coupled scenario is the file above with the section appended:
+
+<!-- scenario -->
+```toml
+[physics]
+reduced_gravity_m_per_s2 = 0.06
+mean_thermocline_depth_m = 150.0
+rayleigh_damping_per_s = 1.0e-7
+
+[run]
+dt_s = 3600.0
+total_steps = 17520
+output_every_n_steps = 24
+
+[[wind]]
+type = "steady_trade_winds"
+equatorial_zonal_stress_pa = -0.05
+meridional_decay_scale_m = 361000.0
+
+[sst]
+mixed_layer_depth_m = 50.0
+mean_zonal_sst_gradient_k_per_m = -4.0e-7
+subsurface_temperature_sensitivity_k_per_m = 0.1
+thermal_damping_per_s = 9.26e-8
+```
+
+The SST equation adds no bound on `dt_s`. Its rates — the entrainment `w/H_m`
+and the damping `ε_T` — are of order `10⁻⁶ s⁻¹`, three orders of magnitude
+slower than the gravity waves the CFL bound is derived for, so the two bounds
+below are still the only two.
+
 ## Composing forcings
 
 A `[[wind]]` list of two entries is the sum of the two fields at every point
@@ -498,9 +587,12 @@ reported:
 3. `[run]` — timestep positive, then output cadence non-zero, then the cadence
    no longer than the run.
 4. `[[wind]]` — each entry in file order.
-5. The gravity-wave CFL bound on `dt_s`, because it needs the wave speed
+5. `[sst]`, when present — each parameter in the order of its table above.
+   It is read before the memory budget, because whether the coupling is on is
+   what decides how many bytes a cell costs.
+6. The gravity-wave CFL bound on `dt_s`, because it needs the wave speed
    `[physics]` implies and the spacing `[basin]` implies.
-6. The rotation bound on `dt_s`, last, because it needs `β` from `[physics]`
+7. The rotation bound on `dt_s`, last, because it needs `β` from `[physics]`
    and how far from the equator `[basin]` reaches.
 
 A file that is not valid TOML, is missing a section, names a forcing that does

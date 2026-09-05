@@ -24,7 +24,7 @@ const SOURCE: &str = include_str!("../src/scenario.rs");
 /// The document under test.
 const REFERENCE: &str = include_str!("../../docs/scenario-config-reference.md");
 
-/// The four top-level items of the format. The `[[wind]]` entries are not
+/// The five top-level items of the format. The `[[wind]]` entries are not
 /// listed here: an entry's fields depend on its `type`, so the guard finds the
 /// variants in the enum itself rather than trusting a list that a new forcing
 /// would not update.
@@ -33,6 +33,7 @@ const SECTION_ITEMS: &[(&str, &str)] = &[
     ("pub struct BasinSection {", "BasinSection"),
     ("pub struct PhysicsSection {", "PhysicsSection"),
     ("pub struct RunSection {", "RunSection"),
+    ("pub struct SstSection {", "SstSection"),
 ];
 
 #[test]
