@@ -25,7 +25,6 @@
 
 use std::fmt;
 
-use termocline_grid::sweep::write_rows;
 use termocline_grid::{Field2D, Grid, Staggering, U_STAGGERING, V_STAGGERING};
 use termocline_numerics::{CGridOperators, Spacing};
 
@@ -267,13 +266,18 @@ impl CoriolisTerm {
 pub(crate) fn accumulate_rows(
     tendency: &mut Field2D<f64>,
     velocity: &Field2D<f64>,
-    gain_per_s: impl Fn(usize) -> f64 + Sync,
+    gain_per_s: impl Fn(usize) -> f64,
 ) {
-    write_rows(tendency, |j, row| {
+    let points_per_row = tendency.nx();
+    for (j, row) in tendency
+        .as_mut_slice()
+        .chunks_exact_mut(points_per_row)
+        .enumerate()
+    {
         let gain = gain_per_s(j);
-        let velocities = velocity.row(j);
+        let velocities = &velocity.as_slice()[j * points_per_row..][..points_per_row];
         for (rate, velocity_m_per_s) in row.iter_mut().zip(velocities) {
             *rate += gain * velocity_m_per_s;
         }
-    });
+    }
 }

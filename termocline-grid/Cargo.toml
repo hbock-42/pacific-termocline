@@ -8,7 +8,3 @@ repository.workspace = true
 description = "Shared 2D field and Arakawa C-grid geometry types: indexing and staggering, no physics."
 
 [dependencies]
-# T-10.3 parallelises the numerical core's array sweeps across rows; `sweep` is
-# the one place the thread pool is reached from, so this is the one crate that
-# names rayon.
-rayon = "1"

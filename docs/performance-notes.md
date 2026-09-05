@@ -7,7 +7,7 @@ it — a rayon-parallel inner loop (T-10.3) and an `f32` field layout
 (T-10.4) — can cite a profile rather than an intuition, which
 [CODING_STANDARDS.md](../CODING_STANDARDS.md) § *Performance* requires of them.
 
-It now carries two profiles rather than one. Everything before
+It now carries three measurements rather than one. Everything before
 [*After T-10.5: the sampled field is cached*](#after-t-105-the-sampled-field-is-cached)
 is T-10.2's baseline, taken with the solver, the right-hand side, the Coriolis
 term and the integrator exactly as T-07.4 left them and nothing optimised at
@@ -15,6 +15,9 @@ all. [*After T-10.5: the sampled field is cached*](#after-t-105-the-sampled-fiel
 is the same two instruments run again after the ticket that baseline provoked,
 and it is where the current decomposition of a timestep is. Both are kept,
 because the point of a before is to be compared with an after.
+[*After T-10.3: parallelising the sweeps does not pay*](#after-t-103-parallelising-the-sweeps-does-not-pay)
+is the third, and it is a negative result: it is kept so that nobody spends the
+ticket again.
 
 ## The finding
 
@@ -488,6 +491,12 @@ because it was computed against a step that no longer exists. Against the
   before. Both evaluators together give 2.5×. The ticket's own instruction not
   to measure itself only against `rhs_evaluation` stands, and matters more now
   that the whole-step figure has something to show.
+
+  That is a ceiling, and the ticket went and measured what was under it:
+  [*After T-10.3*](#after-t-103-parallelising-the-sweeps-does-not-pay) is the
+  answer, and it is that per-kernel threading costs several times more than it
+  saves at this basin size. The bullet is left as it was written, for the same
+  reason the two above it are.
 - **T-10.4 (`f32`) now attacks 97% of a step.** The two evaluators and the RK4
   stage algebra are 97.0% of what is left, and the baseline's term table said
   all of it looks memory-bandwidth-bound — fourteen flat kernels, and an
@@ -512,6 +521,12 @@ cargo run --release --example profile
 cargo run --profile profiling --example profile -- spin 30 &
 sample $! 15 1 -f spin.sample                # macOS
 perf record -F 999 -g -p $! -- sleep 15      # Linux
+
+# what a phase costs against the thread count, and where a row-split sweep
+# starts to win (T-10.3) — both on a build that threads its sweeps
+for n in 1 2 4 10; do RAYON_NUM_THREADS=$n cargo run --release --example profile; done
+for n in 1 2 4 10; do RAYON_NUM_THREADS=$n cargo run --release -p termocline-grid \
+    --example sweep_scaling; done
 ```
 
 The `profiling` cargo profile is release code plus the debug info a sampler
@@ -522,3 +537,168 @@ The instrument is `engine/src/profiling.rs` — what it can and cannot see is in
 its module documentation — driven by `engine/examples/profile.rs`, and
 `engine/tests/step_profile.rs` is what holds it to profiling the engine's own
 step.
+
+## After T-10.3: parallelising the sweeps does not pay
+
+T-10.3 is the rayon ticket the section above re-armed: with the wind cached,
+the two evaluators are 66.6% of a step rather than 20.0%, so perfect
+parallelisation of them was worth **2.5×** where it had been worth 1.2×. That
+is a ceiling worth chasing, so it was chased. It was measured, and it is not
+there. **Threading the array sweeps makes the engine 3.6× slower at 0.5° and
+9.1× slower at 1.0°**, and the ticket is closed on that measurement rather than
+on the estimate that motivated it.
+
+The implementation the numbers below were taken on is `812b337`, the first
+commit of the pull request that closes T-10.3, reverted by its second. `main`
+takes one squashed commit per ticket (CONTRIBUTING.md), so that commit never
+reaches `main` — it stays in the pull request's own history, which is where to
+check it out from and re-measure rather than take this section on trust. That
+is the same reason the sampled profiles above are committed as artefacts.
+
+### What was built
+
+One primitive, `termocline_grid::sweep::write_rows`, and every kernel through
+it: the six C-grid writers, the two four-point interpolations, the three
+pointwise shallow-water kernels and the Coriolis accumulation. A `Field2D` is
+row-major, so rows are contiguous and disjoint, and a sweep splits across them
+with `par_chunks_exact_mut`.
+
+**Correctness was never the difficulty, and it is worth saying why.** The
+right-hand side contains no reduction — no sum whose order a work-stealing
+scheduler could permute. Every kernel is a map: each output point is written
+once, from the same inputs, in the same order, on whatever thread runs the row.
+So the change is bit-identical by construction rather than by tolerance, and
+`engine/tests/parallel_determinism.rs` — added by that commit — holds it to
+that on 1, 2, 3 and 10 workers, three being the count that divides neither
+benchmark basin's row count. Epic 07's validations, which compare against
+analytic results rather than against another run, passed unchanged beside it.
+The determinism CODING_STANDARDS.md § *Correctness and failure* requires was
+never at risk. The cost was.
+
+### The benchmark
+
+`cargo bench -p engine`, the same machine and the same two workloads as
+everything above, criterion's `--save-baseline` between two runs taken minutes
+apart:
+
+| workload | serial | rayon | criterion's own comparison |
+|---|---|---|---|
+| `rhs_evaluation` 320 × 100 | 68.87 µs | 302.18 µs | **+335.20%** [+330.60%, +339.51%], p < 0.05 |
+| `rhs_evaluation` 160 × 50 | 17.58 µs | 226.43 µs | **+1179.5%** [+1163.0%, +1194.3%], p < 0.05 |
+| `scenario_run` 320 × 100 | 150.72 ms | 544.83 ms | **+261.25%** [+256.36%, +265.48%], p < 0.05 |
+| `scenario_run` 160 × 50 | 39.00 ms | 353.92 ms | **+805.62%** [+795.70%, +816.34%], p < 0.05 |
+
+The last column is criterion's, computed from the two runs' whole sample
+distributions; the two middle columns are their point estimates. Dividing the
+middle columns gives a percentage a little different from the last one — +339%
+against +335% on the first row — for that reason and not for any other.
+
+Not a disappointing speed-up. A regression of a factor of several, at both
+grids, in the isolated kernel benchmark and end to end through the entry point
+the `run` command uses.
+
+### Why: the sweeps are too short
+
+`cargo run --release --example profile`, the two evaluator phases at 320 × 100,
+against `RAYON_NUM_THREADS`:
+
+| | shallow-water + coriolis, per step | against serial |
+|---|---|---|
+| serial (no rayon at all) | **421.6 µs** | 1.00× |
+| rayon, 1 thread | 840.7 µs | 0.50× |
+| rayon, 2 threads | 732.2 µs | 0.58× |
+| rayon, 4 threads | 1 023.2 µs | 0.41× |
+| rayon, 10 threads | 1 921.1 µs | 0.22× |
+
+**The one-thread row is the fork/join cost with no parallelism in it at all.**
+Going through rayon's split-and-join on a single thread doubles the evaluators
+before a single row moves anywhere: 419 µs a step. A step performs 56 sweeps —
+fourteen kernels at each of RK4's four stages — so that is about 7.5 µs of
+scaffolding around a sweep the term table above says is 5 to 10 µs of work.
+T-10.2's finding that the right-hand side is *fourteen flat kernels with no hot
+one* turns out to be the same finding as *no sweep long enough to pay for being
+handed to a thread pool*.
+
+Granularity was tuned, in case the split was merely too fine. The table above
+gives each worker at least 1 024 points; the coarsest possible split, one task
+per thread per sweep, gives 683 µs at 2 threads, 1 002 µs at 4 and 2 055 µs at
+10 — the same shape, no better. The 160 × 50 grid behaves the same way and
+worse, as a smaller basin must: 109.7 µs serial against 350.7 / 411.0 / 687.5 /
+1 193.3 µs at 1 / 2 / 4 / 10 threads.
+
+### And where the memory system takes over
+
+The table above is consistent with two different stories — sweeps too short to
+amortise a fork, or a bandwidth-bound computation choking on extra cores — and
+they point at different next tickets, so they are worth separating.
+`termocline-grid/examples/sweep_scaling.rs` separates them by holding one sweep
+fixed and growing the field. It streams three arrays for one flop, `c = a + b`,
+which is the shape of every kernel in the term table, and reports nanoseconds
+per point for a plain loop and for `write_rows`. Parallel against serial, so
+above 1.00× threading wins:
+
+| field | 1 thread | 2 threads | 4 threads | 10 threads |
+|---|---|---|---|---|
+| 320 × 100 — *the engine's 0.5° basin* | 0.52× | 0.52× | 0.42× | 0.15× |
+| 640 × 200 | 0.78× | 0.94× | 1.03× | 0.48× |
+| 1 280 × 400 | 1.03× | **1.80×** | **2.16×** | 1.24× |
+| 2 560 × 800 | 0.95× | 1.50× | 1.55× | 1.44× |
+| 5 120 × 1 600 | 0.80× | 1.07× | 1.61× | 1.26× |
+
+Three things are in that table, and the first two are the answer.
+
+**The crossover is at about 250 000 points, and the engine's fields are 32 000.**
+A row-split sweep starts to win somewhere between 640 × 200 and 1 280 × 400 —
+eight to sixteen times the 0.5° basin. Below it the fork and the join cost more
+than the sweep, which is the 320 × 100 row: threading loses at *every* thread
+count, by a factor of two at best and nearly seven at worst. So the first story
+is the one that explains the engine's numbers.
+
+**Where threading does win, it wins about twice, and never more.** The best
+figure anywhere in the table is 2.16×, on a field sixteen times the engine's,
+with four workers. Ten workers never beat four at any size, and past
+2 560 × 800 the speed-up falls away again as the fields leave cache. That is
+the second story, and it is real — it is the *ceiling* rather than the
+explanation, and it is a low one, which is what the baseline note predicted in
+as many words: *"a weak case for threading the arrays (more cores, same bus)"*.
+
+**Neither story is about the number of cores.** This machine has ten and the
+table never rewards more than four. That is worth carrying into T-10.4: the
+constraint the engine is up against is how fast values move, not how many
+places there are to compute them.
+
+### What this closes, and what it does not
+
+**T-10.3 is closed as measured-and-rejected.** The acceptance criterion is a
+meaningful speed-up on a multi-core machine, and a change that is 3.6× slower
+does not meet it; shipping it because the ticket exists would be the opposite
+of CODING_STANDARDS.md § *Optimize against a measurement*. The estimate that
+re-armed it — 2.5× if the evaluators parallelised perfectly — was an Amdahl
+ceiling, and a ceiling is what a change cannot exceed rather than what it gets.
+Nothing about it was wrong except the assumption underneath every Amdahl
+calculation: that the phase can be parallelised for free.
+
+**It does not close threading as such, but it bounds it.** What is measured
+here is per-kernel parallelism, and a parallel region spanning the whole step —
+a strip-decomposed solver holding a thread team across the time loop, with halo
+rows and a barrier between kernels — would still synchronise 56 times a step,
+but on a barrier between workers that are already awake rather than on a fork
+and a join that wake them. The scaling table is what that design would be
+chasing, and it says two things about it: at the engine's field size a sweep is
+below the crossover *whatever* the synchronisation costs, and even far above
+the crossover the prize is about 2×, not the 2.5× Amdahl offered or the 10× the
+core count suggests. It would become interesting at a basin of a few hundred
+thousand cells — 0.125°, four times finer than anything the benchmark suite
+runs, which `benchmark.rs` calls "a benchmark nobody runs on a laptop". It is
+not proposed here.
+
+**Nor does it close the machine question.** These figures are one laptop's, and
+a machine with more memory channels per core could move the crossover and the
+ceiling both. That is the caveat every section of this note carries; it is why
+the reverted commit and its two instruments are on the record.
+
+**What is left is T-10.4.** It attacks 97% of a step rather than 66%, and it
+attacks the quantity both instruments above say is actually being paid for —
+traffic — by halving the width of every field, rather than adding claimants to
+a bus that has just been measured saturating at four. The case for it is
+stronger than it was, and it is stronger *because* of this measurement.
