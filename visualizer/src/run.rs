@@ -207,6 +207,16 @@ impl LoadedRun {
         Some(frame)
     }
 
+    /// Frames the run's file actually holds.
+    ///
+    /// The file's count, not the header's claim: the two are made to agree at
+    /// load ([`LoadedRun::from_bytes`]), and this is the one a walk of the run
+    /// can be bounded by without risking a frame the file does not hold.
+    #[must_use]
+    pub fn frame_count(&self) -> u64 {
+        self.frame_offsets.len() as u64
+    }
+
     /// What the shell shows about this run, in the order it shows it.
     #[must_use]
     pub fn metadata(&self) -> Vec<MetadataRow> {

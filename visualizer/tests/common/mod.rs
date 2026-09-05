@@ -120,6 +120,13 @@ pub struct FrameFields {
     pub tau_x_pa: Vec<f64>,
     /// Meridional wind stress `τy`, in pascals, at north/south faces.
     pub tau_y_pa: Vec<f64>,
+    /// Mixed-layer SST anomaly `T'`, in kelvin, at cell centres, or `None` for
+    /// a run that did not couple SST.
+    ///
+    /// `None` rather than a zero-filled field: an uncoupled run's frames carry
+    /// no sixth field at all (`termocline_format::Frame`), and a fixture that
+    /// wrote zeros would let a view that reports absence as zero pass.
+    pub sst_anomaly_k: Option<Vec<f64>>,
 }
 
 impl FrameFields {
@@ -130,6 +137,7 @@ impl FrameFields {
             h_m: field(Variable::ThermoclineDepthAnomaly),
             tau_x_pa: field(Variable::ZonalWindStress),
             tau_y_pa: field(Variable::MeridionalWindStress),
+            sst_anomaly_k: None,
         }
     }
 }
@@ -151,6 +159,7 @@ pub fn encoded_frames_with_fields(
             h_m,
             tau_x_pa,
             tau_y_pa,
+            sst_anomaly_k,
         } = fields(index);
         let frame = Frame::new(
             t_s,
@@ -162,6 +171,12 @@ pub fn encoded_frames_with_fields(
             tau_y_pa,
         )
         .expect("fields sized from the grid fit it");
+        let frame = match sst_anomaly_k {
+            Some(sst_anomaly_k) => frame
+                .with_sst_anomaly(&grid, sst_anomaly_k)
+                .expect("a field sized from the grid fits it"),
+            None => frame,
+        };
         frames.extend(
             bincode::serde::encode_to_vec(&frame, frame_encoding()).expect("a frame encodes"),
         );

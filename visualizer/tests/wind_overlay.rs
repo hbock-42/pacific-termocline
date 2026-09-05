@@ -159,6 +159,7 @@ fn run_of_one_frame(header: &RunHeader, fields: FrameFields) -> LoadedRun {
             h_m: fields.h_m.clone(),
             tau_x_pa: fields.tau_x_pa.clone(),
             tau_y_pa: fields.tau_y_pa.clone(),
+            sst_anomaly_k: fields.sst_anomaly_k.clone(),
         }),
     };
     LoadedRun::from_bytes("run-steady-trades", bytes).expect("the run loads")

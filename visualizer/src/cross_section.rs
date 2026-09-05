@@ -38,20 +38,8 @@
 
 use termocline_format::{BasinExtent, FormatError, Frame, GridSpec, Variable};
 
+use crate::chart::{axis_fraction, longitude_at};
 use crate::DivergingScale;
-
-/// A full turn of longitude, in degrees.
-///
-/// The basin crosses the antimeridian (`CONTEXT.md`, *Basin*), so a longitude
-/// accumulated eastward from the western wall has to be folded back into the
-/// degrees-east convention [`termocline_format::BasinExtent`] states its bounds
-/// in. Named for the same reason `engine/src/basin.rs` names it: it is the
-/// modulus a zonal span is measured in, not a magic number.
-const FULL_TURN_DEG: f64 = 360.0;
-
-/// Half a turn of longitude, in degrees: the fold point of the degrees-east
-/// convention, which runs from 180°W to 180°E.
-const HALF_TURN_DEG: f64 = FULL_TURN_DEG / 2.0;
 
 /// How far two rows' distances from the equator may differ and still count as
 /// equal, as a fraction of the row spacing.
@@ -158,11 +146,7 @@ impl CrossSection {
             let x_fraction = (i as f64 + 0.5) / width as f64;
             points.push(CrossSectionPoint {
                 x_fraction,
-                longitude_deg_east: longitude_at(
-                    grid.extent().west_deg_east,
-                    grid.extent().east_deg_east,
-                    x_fraction,
-                ),
+                longitude_deg_east: longitude_at(grid.extent(), x_fraction),
                 h_m: sum_m / rows_per_point,
             });
         }
@@ -210,26 +194,16 @@ impl CrossSection {
     /// anomaly sits *above* the middle of the chart, where the map beside it
     /// draws it warm.
     ///
-    /// An anomaly past the ends of the scale is clamped to them. That cannot
-    /// happen for a scale built over the run being drawn; it can for a caller
-    /// that mixed two runs, and a point on the frame is a better answer than
-    /// one drawn off it. A non-finite anomaly gets no position at all: the
-    /// integration diverged there, and a line drawn through the gap would
-    /// claim a value the run never produced.
+    /// An anomaly past the ends of the scale is clamped to them, and a
+    /// non-finite one gets no position at all — see
+    /// [`crate::chart::axis_fraction`], which the point time series places its
+    /// samples with too.
     #[must_use]
     pub fn plot_position(&self, point: &CrossSectionPoint) -> Option<(f64, f64)> {
-        if !point.h_m.is_finite() {
-            return None;
-        }
-        let half_range_m = self.scale.half_range_m();
-        // A run that is everywhere zero has no range to normalize by, and
-        // every point of it is exactly on the zero line anyway.
-        let above_zero = if half_range_m == 0.0 {
-            0.0
-        } else {
-            (point.h_m / half_range_m).clamp(-1.0, 1.0)
-        };
-        Some((point.x_fraction, 0.5 - above_zero / 2.0))
+        Some((
+            point.x_fraction,
+            axis_fraction(point.h_m, self.scale.half_range_m())?,
+        ))
     }
 }
 
@@ -296,16 +270,4 @@ impl MeridionalAxis {
         let count = rows.len() as f64;
         sum_deg / count
     }
-}
-
-/// The longitude `fraction` of the way east across a basin running from
-/// `west_deg_east` to `east_deg_east`, in degrees east of the prime meridian.
-///
-/// The span is taken eastward around the globe — the basin crosses the
-/// antimeridian, so the eastern bound is numerically the smaller of the two —
-/// and the result is folded back into `[-180, 180)`.
-fn longitude_at(west_deg_east: f64, east_deg_east: f64, fraction: f64) -> f64 {
-    let span_deg = (east_deg_east - west_deg_east).rem_euclid(FULL_TURN_DEG);
-    let absolute_deg = span_deg.mul_add(fraction, west_deg_east);
-    (absolute_deg + HALF_TURN_DEG).rem_euclid(FULL_TURN_DEG) - HALF_TURN_DEG
 }
