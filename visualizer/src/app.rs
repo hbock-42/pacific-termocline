@@ -14,7 +14,7 @@ use egui::{Color32, RichText};
 
 use crate::loading::Loaded;
 use crate::run::SECONDS_PER_DAY;
-use crate::{DivergingScale, Heatmap, LoadedRun, Loader, PendingRun};
+use crate::{DivergingScale, Heatmap, LoadedRun, Loader, PendingRun, Scrubber};
 
 /// What the central panel is showing.
 enum Shown {
@@ -160,7 +160,11 @@ impl VisualizerApp {
     }
 
     /// The bar of run-loading affordances.
-    fn draw_controls(&mut self, ui: &mut egui::Ui) {
+    ///
+    /// Returns whether the run-URL field has the keyboard. It is the one thing
+    /// in the shell that a keystroke means something different to, so it is
+    /// what decides whether the scrubber's keys are the scrubber's to take.
+    fn draw_controls(&mut self, ui: &mut egui::Ui) -> bool {
         ui.horizontal(|ui| {
             #[cfg(not(target_arch = "wasm32"))]
             if ui.button("Open run directory…").clicked() {
@@ -179,7 +183,9 @@ impl VisualizerApp {
                 let (url, ctx) = (self.run_url.clone(), ui.ctx().clone());
                 self.fetch_run(&url, &ctx);
             }
-        });
+            url.has_focus()
+        })
+        .inner
     }
 }
 
@@ -206,12 +212,16 @@ impl eframe::App for VisualizerApp {
         self.absorb_finished_loads();
         self.absorb_dropped_files(ctx);
 
-        egui::TopBottomPanel::top("controls").show(ctx, |ui| {
-            ui.add_space(4.0);
-            ui.heading(crate::APP_NAME);
-            self.draw_controls(ui);
-            ui.add_space(4.0);
-        });
+        let url_has_keyboard = egui::TopBottomPanel::top("controls")
+            .show(ctx, |ui| {
+                ui.add_space(4.0);
+                ui.heading(crate::APP_NAME);
+                let url_has_keyboard = self.draw_controls(ui);
+                ui.add_space(4.0);
+                url_has_keyboard
+            })
+            .inner;
+        let keyboard_free = !url_has_keyboard;
 
         // Disjoint borrows: the panel reads the run while the map it draws
         // caches a texture of one of its frames.
@@ -239,7 +249,7 @@ impl eframe::App for VisualizerApp {
                 ui.separator();
                 draw_instructions(ui, pending);
             }
-            Shown::Run(run) => draw_run(ui, run, basin_map),
+            Shown::Run(run) => draw_run(ui, run, basin_map, keyboard_free),
         });
 
         if ctx.input(|input| !input.raw.hovered_files.is_empty()) {
@@ -255,7 +265,7 @@ impl eframe::App for VisualizerApp {
 }
 
 /// The metadata panel, and under it the basin map of the chosen frame.
-fn draw_run(ui: &mut egui::Ui, run: &LoadedRun, basin_map: &mut BasinMap) {
+fn draw_run(ui: &mut egui::Ui, run: &LoadedRun, basin_map: &mut BasinMap, keyboard_free: bool) {
     ui.label(RichText::new(run.source()).strong());
     ui.add_space(6.0);
     egui::Grid::new("run-metadata")
@@ -271,7 +281,7 @@ fn draw_run(ui: &mut egui::Ui, run: &LoadedRun, basin_map: &mut BasinMap) {
         });
     ui.add_space(12.0);
     ui.separator();
-    basin_map.draw(ui, run);
+    basin_map.draw(ui, run, keyboard_free);
 }
 
 /// The name and bytes of a dropped file, from whichever of the two egui fills
@@ -304,20 +314,33 @@ const COLOR_BAR_SAMPLES: usize = 256;
 /// cheapest honest way to show a cell grid is one pixel per cell, magnified
 /// without interpolation. It is also the way that costs the same on both
 /// targets, which is what ADR-0006 asks of anything drawn here.
+///
+/// # What a drag costs
+///
+/// The scrubber is dragged, so everything under it is on a path that runs once
+/// per frame of the *display*, not once per frame of the run. Three things
+/// were made not to happen there (T-08.3): reaching the run's frame walks no
+/// other frames ([`LoadedRun::frame`]); a repaint that lands on the frame
+/// already drawn rebuilds nothing ([`Attempt`]); and the colour bar, which is
+/// the run's and not the frame's, is uploaded once per run ([`ColorBar`]).
+/// What is left is one frame decoded, colour-mapped and uploaded per frame the
+/// reader actually asks for, which is the work the drag is for.
 #[derive(Default)]
 struct BasinMap {
-    /// The frame the reader has chosen, by index into the run.
-    index: u64,
+    /// The frame the reader has chosen, and the ways they choose another.
+    scrubber: Scrubber,
     /// The last attempt at drawing a frame, if there has been one.
     attempt: Option<Attempt>,
+    /// The run's colour bar, built the first time a frame of it is drawn.
+    bar: Option<ColorBar>,
 }
 
 /// What came of trying to draw one frame.
 ///
-/// Kept because reaching a frame decodes every frame before it
-/// ([`LoadedRun::frame`]), and a panel repaints many times per second while
-/// the chosen frame does not change. The failure is kept for the same reason:
-/// retrying it every repaint would fail every repaint.
+/// Kept because a panel repaints many times per second while the chosen frame
+/// does not change, and each repaint would otherwise decode and upload the
+/// frame again. The failure is kept for the same reason: retrying it every
+/// repaint would fail every repaint.
 struct Attempt {
     /// The frame this was an attempt at.
     index: u64,
@@ -330,41 +353,46 @@ struct Attempt {
 struct DrawnFrame {
     /// Its model time, in seconds since the start of the run.
     t_s: f64,
-    /// The scale its colours came from, for the bar beside it.
-    scale: DivergingScale,
     /// The map itself, one texel per cell.
     map: egui::TextureHandle,
-    /// The colour bar, sampled across the same scale.
-    bar: egui::TextureHandle,
+}
+
+/// The colour bar of a run, and the scale it was sampled from.
+///
+/// The scale is the run's rather than the frame's (`crate::heatmap`), so the
+/// bar is the same in every frame and is uploaded once — not once per frame a
+/// drag passes through.
+struct ColorBar {
+    /// The scale the bar was sampled from, so a run whose scale is not this
+    /// one gets its own bar.
+    scale: DivergingScale,
+    /// The bar itself, sampled across the scale.
+    texture: egui::TextureHandle,
 }
 
 impl BasinMap {
     /// Forget the run this was a map of.
     fn forget(&mut self) {
-        self.index = 0;
+        self.scrubber = Scrubber::new();
         self.attempt = None;
+        self.bar = None;
     }
 
     /// Draw the frame chooser and the map of the chosen frame.
-    fn draw(&mut self, ui: &mut egui::Ui, run: &LoadedRun) {
+    fn draw(&mut self, ui: &mut egui::Ui, run: &LoadedRun, keyboard_free: bool) {
         let frame_count = run.header().output.frame_count;
-        let Some(last) = frame_count.checked_sub(1) else {
+        self.scrubber.fit_to(frame_count);
+        if self.scrubber.last().is_none() {
             ui.label("This run holds no frames to draw.");
             return;
-        };
-        self.index = self.index.min(last);
-        if last > 0 {
-            ui.add(egui::Slider::new(&mut self.index, 0..=last).text("Frame"));
         }
+        self.scrubber.draw(ui, keyboard_free);
 
-        if self
-            .attempt
-            .as_ref()
-            .is_none_or(|last| last.index != self.index)
-        {
+        let index = self.scrubber.index();
+        if self.attempt.as_ref().is_none_or(|last| last.index != index) {
             self.attempt = Some(Attempt {
-                index: self.index,
-                outcome: self.build(ui, run),
+                index,
+                outcome: self.build(ui, run, index),
             });
         }
         let outcome = &self
@@ -376,7 +404,7 @@ impl BasinMap {
             Ok(drawn) => drawn,
             Err(message) => {
                 ui.label(
-                    RichText::new(format!("Frame {} could not be drawn", self.index))
+                    RichText::new(format!("Frame {} could not be drawn", index + 1))
                         .color(Color32::LIGHT_RED)
                         .strong(),
                 );
@@ -385,8 +413,11 @@ impl BasinMap {
             }
         };
 
+        // Counted from one, as the metadata panel counts the run's frames.
+        // The scrubber's own index starts at zero, and it shows no number.
         ui.label(format!(
-            "Thermocline depth anomaly h at {:.2} days",
+            "Frame {} of {frame_count} — thermocline depth anomaly h at {:.2} days",
+            index + 1,
             drawn.t_s / SECONDS_PER_DAY
         ));
         ui.horizontal(|ui| {
@@ -396,47 +427,55 @@ impl BasinMap {
             });
         });
         draw_texture_fitted(ui, &drawn.map);
-        draw_color_bar(ui, drawn);
+        draw_color_bar(ui, self.color_bar(ui, run.anomaly_scale()));
     }
 
-    /// Colour-map the chosen frame and upload it, or say what stopped that.
-    fn build(&self, ui: &egui::Ui, run: &LoadedRun) -> Result<DrawnFrame, String> {
-        let scale = run.anomaly_scale();
+    /// The run's colour bar, sampled the first time a frame of it is drawn.
+    fn color_bar(&mut self, ui: &egui::Ui, scale: DivergingScale) -> &ColorBar {
+        if self.bar.as_ref().is_none_or(|bar| bar.scale != scale) {
+            self.bar = Some(ColorBar {
+                scale,
+                texture: ui.ctx().load_texture(
+                    "basin-map-scale",
+                    egui::ColorImage::from_rgb(
+                        [COLOR_BAR_SAMPLES, 1],
+                        &scale.bar_rgb(COLOR_BAR_SAMPLES),
+                    ),
+                    egui::TextureOptions::LINEAR,
+                ),
+            });
+        }
+        self.bar.as_ref().expect("a bar was just built")
+    }
+
+    /// Colour-map frame `index` and upload it, or say what stopped that.
+    fn build(&self, ui: &egui::Ui, run: &LoadedRun, index: u64) -> Result<DrawnFrame, String> {
         let frame = run
-            .frame(self.index)
-            .ok_or_else(|| format!("this run holds no frame {}", self.index))?;
-        let heatmap = Heatmap::of_frame(run.header().grid, &frame, scale)
+            .frame(index)
+            .ok_or_else(|| format!("this run holds no frame {index}"))?;
+        let heatmap = Heatmap::of_frame(run.header().grid, &frame, run.anomaly_scale())
             .map_err(|error| error.to_string())?;
         let image = egui::ColorImage::from_rgb([heatmap.width(), heatmap.height()], heatmap.rgb());
         Ok(DrawnFrame {
             t_s: frame.t_s(),
-            scale,
             // Nearest, not linear: a texel is a cell of the model, and
             // smoothing between them would draw an anomaly the run never
             // produced.
             map: ui
                 .ctx()
                 .load_texture("basin-map", image, egui::TextureOptions::NEAREST),
-            bar: ui.ctx().load_texture(
-                "basin-map-scale",
-                egui::ColorImage::from_rgb(
-                    [COLOR_BAR_SAMPLES, 1],
-                    &scale.bar_rgb(COLOR_BAR_SAMPLES),
-                ),
-                egui::TextureOptions::LINEAR,
-            ),
         })
     }
 }
 
 /// Draw the colour bar and the anomalies its ends stand for.
-fn draw_color_bar(ui: &mut egui::Ui, drawn: &DrawnFrame) {
+fn draw_color_bar(ui: &mut egui::Ui, bar: &ColorBar) {
     let width = ui.available_width();
     ui.add(egui::Image::new(egui::load::SizedTexture::new(
-        drawn.bar.id(),
+        bar.texture.id(),
         egui::vec2(width, COLOR_BAR_HEIGHT),
     )));
-    let half_range_m = drawn.scale.half_range_m();
+    let half_range_m = bar.scale.half_range_m();
     // Negating zero would label a run at rest "-0.0 m".
     let shallow_m = if half_range_m == 0.0 {
         0.0
@@ -472,4 +511,125 @@ fn draw_texture_fitted(ui: &mut egui::Ui, texture: &egui::TextureHandle) {
         texture.id(),
         size * scale,
     )));
+}
+
+#[cfg(test)]
+mod tests {
+    //! What a drag must not do per repaint, asserted on the panel itself.
+    //!
+    //! `egui` needs no GPU to lay a panel out and no window to run in, so the
+    //! caches [`BasinMap`] keeps — the frame it already drew, and the colour
+    //! bar of the run it is drawing — are checked here by texture identity: a
+    //! rebuilt texture is a new handle, and a reused one is the same handle.
+    //!
+    //! The run is written from `termocline_format` alone, as the integration
+    //! tests write theirs (`tests/common/mod.rs`).
+
+    use termocline_format::{
+        frame_encoding, BasinExtent, Frame, GridSpec, OutputTiming, PhysicalParams, RunHeader,
+        Variable,
+    };
+
+    use super::{BasinMap, LoadedRun};
+    use crate::RunBytes;
+
+    /// A basin small enough to build in a unit test, on the extent of
+    /// `CONTEXT.md`, *Basin*.
+    fn grid() -> GridSpec {
+        GridSpec::new(4, 3, BasinExtent::new(120.0, -80.0, -25.0, 25.0))
+            .expect("a 4x3 basin is a valid grid")
+    }
+
+    /// A run of three frames whose `h` is everywhere the frame's own index, in
+    /// metres, so consecutive frames are drawn in different colours.
+    fn run() -> LoadedRun {
+        let grid = grid();
+        let header = RunHeader::new(
+            grid,
+            PhysicalParams {
+                mean_depth_m: 150.0,
+                reduced_gravity_m_per_s2: 0.06,
+                beta_per_m_per_s: 2.3e-11,
+                rayleigh_damping_per_s: 1.0e-7,
+                reference_density_kg_per_m3: 1025.0,
+            },
+            "basin-map",
+            OutputTiming {
+                frame_count: 3,
+                interval_s: 86_400.0,
+            },
+        );
+        let mut frames = Vec::new();
+        for index in 0..header.output.frame_count {
+            #[allow(clippy::cast_precision_loss)]
+            let value = index as f64;
+            let field = |variable| vec![0.0; grid.field_len(variable)];
+            let frame = Frame::new(
+                value * header.output.interval_s,
+                &grid,
+                vec![value; grid.field_len(Variable::ThermoclineDepthAnomaly)],
+                field(Variable::ZonalCurrentAnomaly),
+                field(Variable::MeridionalCurrentAnomaly),
+                field(Variable::ZonalWindStress),
+                field(Variable::MeridionalWindStress),
+            )
+            .expect("fields sized from the grid fit it");
+            frames.extend(
+                bincode::serde::encode_to_vec(&frame, frame_encoding()).expect("a frame encodes"),
+            );
+        }
+        LoadedRun::from_bytes(
+            "basin-map",
+            RunBytes {
+                header: serde_json::to_vec(&header).expect("a header serializes"),
+                frames,
+            },
+        )
+        .expect("a run written from its own header loads")
+    }
+
+    /// Repaint `map` once, and say which textures it drew the run with.
+    fn repaint(
+        ctx: &egui::Context,
+        map: &mut BasinMap,
+        run: &LoadedRun,
+    ) -> (egui::TextureId, egui::TextureId) {
+        // The full output of the pass is what a backend would paint; what is
+        // under test is which textures the panel asked for, not the pixels.
+        let _painted = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| map.draw(ui, run, true));
+        });
+        let drawn = map
+            .attempt
+            .as_ref()
+            .expect("a frame was drawn")
+            .outcome
+            .as_ref()
+            .expect("it drew");
+        let bar = map.bar.as_ref().expect("a colour bar was built");
+        (drawn.map.id(), bar.texture.id())
+    }
+
+    #[test]
+    fn repainting_the_same_frame_rebuilds_nothing() {
+        let (ctx, run) = (egui::Context::default(), run());
+        let mut map = BasinMap::default();
+        let first = repaint(&ctx, &mut map, &run);
+        assert_eq!(repaint(&ctx, &mut map, &run), first);
+    }
+
+    #[test]
+    fn choosing_another_frame_redraws_the_map_but_not_the_colour_bar() {
+        let (ctx, run) = (egui::Context::default(), run());
+        let mut map = BasinMap::default();
+        let (first_map, first_bar) = repaint(&ctx, &mut map, &run);
+        map.scrubber.set_index(2);
+        let (second_map, second_bar) = repaint(&ctx, &mut map, &run);
+        assert_ne!(
+            second_map, first_map,
+            "the map of another frame is another map"
+        );
+        // The scale is the run's, not the frame's, so the bar is the same bar.
+        assert_eq!(second_bar, first_bar);
+    }
 }

@@ -19,6 +19,7 @@ mod heatmap;
 mod loading;
 mod pending;
 mod run;
+mod scrubber;
 
 pub use app::VisualizerApp;
 pub use heatmap::{DivergingScale, Heatmap};
@@ -27,6 +28,7 @@ pub use loading::native::read_run_directory;
 pub use loading::Loader;
 pub use pending::PendingRun;
 pub use run::{LoadedRun, MetadataRow, RunBytes};
+pub use scrubber::Scrubber;
 
 /// Re-exported so the visualizer and engine agree on one format version.
 pub use termocline_format::FORMAT_VERSION;

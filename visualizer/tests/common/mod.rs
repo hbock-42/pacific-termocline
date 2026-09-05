@@ -25,6 +25,10 @@ pub const NY: usize = 100;
 /// `steady-trades.toml` writes a frame every 24 steps of an hour.
 pub const FRAME_INTERVAL_S: f64 = 86_400.0;
 
+/// Frames `steady-trades.toml` writes: 17 520 steps of an hour with a frame
+/// every 24 makes 730 daily frames, and the frame at t = 0 makes 731.
+pub const STEADY_TRADES_FRAMES: u64 = 731;
+
 /// The physical parameters of `steady-trades.toml`: g' = 0.06 m s^-2 and
 /// H = 150 m give c = √(g'H) = 3.0 m s^-1, the observed first-baroclinic
 /// Kelvin speed of the equatorial Pacific (CONTEXT.md).
