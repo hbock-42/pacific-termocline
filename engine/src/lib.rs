@@ -54,9 +54,8 @@ pub use basin::{Basin, BasinError};
 
 /// Re-exported so a scenario names one wind forcing: the [`forcing::WindStress`]
 /// trait a scenario implements, the scenarios that implement it, the
-/// [`forcing::WindStressField`] the solver actually reads, and the
-/// [`forcing::CompositeWind`] that stacks an anomaly such as
-/// [`forcing::WindBurstAnomaly`] on a base scenario.
+/// [`forcing::CompositeWind`] that stacks them, and the
+/// [`forcing::WindStressField`] the solver actually reads.
 pub use forcing::{
     CompositeWind, SeasonalTradeWinds, SteadyTradeWinds, WindBurstAnomaly, WindStress,
     WindStressError, WindStressField, TROPICAL_YEAR_S,
