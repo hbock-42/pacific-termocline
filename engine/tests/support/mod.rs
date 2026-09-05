@@ -120,7 +120,12 @@ pub fn kelvin_wave_speed_m_per_s() -> f64 {
 }
 
 /// The same `c = √(g'·H)` for an ocean of reduced gravity
-/// `reduced_gravity_m_per_s2`, in m/s.
+/// `reduced_gravity_m_per_s2`, in m/s, over the Pacific mean thermocline depth
+/// [`PACIFIC_MEAN_DEPTH_M`].
+///
+/// `H` is held at that value rather than varied alongside `g'` because the
+/// runs that use this vary the wave speed to move `Le`, and `H` also sets the
+/// scale `h` is measured in; changing it would move two things at once.
 pub fn wave_speed_of_m_per_s(reduced_gravity_m_per_s2: f64) -> f64 {
     (reduced_gravity_m_per_s2 * PACIFIC_MEAN_DEPTH_M).sqrt()
 }

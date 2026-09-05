@@ -116,21 +116,17 @@
 //! a budget on, so it is held to the same number rather than to a second
 //! tolerance.
 //!
-//! It is also the quantity the rate is read on.
+//! It is also the quantity the sharper of the two rate tests is read on.
 //! [`the_meridional_shape_error_converges_at_the_schemes_second_order`] asserts
-//! `ε` falls by four when both cell dimensions are halved, for both waves and
-//! both structures — which is the assertion that the budget's leading entry
-//! describes the scheme rather than merely bounding it.
-//! [`the_fitted_decay_scale_converges_at_the_schemes_second_order`] makes the
-//! same assertion about the fitted *scale*, but for the Kelvin wave alone. A
-//! scale responds only to the part of a departure that is not orthogonal to it,
-//! and the Kelvin wave is the one for which that is the whole of it: it is `ψ₀`
-//! of the eastward invariant and identically nothing else, so its shape error
-//! has nowhere but the scale to appear. The Rossby mode carries two structures
-//! with a free amplitude between them, and a `ψ₂`-shaped departure of its `ψ₀`
-//! profile is absorbed by that amplitude rather than by the scale — so its
-//! scale error is not the truncation, and a rate read off it would be a
-//! coincidence rather than the scheme's order.
+//! `ε` falls by four when both cell dimensions are halved — which is the
+//! assertion that the budget's leading entry describes the scheme rather than
+//! merely bounding it — and
+//! [`the_fitted_decay_scale_converges_at_the_schemes_second_order`] asserts the
+//! same of the fitted scale itself, the quantity the acceptance criterion names.
+//! Both are made for both waves and for both of the structures the Rossby mode
+//! is fitted on. The shape error is the sharper of the two because a scale
+//! responds only to the part of a departure that is not orthogonal to it, while
+//! the shape error sees the whole of it.
 //!
 //! [ADR-0003]: ../../docs/planning/adr/0003-numerical-scheme.md
 
@@ -243,102 +239,102 @@ enum Wave {
     GravestRossby,
 }
 
-impl Wave {
-    /// Zonal extent of this wave's basin, in metres.
-    ///
-    /// 20 000 km for the Kelvin pulse — the order of the equatorial Pacific's
-    /// width (`CONTEXT.md`, *Basin*) — and half again as much for the Rossby
-    /// packet, which is nearly twice as wide. Both leave the packet four of its
-    /// own widths clear of each zonal wall for the whole flight, so no boundary
-    /// takes part in what is measured: this is a validation of the *interior*
-    /// wave, and the boundaries' own physics is the subject of T-04.3 and
-    /// T-04.4.
-    const fn basin_lx_m(self) -> f64 {
-        match self {
-            Self::Kelvin => 2.0e7,
-            Self::GravestRossby => 3.2e7,
-        }
-    }
-
-    /// Cell width of this wave's coarse run, in metres.
-    ///
-    /// Seven cells to a Kelvin pulse width and eleven to a Rossby packet width,
-    /// which is what the `(Δx/σ)²/4` entry of the budget costs.
-    const fn coarse_cell_width_m(self) -> f64 {
-        match self {
-            Self::Kelvin => 2.0e5,
-            Self::GravestRossby => 2.5e5,
-        }
-    }
-
-    /// Cell height of this wave's coarse run, in metres.
-    ///
-    /// The dominant term of every budget in this file is `(2m+1)·(Δy/Le)²`, and
-    /// the Rossby mode's `2m+1` is five where the Kelvin wave's is one. The
-    /// Rossby run therefore resolves the waveguide twice as finely — fourteen
-    /// cells to a deformation radius against seven — so that the two waves are
-    /// held to budgets of the same order rather than the Rossby fit being
-    /// admitted five times as much error for the same physics.
-    const fn coarse_cell_height_m(self) -> f64 {
-        match self {
-            Self::Kelvin => 5.0e4,
-            Self::GravestRossby => 2.5e4,
-        }
-    }
-
-    /// Zonal e-folding half-width `σ` of this wave's packet, in metres.
-    ///
-    /// 1500 km for the Kelvin pulse, 4.3 `Le`: the Kelvin branch is an exact
-    /// solution at every wavenumber, so nothing constrains this from below but
-    /// the zonal truncation term, which grows as `σ⁻²`. 2800 km for the Rossby
-    /// packet, 8.1 `Le`, because that mode's initial condition is the long-wave
-    /// one and its stray-energy term grows as `σ⁻²` too but from a much larger
-    /// coefficient. What constrains both from above is the basin: four widths
-    /// of clearance at each wall, and the flight between them.
-    const fn packet_width_m(self) -> f64 {
-        match self {
-            Self::Kelvin => 1.5e6,
-            Self::GravestRossby => 2.8e6,
-        }
-    }
-
-    /// Zonal position of this wave's packet at `t = 0`, in metres east of the
+/// The configuration one wave's runs are built from.
+///
+/// Basin, packet, flight and speed differ between the two waves and nothing
+/// else does, so they are one table per wave rather than one `match` per
+/// number: the seven values that have to be read together to see whether a run
+/// fits in its basin then sit together.
+struct WaveSetup {
+    /// Zonal extent of the basin, in metres.
+    basin_lx_m: f64,
+    /// Cell width of the coarse run, in metres.
+    coarse_cell_width_m: f64,
+    /// Cell height of the coarse run, in metres.
+    coarse_cell_height_m: f64,
+    /// Zonal e-folding half-width `σ` of the packet's Gaussian envelope, in
+    /// metres.
+    packet_width_m: f64,
+    /// Zonal position of the packet's centre at `t = 0`, in metres east of the
     /// western wall.
-    ///
-    /// Four packet widths from the wall the wave travels away from — the west
-    /// for the eastward Kelvin pulse, the east for the westward Rossby packet —
-    /// so that wall sees `e^{−8} = 3×10⁻⁴` of the packet's amplitude and the run
-    /// starts with an undisturbed boundary.
-    const fn packet_centre_x_m(self) -> f64 {
-        match self {
-            Self::Kelvin => 6.0e6,
-            Self::GravestRossby => 2.08e7,
-        }
-    }
+    packet_centre_x_m: f64,
+    /// The wave's zonal speed, as a signed multiple of `c` — eastward positive.
+    speed_in_c: f64,
+    /// How far the packet travels before its profile is read, in its own
+    /// widths.
+    flight_in_widths: f64,
+    /// The wave's name, for the message an assertion fails with.
+    name: &'static str,
+}
 
-    /// This wave's zonal speed, as a signed multiple of `c`.
-    ///
-    /// `+1` for the Kelvin wave and `−1/3` for the gravest Rossby mode
-    /// (`CONTEXT.md`), the two speeds T-07.1 and T-07.2 measured. Here they are
-    /// used only to turn a flight stated in packet widths into a duration.
-    fn speed_in_c(self) -> f64 {
-        match self {
-            Self::Kelvin => 1.0,
-            Self::GravestRossby => -1.0 / MeridionalStructure::Second.truncation_richness(),
-        }
-    }
+/// The Kelvin pulse's runs.
+const KELVIN_SETUP: WaveSetup = WaveSetup {
+    // 20 000 km, the order of the equatorial Pacific's width (`CONTEXT.md`,
+    // *Basin*). The pulse starts four of its own widths from the western wall
+    // and ends the flight four short of the eastern one, so no boundary takes
+    // part in what is measured: this is a validation of the *interior* wave,
+    // and the boundaries' own physics is the subject of T-04.3 and T-04.4.
+    basin_lx_m: 2.0e7,
+    // Seven cells to a pulse width, which is what the `(Δx/σ)²/4` entry of the
+    // budget costs.
+    coarse_cell_width_m: 2.0e5,
+    // Seven cells to a deformation radius, which is what the `(Δy/Le)²` entry
+    // costs — the dominant term of this wave's budget.
+    coarse_cell_height_m: 5.0e4,
+    // 1500 km, 4.3 `Le`. The Kelvin branch is an exact solution at every
+    // wavenumber, so nothing constrains this from below but the zonal
+    // truncation term, which grows as `σ⁻²`; what constrains it from above is
+    // the basin's room for the clearances and the flight.
+    packet_width_m: 1.5e6,
+    // Four widths from the western wall, which the eastward pulse travels away
+    // from, so that wall sees `e^{−8} = 3×10⁻⁴` of the pulse and the run starts
+    // with an undisturbed boundary.
+    packet_centre_x_m: 6.0e6,
+    // Eastward at `c` (`CONTEXT.md`, *Kelvin wave*), the speed T-07.1 measured.
+    speed_in_c: 1.0,
+    // Five widths, which leaves the pulse four short of the eastern wall. Long
+    // enough that the meridional error the budget bounds has had the whole
+    // flight to accumulate — reading the profile at `t = 0` would measure the
+    // fit and not the solver.
+    flight_in_widths: 5.0,
+    name: "Kelvin pulse",
+};
 
-    /// How far the packet travels before its profile is read, in its own widths.
-    ///
-    /// Five for the Kelvin pulse and two for the Rossby packet, which is what
-    /// each wave's basin has room for once both walls keep their four widths of
-    /// clearance. Long enough in both cases that the meridional error the
-    /// budget bounds has had the whole flight to accumulate — reading the
-    /// profile at `t = 0` would measure the fit and not the solver.
-    const fn flight_in_widths(self) -> f64 {
+/// The gravest Rossby packet's runs.
+const GRAVEST_ROSSBY_SETUP: WaveSetup = WaveSetup {
+    // 32 000 km — half again the Kelvin basin, for a packet nearly twice as
+    // wide and the same four widths of clearance at each wall.
+    basin_lx_m: 3.2e7,
+    // Eleven cells to a packet width.
+    coarse_cell_width_m: 2.5e5,
+    // Fourteen cells to a deformation radius, twice the Kelvin run's. The
+    // dominant term of every budget here is `(2m+1)·(Δy/Le)²` and this mode's
+    // `2m+1` is five where the Kelvin wave's is one, so resolving the waveguide
+    // twice as finely is what holds the two waves to budgets of the same order
+    // rather than admitting this fit five times the error for the same physics.
+    coarse_cell_height_m: 2.5e4,
+    // 2800 km, 8.1 `Le`. Wider than the Kelvin pulse because this mode's
+    // initial condition is the long-wave one, whose stray-energy term also goes
+    // as `σ⁻²` but from a much larger coefficient.
+    packet_width_m: 2.8e6,
+    // Four widths from the eastern wall, which the westward packet travels away
+    // from.
+    packet_centre_x_m: 2.08e7,
+    // Westward at `c/3` (`CONTEXT.md`, *Rossby wave*), the speed T-07.2
+    // measured: the long-wave root of `ω̂³ − (k̂² + 3)·ω̂ − k̂ = 0` is
+    // `ω̂ = −k̂/(2n+1)`, which is `−k̂/3` for the gravest meridional mode.
+    speed_in_c: -1.0 / 3.0,
+    // Two widths, which leaves the packet 5.4 short of the western wall.
+    flight_in_widths: 2.0,
+    name: "gravest Rossby packet",
+};
+
+impl Wave {
+    /// The table this wave's runs are built from.
+    const fn setup(self) -> &'static WaveSetup {
         match self {
-            Self::Kelvin => 5.0,
-            Self::GravestRossby => 2.0,
+            Self::Kelvin => &KELVIN_SETUP,
+            Self::GravestRossby => &GRAVEST_ROSSBY_SETUP,
         }
     }
 
@@ -381,14 +377,6 @@ impl Wave {
             Self::GravestRossby => MeridionalStructure::Second,
         }
     }
-
-    /// This wave's name, for the message an assertion fails with.
-    const fn name(self) -> &'static str {
-        match self {
-            Self::Kelvin => "Kelvin pulse",
-            Self::GravestRossby => "gravest Rossby packet",
-        }
-    }
 }
 
 /// One decay-scale experiment: a wave, in an ocean, in a basin at some
@@ -418,10 +406,10 @@ impl Experiment {
     /// The experiment carrying `wave` in `params`' ocean, at `1/refinement` of
     /// that wave's coarse cell size.
     fn new(wave: Wave, params: PhysicalParams, refinement: usize) -> Self {
-        let cell_width_m = wave.coarse_cell_width_m() / refinement as f64;
-        let cell_height_m = wave.coarse_cell_height_m() / refinement as f64;
+        let cell_width_m = wave.setup().coarse_cell_width_m / refinement as f64;
+        let cell_height_m = wave.setup().coarse_cell_height_m / refinement as f64;
         let grid = Grid::new(
-            (wave.basin_lx_m() / cell_width_m).round() as usize,
+            (wave.setup().basin_lx_m / cell_width_m).round() as usize,
             (BASIN_LY_M / cell_height_m).round() as usize,
         )
         .expect("the basin has cells on both axes");
@@ -444,16 +432,16 @@ impl Experiment {
     fn packet(self) -> Packet {
         Packet {
             amplitude_m: PACKET_AMPLITUDE_M,
-            centre_x_m: self.wave.packet_centre_x_m(),
-            width_m: self.wave.packet_width_m(),
+            centre_x_m: self.wave.setup().packet_centre_x_m,
+            width_m: self.wave.setup().packet_width_m,
         }
     }
 
     /// How long the run integrates for, in seconds: the flight of
     /// [`Wave::flight_in_widths`] packet widths at this wave's own zonal speed.
     fn flight_time_s(self) -> f64 {
-        self.wave.flight_in_widths() * self.wave.packet_width_m()
-            / (self.wave.speed_in_c() * self.wave_speed_m_per_s).abs()
+        self.wave.setup().flight_in_widths * self.wave.setup().packet_width_m
+            / (self.wave.setup().speed_in_c * self.wave_speed_m_per_s).abs()
     }
 
     /// `(2m+1)·(Δy/Le)²`: the second-order meridional truncation of the
@@ -469,7 +457,7 @@ impl Experiment {
 
     /// `(Δx/σ)²/4`: the zonal truncation, as a fraction.
     fn zonal_truncation(self) -> f64 {
-        let cell_in_widths = self.basin.spacing().dx_m() / self.wave.packet_width_m();
+        let cell_in_widths = self.basin.spacing().dx_m() / self.wave.setup().packet_width_m;
         0.25 * cell_in_widths * cell_in_widths
     }
 
@@ -485,7 +473,7 @@ impl Experiment {
         match self.wave {
             Wave::Kelvin => 0.0,
             Wave::GravestRossby => {
-                let width_in_radii = self.wave.packet_width_m() / self.deformation_radius_m;
+                let width_in_radii = self.wave.setup().packet_width_m / self.deformation_radius_m;
                 0.5 / (width_in_radii * width_in_radii)
             }
         }
@@ -570,57 +558,50 @@ impl Experiment {
         )
     }
 
-    /// The trapping scale, in metres, the flight's `structure` profile is best
-    /// fitted by — the measurement this ticket is about.
-    fn fitted_scale_m(
+    /// Fit the flight's `structure` profile: the measurement this ticket is
+    /// about, and the goodness of it.
+    ///
+    /// One entry point rather than one per number the tests read, so that the
+    /// golden-section search runs once per profile and the scale an assertion
+    /// reports is the same scale the shape error was measured at.
+    fn fit(
         self,
         flight: &Flight,
         invariant: Invariant,
         structure: MeridionalStructure,
-    ) -> f64 {
-        support::fitted_trapping_scale_m(
+    ) -> ScaleFit {
+        let profile = flight.profile(invariant);
+        let scale_m = support::fitted_trapping_scale_m(
             &flight.row_y_m,
-            flight.profile(invariant),
+            profile,
             structure,
             self.scale_bracket_m(),
-        )
+        );
+        let explained = support::shape_correlation(&flight.row_y_m, profile, structure, scale_m);
+        ScaleFit {
+            scale_m,
+            scale_error: (scale_m - self.deformation_radius_m).abs() / self.deformation_radius_m,
+            shape_error: (1.0 - explained).max(0.0).sqrt(),
+        }
     }
+}
 
+/// What fitting one profile yields.
+#[derive(Debug, Clone, Copy)]
+struct ScaleFit {
+    /// The trapping scale, in metres, the profile is best fitted by.
+    scale_m: f64,
     /// How far that scale sits from `Le = √(c/β)`, as a fraction of `Le`.
-    fn scale_error(
-        self,
-        flight: &Flight,
-        invariant: Invariant,
-        structure: MeridionalStructure,
-    ) -> f64 {
-        (self.fitted_scale_m(flight, invariant, structure) - self.deformation_radius_m).abs()
-            / self.deformation_radius_m
-    }
-
-    /// How far the profile departs from `ψₘ` at its own best-fitting scale, as
-    /// a relative amplitude.
+    scale_error: f64,
+    /// How far the profile departs from `ψₘ` at that scale, as a relative
+    /// amplitude.
     ///
     /// `√(1 − ρ)`: the correlation `ρ` is the fraction of the profile's energy
     /// the fitted shape explains, so `1 − ρ` is the energy in the departure and
     /// its square root is that departure's amplitude. This is the `ε` the
     /// module header's budget is a budget on, measured directly rather than
     /// through the fitted scale's response to it.
-    fn shape_error(
-        self,
-        flight: &Flight,
-        invariant: Invariant,
-        structure: MeridionalStructure,
-    ) -> f64 {
-        let fitted_m = self.fitted_scale_m(flight, invariant, structure);
-        (1.0 - support::shape_correlation(
-            &flight.row_y_m,
-            flight.profile(invariant),
-            structure,
-            fitted_m,
-        ))
-        .max(0.0)
-        .sqrt()
-    }
+    shape_error: f64,
 }
 
 /// What one run leaves for the tests to read: the meridional profile of each
@@ -657,9 +638,10 @@ fn assert_trapped_on_the_deformation_radius(
     invariant: Invariant,
     structure: MeridionalStructure,
 ) {
-    let fitted_m = experiment.fitted_scale_m(flight, invariant, structure);
+    let fit = experiment.fit(flight, invariant, structure);
+    let fitted_m = fit.scale_m;
     let expected_m = experiment.deformation_radius_m;
-    let error = experiment.scale_error(flight, invariant, structure);
+    let error = fit.scale_error;
     let tolerance = experiment.scale_tolerance();
     let cells = experiment.basin.grid();
 
@@ -670,7 +652,7 @@ fn assert_trapped_on_the_deformation_radius(
          {:.2}%",
         cells.nx(),
         cells.ny(),
-        experiment.wave.name(),
+        experiment.wave.setup().name,
         100.0 * error,
         100.0 * tolerance
     );
@@ -679,52 +661,21 @@ fn assert_trapped_on_the_deformation_radius(
     // `O(ε)` and leaves `ε²` of the profile's energy unexplained (module
     // header), so the same budget, already assembled as an amplitude, bounds
     // the departure directly — not a second tolerance.
-    let shape_error = experiment.shape_error(flight, invariant, structure);
     assert!(
-        shape_error <= tolerance,
+        fit.shape_error <= tolerance,
         "at its best-fitting scale the {} profile still departed from ψ{} by {:.3}% of its own \
          amplitude, past the {:.3}% the same truncation budget allows: the profile is not that \
          shape, so the scale fitted to it does not mean what it says",
-        experiment.wave.name(),
+        experiment.wave.setup().name,
         structure.hermite_order(),
-        100.0 * shape_error,
+        100.0 * fit.shape_error,
         100.0 * tolerance
     );
 }
 
-/// The Pacific Kelvin flight at the coarse resolution, integrated once and
-/// shared.
-///
-/// Several tests read several different things out of one flight, which is both
-/// cheaper than a run each and stronger: every assertion is then made about the
-/// same wave.
-fn coarse_kelvin_flight() -> &'static Flight {
-    static FLIGHT: OnceLock<Flight> = OnceLock::new();
-    FLIGHT.get_or_init(|| coarse_kelvin().run())
-}
-
-/// The same flight with both cell dimensions refined by [`FINE_REFINEMENT`] —
-/// the second resolution the acceptance criterion asks for.
-fn fine_kelvin_flight() -> &'static Flight {
-    static FLIGHT: OnceLock<Flight> = OnceLock::new();
-    FLIGHT.get_or_init(|| fine_kelvin().run())
-}
-
-/// The Pacific Rossby flight at the coarse resolution.
-fn coarse_rossby_flight() -> &'static Flight {
-    static FLIGHT: OnceLock<Flight> = OnceLock::new();
-    FLIGHT.get_or_init(|| Experiment::new(Wave::GravestRossby, pacific(), COARSE_REFINEMENT).run())
-}
-
-/// The same, refined by [`FINE_REFINEMENT`].
-fn fine_rossby_flight() -> &'static Flight {
-    static FLIGHT: OnceLock<Flight> = OnceLock::new();
-    FLIGHT.get_or_init(|| Experiment::new(Wave::GravestRossby, pacific(), FINE_REFINEMENT).run())
-}
-
 /// The equatorial-Pacific ocean of `CONTEXT.md`, `Le = 345 km`.
 fn pacific() -> PhysicalParams {
-    params_with_reduced_gravity_and_beta(PACIFIC_REDUCED_GRAVITY_M_PER_S2, BETA_PER_M_PER_S)
+    support::pacific_params()
 }
 
 /// The same ocean with `g'` quadrupled: `c` doubled, `Le = 488 km`.
@@ -740,35 +691,39 @@ fn strongly_rotating_ocean() -> PhysicalParams {
     )
 }
 
-/// The coarse Pacific Kelvin experiment.
-fn coarse_kelvin() -> Experiment {
-    Experiment::new(Wave::Kelvin, pacific(), COARSE_REFINEMENT)
+/// One Pacific experiment, at the resolution named.
+fn pacific_experiment(wave: Wave, refinement: usize) -> Experiment {
+    Experiment::new(wave, pacific(), refinement)
 }
 
-/// The fine Pacific Kelvin experiment.
-fn fine_kelvin() -> Experiment {
-    Experiment::new(Wave::Kelvin, pacific(), FINE_REFINEMENT)
+/// The four Pacific flights — two waves at two resolutions — each integrated
+/// once and shared.
+///
+/// Several tests read several different things out of one flight, which is both
+/// cheaper than a run each and stronger: every assertion about a wave is then
+/// made about the same wave.
+fn pacific_flight(wave: Wave, refinement: usize) -> &'static Flight {
+    static FLIGHTS: [[OnceLock<Flight>; 2]; 2] = [
+        [OnceLock::new(), OnceLock::new()],
+        [OnceLock::new(), OnceLock::new()],
+    ];
+    let wave_index = match wave {
+        Wave::Kelvin => 0,
+        Wave::GravestRossby => 1,
+    };
+    let resolution_index = usize::from(refinement == FINE_REFINEMENT);
+    FLIGHTS[wave_index][resolution_index].get_or_init(|| pacific_experiment(wave, refinement).run())
 }
 
-/// The two resolutions of each wave, coarse first — the pairs the acceptance
-/// criterion is asserted over.
+/// The two resolutions of one wave, coarse first — the pair every point check
+/// is asserted over and every rate is read from.
 fn resolutions(wave: Wave) -> [(Experiment, &'static Flight); 2] {
-    match wave {
-        Wave::Kelvin => [
-            (coarse_kelvin(), coarse_kelvin_flight()),
-            (fine_kelvin(), fine_kelvin_flight()),
-        ],
-        Wave::GravestRossby => [
-            (
-                Experiment::new(Wave::GravestRossby, pacific(), COARSE_REFINEMENT),
-                coarse_rossby_flight(),
-            ),
-            (
-                Experiment::new(Wave::GravestRossby, pacific(), FINE_REFINEMENT),
-                fine_rossby_flight(),
-            ),
-        ],
-    }
+    [COARSE_REFINEMENT, FINE_REFINEMENT].map(|refinement| {
+        (
+            pacific_experiment(wave, refinement),
+            pacific_flight(wave, refinement),
+        )
+    })
 }
 
 #[test]
@@ -818,43 +773,25 @@ fn the_rossby_packets_off_equatorial_lobes_sit_on_the_same_radius() {
 fn the_fitted_decay_scale_converges_at_the_schemes_second_order() {
     // CODING_STANDARDS.md § *Convergence over point checks*: the point checks
     // above are bounds, and a bound is passed by an error of any size below it.
-    // What ties the error to the discretisation is its rate. Both terms of the
-    // Kelvin budget are second order in the cell size (module header) and both
-    // cell dimensions are halved, so the error must fall by about four.
-    //
-    // The Kelvin wave, and not both waves, because it is the wave whose *scale*
-    // has to absorb the whole shape error: it is `ψ₀` of the eastward invariant
-    // and identically nothing else, so a departure from that shape has nowhere
-    // else to go. The Rossby mode is built from two structures with a free
-    // amplitude between them, and a departure of the `ψ₀` profile that looks
-    // like `ψ₂` — the shape most of the truncation makes — is absorbed by that
-    // amplitude rather than by the scale. Its rate is read where it does live,
-    // in [`the_meridional_shape_error_converges_at_the_schemes_second_order`],
-    // which measures the same quantity for both waves.
-    let (invariant, structure) = Wave::Kelvin.gravest_signature();
-    let [(coarse, coarse_flight), (fine, fine_flight)] = resolutions(Wave::Kelvin);
-
-    let coarse_error = coarse.scale_error(coarse_flight, invariant, structure);
-    let fine_error = fine.scale_error(fine_flight, invariant, structure);
-    assert!(
-        fine_error > 0.0,
-        "the fine run reproduced Le to the last bit, so there is no error left to measure a rate \
-         on: what this run reads is the measurement's floor and not the scheme's order"
-    );
-    let order = (coarse_error / fine_error).log2();
-
-    // Bounded on both sides: too small an order is a scheme that is not second
-    // order, and too large a one is a fine error that is no longer the
-    // truncation — either way the point check's budget has stopped describing
-    // what the run does.
-    assert!(
-        (MIN_CONVERGENCE_ORDER..=MAX_CONVERGENCE_ORDER).contains(&order),
-        "refining the cells by {FINE_REFINEMENT} took the Kelvin pulse's fitted decay scale from \
-         {:.4}% off Le to {:.4}% off it, a convergence order of {order:.2}: outside the \
-         [{MIN_CONVERGENCE_ORDER}, {MAX_CONVERGENCE_ORDER}] a second-order scheme owes",
-        100.0 * coarse_error,
-        100.0 * fine_error
-    );
+    // What ties the error to the discretisation is its rate. Both truncation
+    // terms of every budget here are second order in the cell size (module
+    // header) and both cell dimensions are halved, so the error must fall by
+    // about four — for both waves, and for both of the structures the Rossby
+    // mode is fitted on.
+    for wave in [Wave::Kelvin, Wave::GravestRossby] {
+        for (invariant, structure) in wave.signatures() {
+            let [(coarse, coarse_flight), (fine, fine_flight)] = resolutions(wave);
+            let coarse_error = coarse.fit(coarse_flight, invariant, structure).scale_error;
+            let fine_error = fine.fit(fine_flight, invariant, structure).scale_error;
+            assert_second_order(
+                wave,
+                structure,
+                "fitted decay scale",
+                coarse_error,
+                fine_error,
+            );
+        }
+    }
 }
 
 #[test]
@@ -862,42 +799,62 @@ fn the_meridional_shape_error_converges_at_the_schemes_second_order() {
     // The same rate, read on the quantity every budget in this file is a budget
     // on: `ε`, the amplitude by which a run's meridional profile departs from
     // the `ψₘ` the theory says it is. The dominant entry bounds that departure
-    // at `(2m+1)·(Δy/Le)²`, so if the budget describes what the scheme does,
-    // halving both cell dimensions must quarter it — for every profile the
-    // suite fits, both waves and both structures.
+    // at `(2m+1)·(Δy/Le)²`, so if the budget describes what the scheme does and
+    // not merely what it is allowed, halving both cell dimensions must quarter
+    // it.
     //
-    // It is the sharper of the two rate tests as well as the more general one:
-    // a fitted scale responds only to the part of a departure that is not
-    // orthogonal to it, whereas this sees the whole departure.
+    // It is the sharper of the two rate tests: a fitted scale responds only to
+    // the part of a departure that is not orthogonal to it, whereas this sees
+    // the whole departure.
     for wave in [Wave::Kelvin, Wave::GravestRossby] {
         for (invariant, structure) in wave.signatures() {
             let [(coarse, coarse_flight), (fine, fine_flight)] = resolutions(wave);
-
-            let coarse_error = coarse.shape_error(coarse_flight, invariant, structure);
-            let fine_error = fine.shape_error(fine_flight, invariant, structure);
-            assert!(
-                fine_error > 0.0,
-                "the fine {} run reproduced ψ{} exactly, so there is no departure left to measure \
-                 a rate on: what this run reads is the measurement's floor and not the scheme's \
-                 order",
-                wave.name(),
-                structure.hermite_order()
-            );
-            let order = (coarse_error / fine_error).log2();
-
-            assert!(
-                (MIN_CONVERGENCE_ORDER..=MAX_CONVERGENCE_ORDER).contains(&order),
-                "refining the cells by {FINE_REFINEMENT} took the {}'s departure from ψ{} from \
-                 {:.4}% to {:.4}% of its own amplitude, a convergence order of {order:.2}: \
-                 outside the [{MIN_CONVERGENCE_ORDER}, {MAX_CONVERGENCE_ORDER}] a second-order \
-                 scheme owes",
-                wave.name(),
-                structure.hermite_order(),
-                100.0 * coarse_error,
-                100.0 * fine_error
+            let coarse_error = coarse.fit(coarse_flight, invariant, structure).shape_error;
+            let fine_error = fine.fit(fine_flight, invariant, structure).shape_error;
+            assert_second_order(
+                wave,
+                structure,
+                "departure from ψₘ",
+                coarse_error,
+                fine_error,
             );
         }
     }
+}
+
+/// Assert that halving both cell dimensions took `quantity`'s error from
+/// `coarse_error` to `fine_error` at the scheme's second order.
+///
+/// Bounded on both sides: too small an order is a scheme that is not second
+/// order, and too large a one is a fine error that is no longer the truncation
+/// — two terms of the budget cancelling by accident, or the measurement's own
+/// floor — and the ratio is then a coincidence rather than a rate. Either way
+/// the point checks' budget has stopped describing what the run does.
+fn assert_second_order(
+    wave: Wave,
+    structure: MeridionalStructure,
+    quantity: &str,
+    coarse_error: f64,
+    fine_error: f64,
+) {
+    assert!(
+        fine_error > 0.0,
+        "the fine {} run reproduced ψ{} exactly, so there is no {quantity} error left to measure \
+         a rate on: what this run reads is the measurement's floor and not the scheme's order",
+        wave.setup().name,
+        structure.hermite_order()
+    );
+    let order = (coarse_error / fine_error).log2();
+    assert!(
+        (MIN_CONVERGENCE_ORDER..=MAX_CONVERGENCE_ORDER).contains(&order),
+        "refining the cells by {FINE_REFINEMENT} took the {}'s {quantity}, read on ψ{}, from \
+         {:.4}% to {:.4}%, a convergence order of {order:.2}: outside the \
+         [{MIN_CONVERGENCE_ORDER}, {MAX_CONVERGENCE_ORDER}] a second-order scheme owes",
+        wave.setup().name,
+        structure.hermite_order(),
+        100.0 * coarse_error,
+        100.0 * fine_error
+    );
 }
 
 #[test]
@@ -929,7 +886,7 @@ fn the_decay_scale_follows_le_across_oceans() {
         let (invariant, structure) = Wave::Kelvin.gravest_signature();
         assert_trapped_on_the_deformation_radius(experiment, &flight, invariant, structure);
 
-        let fitted_m = experiment.fitted_scale_m(&flight, invariant, structure);
+        let fitted_m = experiment.fit(&flight, invariant, structure).scale_m;
         let own_m = experiment.deformation_radius_m;
         for (other, other_m) in radii_m.iter().enumerate() {
             if other == index {
