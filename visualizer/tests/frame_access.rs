@@ -28,13 +28,12 @@ mod common;
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use common::{encoded_frames_with_h, header_on, steady_trades_header, FRAME_INTERVAL_S, PACIFIC};
+use common::{
+    encoded_frames_with_h, header_on, steady_trades_header, FRAME_INTERVAL_S, PACIFIC,
+    STEADY_TRADES_FRAMES as FRAMES,
+};
 use termocline_format::{GridSpec, RunHeader, Variable};
-use visualizer::{LoadedRun, RunBytes};
-
-/// Frames `steady-trades.toml` writes: 17 520 / 24 = 730 daily frames, plus
-/// the one at t = 0.
-const FRAMES: u64 = 731;
+use visualizer::{Heatmap, LoadedRun, RunBytes};
 
 /// The run the timing is taken on is long, so its basin is small: what makes a
 /// drag slow is how many frames stand before the one asked for, and a frame of
@@ -150,5 +149,44 @@ fn reaching_the_last_frame_costs_what_reaching_the_first_costs() {
         last <= first * RATIO_BOUND,
         "the last of {FRAMES} frames took {last:?} against the first frame's {first:?}: \
          reaching a frame still costs more the further into the run it is",
+    );
+}
+
+/// Below this, a response to a direct manipulation feels instantaneous rather
+/// than laggy: 0.1 s, the first of Nielsen's three response-time limits
+/// (Nielsen, *Usability Engineering*, 1993, ch. 5, after Miller 1968). The
+/// acceptance criterion's "no perceptible lag" is that limit.
+const PERCEPTIBLE_LAG: Duration = Duration::from_millis(100);
+
+/// Frames of the scenario's own 320 × 100 basin a test can afford: each is
+/// about 1.3 MB decoded.
+const SCENARIO_GRID_FRAMES: u64 = 8;
+
+#[test]
+fn a_frame_of_the_scenario_basin_is_fetched_and_coloured_inside_that_limit() {
+    let header = steady_trades_header(SCENARIO_GRID_FRAMES);
+    let run = run_of(&header, SCENARIO_GRID_FRAMES);
+    let scale = run.anomaly_scale();
+    // What a drag does for each frame it lands on, bar the texture upload,
+    // which needs a GPU: fetch the frame, and colour-map the basin.
+    let shortest = (0..8)
+        .map(|_| {
+            let start = Instant::now();
+            let frame = black_box(run.frame(SCENARIO_GRID_FRAMES - 1)).expect("the last frame");
+            let heatmap = Heatmap::of_frame(header.grid, &frame, scale).expect("it fits the grid");
+            black_box(heatmap);
+            start.elapsed()
+        })
+        .min()
+        .expect("at least one sample");
+
+    // The shortest sample, for the same reason as above: what the bound is
+    // about is the work, and the bound sits far enough above it — the work is
+    // one decode and one colour-map of 32 000 cells — that scheduling noise
+    // does not decide the test.
+    assert!(
+        shortest <= PERCEPTIBLE_LAG,
+        "a frame of the scenario basin took {shortest:?}, past the {PERCEPTIBLE_LAG:?} \
+         under which a drag feels instantaneous",
     );
 }

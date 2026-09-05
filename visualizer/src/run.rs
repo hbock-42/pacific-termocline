@@ -11,7 +11,7 @@ use std::cell::Cell;
 use std::fmt;
 use std::io::Read;
 
-use termocline_format::{frame_encoding, Frame, RunHeader, RunReadError, RunReader};
+use termocline_format::{decode_frame, Frame, RunHeader, RunReadError, RunReader};
 
 use crate::DivergingScale;
 
@@ -176,16 +176,16 @@ impl LoadedRun {
     /// itself (ADR-0006), and the shell caches the one map it is drawing.
     ///
     /// # Panics
-    /// If a frame this run already decoded at load does not decode again. That
-    /// is not bad input — [`LoadedRun::from_bytes`] refused bad input — but
-    /// this code disagreeing with itself.
+    /// If a frame this run already decoded at load does not decode against the
+    /// run's own grid again — which is what a wrong offset would look like.
+    /// That is not bad input — [`LoadedRun::from_bytes`] refused bad input —
+    /// but this code disagreeing with itself.
     #[must_use]
     pub fn frame(&self, index: u64) -> Option<Frame> {
         let index = usize::try_from(index).ok()?;
         let offset = *self.frame_offsets.get(index)?;
-        let (frame, _bytes) =
-            bincode::serde::decode_from_slice::<Frame, _>(&self.frames[offset..], frame_encoding())
-                .expect("every frame decoded at load");
+        let (frame, _length) = decode_frame(&self.frames[offset..], &self.header.grid)
+            .expect("every frame decoded, and fitted the grid, at load");
         Some(frame)
     }
 
@@ -273,7 +273,10 @@ impl LoadedRun {
 /// The reader is forward-only and says nothing about where it has got to, so
 /// this is how the offset of each frame is learned while the frames are being
 /// walked at load anyway: read the counter between frames, and the difference
-/// is the frame that just went past.
+/// is the frame that just went past. An offset that came out wrong would not
+/// pass silently — the frame decoded at it is held to the run's grid
+/// (`termocline_format::decode_frame`), and `tests/frame_access.rs` reads the
+/// run back frame for frame.
 struct Counting<'a, R: Read> {
     /// The bytes themselves.
     inner: R,

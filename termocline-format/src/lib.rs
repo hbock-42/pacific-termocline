@@ -47,7 +47,7 @@ mod variable;
 pub use error::FormatError;
 pub use frame::Frame;
 pub use header::{BasinExtent, GridSpec, OutputTiming, PhysicalParams, RunHeader};
-pub use reader::{RunReadError, RunReader};
+pub use reader::{decode_frame, RunReadError, RunReader};
 pub use variable::{Variable, VariableSpec};
 
 /// Version of the on-disk format, written into every run's header so a reader

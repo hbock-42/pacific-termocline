@@ -160,7 +160,11 @@ impl VisualizerApp {
     }
 
     /// The bar of run-loading affordances.
-    fn draw_controls(&mut self, ui: &mut egui::Ui) {
+    ///
+    /// Returns whether the run-URL field has the keyboard. It is the one thing
+    /// in the shell that a keystroke means something different to, so it is
+    /// what decides whether the scrubber's keys are the scrubber's to take.
+    fn draw_controls(&mut self, ui: &mut egui::Ui) -> bool {
         ui.horizontal(|ui| {
             #[cfg(not(target_arch = "wasm32"))]
             if ui.button("Open run directory…").clicked() {
@@ -179,7 +183,9 @@ impl VisualizerApp {
                 let (url, ctx) = (self.run_url.clone(), ui.ctx().clone());
                 self.fetch_run(&url, &ctx);
             }
-        });
+            url.has_focus()
+        })
+        .inner
     }
 }
 
@@ -206,12 +212,16 @@ impl eframe::App for VisualizerApp {
         self.absorb_finished_loads();
         self.absorb_dropped_files(ctx);
 
-        egui::TopBottomPanel::top("controls").show(ctx, |ui| {
-            ui.add_space(4.0);
-            ui.heading(crate::APP_NAME);
-            self.draw_controls(ui);
-            ui.add_space(4.0);
-        });
+        let url_has_keyboard = egui::TopBottomPanel::top("controls")
+            .show(ctx, |ui| {
+                ui.add_space(4.0);
+                ui.heading(crate::APP_NAME);
+                let url_has_keyboard = self.draw_controls(ui);
+                ui.add_space(4.0);
+                url_has_keyboard
+            })
+            .inner;
+        let keyboard_free = !url_has_keyboard;
 
         // Disjoint borrows: the panel reads the run while the map it draws
         // caches a texture of one of its frames.
@@ -239,7 +249,7 @@ impl eframe::App for VisualizerApp {
                 ui.separator();
                 draw_instructions(ui, pending);
             }
-            Shown::Run(run) => draw_run(ui, run, basin_map),
+            Shown::Run(run) => draw_run(ui, run, basin_map, keyboard_free),
         });
 
         if ctx.input(|input| !input.raw.hovered_files.is_empty()) {
@@ -255,7 +265,7 @@ impl eframe::App for VisualizerApp {
 }
 
 /// The metadata panel, and under it the basin map of the chosen frame.
-fn draw_run(ui: &mut egui::Ui, run: &LoadedRun, basin_map: &mut BasinMap) {
+fn draw_run(ui: &mut egui::Ui, run: &LoadedRun, basin_map: &mut BasinMap, keyboard_free: bool) {
     ui.label(RichText::new(run.source()).strong());
     ui.add_space(6.0);
     egui::Grid::new("run-metadata")
@@ -271,7 +281,7 @@ fn draw_run(ui: &mut egui::Ui, run: &LoadedRun, basin_map: &mut BasinMap) {
         });
     ui.add_space(12.0);
     ui.separator();
-    basin_map.draw(ui, run);
+    basin_map.draw(ui, run, keyboard_free);
 }
 
 /// The name and bytes of a dropped file, from whichever of the two egui fills
@@ -360,13 +370,6 @@ struct ColorBar {
     texture: egui::TextureHandle,
 }
 
-/// Frames a page key moves the chooser by.
-///
-/// Ten, against the arrow keys' one: the scenario writes a frame a day
-/// (`steady-trades.toml`), so a page is a week and a half of model time — far
-/// enough to see a change, near enough to still be reading the same event.
-const FRAMES_PER_PAGE: i64 = 10;
-
 impl BasinMap {
     /// Forget the run this was a map of.
     fn forget(&mut self) {
@@ -376,13 +379,14 @@ impl BasinMap {
     }
 
     /// Draw the frame chooser and the map of the chosen frame.
-    fn draw(&mut self, ui: &mut egui::Ui, run: &LoadedRun) {
-        self.scrubber.fit_to(run.header().output.frame_count);
-        let Some(last) = self.scrubber.last() else {
+    fn draw(&mut self, ui: &mut egui::Ui, run: &LoadedRun, keyboard_free: bool) {
+        let frame_count = run.header().output.frame_count;
+        self.scrubber.fit_to(frame_count);
+        if self.scrubber.last().is_none() {
             ui.label("This run holds no frames to draw.");
             return;
-        };
-        self.draw_scrubber(ui, last);
+        }
+        self.scrubber.draw(ui, keyboard_free);
 
         let index = self.scrubber.index();
         if self.attempt.as_ref().is_none_or(|last| last.index != index) {
@@ -400,7 +404,7 @@ impl BasinMap {
             Ok(drawn) => drawn,
             Err(message) => {
                 ui.label(
-                    RichText::new(format!("Frame {index} could not be drawn"))
+                    RichText::new(format!("Frame {} could not be drawn", index + 1))
                         .color(Color32::LIGHT_RED)
                         .strong(),
                 );
@@ -409,8 +413,11 @@ impl BasinMap {
             }
         };
 
+        // Counted from one, as the metadata panel counts the run's frames.
+        // The scrubber's own index starts at zero, and it shows no number.
         ui.label(format!(
-            "Frame {index} of {last} — thermocline depth anomaly h at {:.2} days",
+            "Frame {} of {frame_count} — thermocline depth anomaly h at {:.2} days",
+            index + 1,
             drawn.t_s / SECONDS_PER_DAY
         ));
         ui.horizontal(|ui| {
@@ -420,75 +427,7 @@ impl BasinMap {
             });
         });
         draw_texture_fitted(ui, &drawn.map);
-        let scale = run.anomaly_scale();
-        let bar = self.color_bar(ui, scale);
-        draw_color_bar(ui, bar, scale);
-    }
-
-    /// The scrubber itself: the slider, the steps either side of it, and the
-    /// keys that do the same thing without the mouse.
-    ///
-    /// Every control changes one number. What makes the frame appear is the
-    /// next repaint reading that number, so a drag, an arrow key and a jump to
-    /// the end of the run all cost exactly the same.
-    fn draw_scrubber(&mut self, ui: &mut egui::Ui, last: u64) {
-        ui.horizontal(|ui| {
-            let index = self.scrubber.index();
-            if step_button(ui, "⏮", "First frame (Home)", index > 0) {
-                self.scrubber.to_first();
-            }
-            if step_button(ui, "◀", "Back one frame (left arrow)", index > 0) {
-                self.scrubber.step(-1);
-            }
-            if step_button(ui, "▶", "On one frame (right arrow)", index < last) {
-                self.scrubber.step(1);
-            }
-            if step_button(ui, "⏭", "Last frame (End)", index < last) {
-                self.scrubber.to_last();
-            }
-            // The slider takes the whole rest of the row: it is dragged, and a
-            // frame of a long run is worth more pixels than a short slider
-            // gives it — at 731 frames a narrow one puts several frames under
-            // every pixel and none of them within reach.
-            let mut chosen = self.scrubber.index();
-            let slider = ui.add_sized(
-                egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
-                egui::Slider::new(&mut chosen, 0..=last)
-                    .integer()
-                    .show_value(false),
-            );
-            if slider.changed() {
-                self.scrubber.set_index(chosen);
-            }
-        });
-        self.take_scrubber_keys(ui.ctx());
-    }
-
-    /// Move the chooser by whatever the keyboard asked for this frame.
-    ///
-    /// Nothing is taken while a text field has the keyboard: the run URL is
-    /// typed into one, and an arrow key inside it belongs to the caret.
-    fn take_scrubber_keys(&mut self, ctx: &egui::Context) {
-        if ctx.wants_keyboard_input() {
-            return;
-        }
-        let pressed = |key| ctx.input(|input| input.key_pressed(key));
-        if pressed(egui::Key::Home) {
-            self.scrubber.to_first();
-        }
-        if pressed(egui::Key::End) {
-            self.scrubber.to_last();
-        }
-        for (key, frames) in [
-            (egui::Key::ArrowLeft, -1),
-            (egui::Key::ArrowRight, 1),
-            (egui::Key::PageUp, -FRAMES_PER_PAGE),
-            (egui::Key::PageDown, FRAMES_PER_PAGE),
-        ] {
-            if pressed(key) {
-                self.scrubber.step(frames);
-            }
-        }
+        draw_color_bar(ui, self.color_bar(ui, run.anomaly_scale()));
     }
 
     /// The run's colour bar, sampled the first time a frame of it is drawn.
@@ -529,22 +468,14 @@ impl BasinMap {
     }
 }
 
-/// One of the scrubber's step buttons: what it says, what it does when hovered
-/// over, and whether there is anywhere for it to go.
-fn step_button(ui: &mut egui::Ui, label: &str, hint: &str, enabled: bool) -> bool {
-    ui.add_enabled(enabled, egui::Button::new(label))
-        .on_hover_text(hint)
-        .clicked()
-}
-
 /// Draw the colour bar and the anomalies its ends stand for.
-fn draw_color_bar(ui: &mut egui::Ui, bar: &ColorBar, scale: DivergingScale) {
+fn draw_color_bar(ui: &mut egui::Ui, bar: &ColorBar) {
     let width = ui.available_width();
     ui.add(egui::Image::new(egui::load::SizedTexture::new(
         bar.texture.id(),
         egui::vec2(width, COLOR_BAR_HEIGHT),
     )));
-    let half_range_m = scale.half_range_m();
+    let half_range_m = bar.scale.half_range_m();
     // Negating zero would label a run at rest "-0.0 m".
     let shallow_m = if half_range_m == 0.0 {
         0.0
@@ -580,4 +511,125 @@ fn draw_texture_fitted(ui: &mut egui::Ui, texture: &egui::TextureHandle) {
         texture.id(),
         size * scale,
     )));
+}
+
+#[cfg(test)]
+mod tests {
+    //! What a drag must not do per repaint, asserted on the panel itself.
+    //!
+    //! `egui` needs no GPU to lay a panel out and no window to run in, so the
+    //! caches [`BasinMap`] keeps — the frame it already drew, and the colour
+    //! bar of the run it is drawing — are checked here by texture identity: a
+    //! rebuilt texture is a new handle, and a reused one is the same handle.
+    //!
+    //! The run is written from `termocline_format` alone, as the integration
+    //! tests write theirs (`tests/common/mod.rs`).
+
+    use termocline_format::{
+        frame_encoding, BasinExtent, Frame, GridSpec, OutputTiming, PhysicalParams, RunHeader,
+        Variable,
+    };
+
+    use super::{BasinMap, LoadedRun};
+    use crate::RunBytes;
+
+    /// A basin small enough to build in a unit test, on the extent of
+    /// `CONTEXT.md`, *Basin*.
+    fn grid() -> GridSpec {
+        GridSpec::new(4, 3, BasinExtent::new(120.0, -80.0, -25.0, 25.0))
+            .expect("a 4x3 basin is a valid grid")
+    }
+
+    /// A run of three frames whose `h` is everywhere the frame's own index, in
+    /// metres, so consecutive frames are drawn in different colours.
+    fn run() -> LoadedRun {
+        let grid = grid();
+        let header = RunHeader::new(
+            grid,
+            PhysicalParams {
+                mean_depth_m: 150.0,
+                reduced_gravity_m_per_s2: 0.06,
+                beta_per_m_per_s: 2.3e-11,
+                rayleigh_damping_per_s: 1.0e-7,
+                reference_density_kg_per_m3: 1025.0,
+            },
+            "basin-map",
+            OutputTiming {
+                frame_count: 3,
+                interval_s: 86_400.0,
+            },
+        );
+        let mut frames = Vec::new();
+        for index in 0..header.output.frame_count {
+            #[allow(clippy::cast_precision_loss)]
+            let value = index as f64;
+            let field = |variable| vec![0.0; grid.field_len(variable)];
+            let frame = Frame::new(
+                value * header.output.interval_s,
+                &grid,
+                vec![value; grid.field_len(Variable::ThermoclineDepthAnomaly)],
+                field(Variable::ZonalCurrentAnomaly),
+                field(Variable::MeridionalCurrentAnomaly),
+                field(Variable::ZonalWindStress),
+                field(Variable::MeridionalWindStress),
+            )
+            .expect("fields sized from the grid fit it");
+            frames.extend(
+                bincode::serde::encode_to_vec(&frame, frame_encoding()).expect("a frame encodes"),
+            );
+        }
+        LoadedRun::from_bytes(
+            "basin-map",
+            RunBytes {
+                header: serde_json::to_vec(&header).expect("a header serializes"),
+                frames,
+            },
+        )
+        .expect("a run written from its own header loads")
+    }
+
+    /// Repaint `map` once, and say which textures it drew the run with.
+    fn repaint(
+        ctx: &egui::Context,
+        map: &mut BasinMap,
+        run: &LoadedRun,
+    ) -> (egui::TextureId, egui::TextureId) {
+        // The full output of the pass is what a backend would paint; what is
+        // under test is which textures the panel asked for, not the pixels.
+        let _painted = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| map.draw(ui, run, true));
+        });
+        let drawn = map
+            .attempt
+            .as_ref()
+            .expect("a frame was drawn")
+            .outcome
+            .as_ref()
+            .expect("it drew");
+        let bar = map.bar.as_ref().expect("a colour bar was built");
+        (drawn.map.id(), bar.texture.id())
+    }
+
+    #[test]
+    fn repainting_the_same_frame_rebuilds_nothing() {
+        let (ctx, run) = (egui::Context::default(), run());
+        let mut map = BasinMap::default();
+        let first = repaint(&ctx, &mut map, &run);
+        assert_eq!(repaint(&ctx, &mut map, &run), first);
+    }
+
+    #[test]
+    fn choosing_another_frame_redraws_the_map_but_not_the_colour_bar() {
+        let (ctx, run) = (egui::Context::default(), run());
+        let mut map = BasinMap::default();
+        let (first_map, first_bar) = repaint(&ctx, &mut map, &run);
+        map.scrubber.set_index(2);
+        let (second_map, second_bar) = repaint(&ctx, &mut map, &run);
+        assert_ne!(
+            second_map, first_map,
+            "the map of another frame is another map"
+        );
+        // The scale is the run's, not the frame's, so the bar is the same bar.
+        assert_eq!(second_bar, first_bar);
+    }
 }

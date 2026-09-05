@@ -13,11 +13,10 @@
 //! t = 0 makes 731. What is asserted about it is the arithmetic of an index
 //! into that many frames, not anything read back off this code.
 
-use visualizer::Scrubber;
+mod common;
 
-/// Frames `steady-trades.toml` writes: 17 520 / 24 = 730 daily frames, plus
-/// the one at t = 0.
-const STEADY_TRADES_FRAMES: u64 = 731;
+use common::STEADY_TRADES_FRAMES;
+use visualizer::Scrubber;
 
 /// A scrubber over a run of `frame_count` frames, sitting where a freshly
 /// loaded run leaves it.

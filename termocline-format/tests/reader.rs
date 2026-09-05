@@ -387,3 +387,54 @@ fn a_header_promising_frames_that_are_not_there_reserves_nothing_for_them() {
         "{error:?}"
     );
 }
+
+// T-08.3: the same run read the other way round — any frame, in any order,
+// out of bytes a caller already holds whole.
+
+#[test]
+fn a_frame_decodes_from_the_start_of_a_slice_and_says_how_long_it_was() {
+    let (_, frame_bytes) = run_bytes(FRAME_COUNT);
+    let (decoded, used) =
+        termocline_format::decode_frame(&frame_bytes, &grid()).expect("the first frame decodes");
+    assert_frames_identical(0, &frame(0), &decoded);
+    // The frames were concatenated with nothing between them, so the length
+    // reported for one is where the next begins.
+    let (second, _) = termocline_format::decode_frame(&frame_bytes[used..], &grid())
+        .expect("the second frame decodes");
+    assert_frames_identical(1, &frame(1), &second);
+}
+
+#[test]
+fn the_lengths_reported_walk_the_whole_run_frame_for_frame() {
+    let (_, frame_bytes) = run_bytes(FRAME_COUNT);
+    let mut offset = 0;
+    for index in 0..FRAME_COUNT {
+        let (decoded, used) = termocline_format::decode_frame(&frame_bytes[offset..], &grid())
+            .expect("every frame of the fixture run decodes");
+        assert_frames_identical(index, &frame(index), &decoded);
+        offset += used;
+    }
+    assert_eq!(
+        offset,
+        frame_bytes.len(),
+        "the reported lengths should account for every byte of the run"
+    );
+}
+
+#[test]
+fn a_frame_decoded_off_a_grid_it_does_not_fit_is_refused_by_name() {
+    let (_, frame_bytes) = run_bytes(1);
+    let other = GridSpec::new(NX + 1, NY, BasinExtent::new(120.0, -80.0, -25.0, 25.0))
+        .expect("a 4x2 basin is a valid grid");
+    let error = termocline_format::decode_frame(&frame_bytes, &other)
+        .expect_err("the frame does not fit a wider basin");
+    assert!(matches!(error, RunReadError::Frame(_)), "{error:?}");
+    assert!(error.to_string().contains('h'), "{error}");
+}
+
+#[test]
+fn bytes_that_are_not_a_frame_are_refused_rather_than_panicking() {
+    let error = termocline_format::decode_frame(&[0xff; 4], &grid())
+        .expect_err("four bytes are not a frame of a 3x2 basin");
+    assert!(matches!(error, RunReadError::Decode(_)), "{error:?}");
+}

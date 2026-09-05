@@ -9,10 +9,6 @@ description = "Reads the engine's output files and renders them. Never touches t
 
 [dependencies]
 termocline-format.workspace = true
-# The same encoding `termocline-format` writes frames in, so one frame can be
-# decoded from the offset noted for it at load rather than by walking the run
-# forward to it (T-08.3, `run::LoadedRun::frame`).
-bincode = { version = "2", features = ["serde"] }
 # `wgpu`, not `glow`: it is the backend that reaches WebGPU, and the one whose
 # native and web behaviour agree most closely (ADR-0006).
 eframe = { version = "0.33", default-features = false, features = [

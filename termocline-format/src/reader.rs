@@ -19,6 +19,14 @@
 //! stronger constraint than ADR-0006 asks for, and it is what lets a run be
 //! read while it is still arriving over a network.
 //!
+//! A caller that already holds the whole run in memory needs the other thing —
+//! any frame, in any order, because a scrubber is dragged rather than played
+//! (T-08.3). It gets it by building an index of its own: [`decode_frame`]
+//! reads the frame at the start of a slice and says how many bytes it took, so
+//! one forward pass learns where every frame begins and each later fetch costs
+//! one decode. The index is the caller's, held for as long as it holds the
+//! bytes; nothing about the file on disk changes.
+//!
 //! # Why the frames are lazy
 //!
 //! A run at a realistic resolution and duration is far larger than the frame
@@ -44,7 +52,7 @@
 use std::fmt;
 use std::io::Read;
 
-use crate::{frame_encoding, FormatError, Frame, RunHeader, FORMAT_VERSION};
+use crate::{frame_encoding, FormatError, Frame, GridSpec, RunHeader, FORMAT_VERSION};
 
 /// Why a run could not be read.
 ///
@@ -154,6 +162,31 @@ impl From<std::io::Error> for RunReadError {
     fn from(error: std::io::Error) -> Self {
         Self::Io(error)
     }
+}
+
+/// Decode the frame that begins at the start of `bytes`, and say how many
+/// bytes it occupied.
+///
+/// The random-access half of reading a run, for a caller holding the frames
+/// whole in memory: the length it returns is what lets one forward pass note
+/// where every frame begins, and an offset from that pass is what lets a later
+/// frame be fetched without decoding the frames before it. Bytes past the
+/// frame are ignored, so the slice may be the rest of the run.
+///
+/// The frame is held to `grid` exactly as [`RunReader`] holds it: a frame is
+/// bytes until something says what shape they should be, and that is the
+/// header's job either way.
+///
+/// # Errors
+/// [`RunReadError::Decode`] if the bytes are not a frame, or run out part-way
+/// through one — a caller decoding a single frame is not counting against a
+/// promised total, so nothing here is [`RunReadError::Truncated`] — and
+/// [`RunReadError::Frame`] if the frame does not fit `grid`.
+pub fn decode_frame(bytes: &[u8], grid: &GridSpec) -> Result<(Frame, usize), RunReadError> {
+    let (frame, used): (Frame, usize) =
+        bincode::serde::decode_from_slice(bytes, frame_encoding()).map_err(RunReadError::Decode)?;
+    frame.validate(grid)?;
+    Ok((frame, used))
 }
 
 /// An open run: the header already decoded, the frames still to come.
