@@ -14,10 +14,12 @@
 //! two answer different questions — what the alizés look like in space, and
 //! how strong they are this month — and keeping them apart is what lets the
 //! composable burst of T-03.3 stack on either.
-//! Scenarios stack rather than exclude one another. A westerly wind burst is
-//! an anomaly *superimposed on* the trades (`CONTEXT.md`), and the equations
-//! are linear in the stress, so [`WindBurstAnomaly`] is a scenario in its own
-//! right and [`CompositeWind`] is the combinator that adds it to a base one.
+//!
+//! That burst is [`WindBurstAnomaly`], and stacking is [`CompositeWind`].
+//! Scenarios add rather than exclude one another: a westerly wind burst is an
+//! anomaly *superimposed on* the trades (`CONTEXT.md`), and the equations are
+//! linear in the stress, so "superimposed on" is a sum of two scenarios that
+//! each remain a `WindStress` in their own right.
 //!
 //! The solver cannot integrate a function, though. It needs the stress at the
 //! points its momentum equations live on, which on the Arakawa C-grid of
@@ -150,17 +152,22 @@ pub enum WindStressError {
     /// A burst's duration was not a finite, strictly positive time.
     DurationNotPositive {
         /// The value supplied, in seconds.
-        value_s: f64,
+        duration_s: f64,
     },
     /// A burst's zonal centre was not a finite position.
     CenterNotAPosition {
         /// The value supplied, in metres.
-        value_m: f64,
+        center_x_m: f64,
     },
     /// A burst's peak time was not a finite instant.
+    ///
+    /// The burst's own twin of [`WindStressError::PhaseNotFinite`], which
+    /// rejects the same thing for the seasonal cycle: the two carry different
+    /// scenario parameters, and an error that named neither would leave a
+    /// scenario author guessing which one they got wrong.
     PeakTimeNotFinite {
         /// The value supplied, in seconds.
-        value_s: f64,
+        peak_time_s: f64,
     },
 }
 
@@ -190,16 +197,18 @@ impl fmt::Display for WindStressError {
                 "the peak zonal stress of the burst is {value_pa} Pa; a westerly wind burst \
                  blows against the alizés, so it must be strictly positive"
             ),
-            Self::DurationNotPositive { value_s } => write!(
+            Self::DurationNotPositive { duration_s } => write!(
                 f,
-                "duration_s is {value_s} s; it must be a finite, strictly positive time"
+                "duration_s is {duration_s} s; it must be a finite, strictly positive time"
             ),
-            Self::CenterNotAPosition { value_m } => {
-                write!(f, "center_x_m is {value_m} m; it must be a finite position")
-            }
-            Self::PeakTimeNotFinite { value_s } => {
-                write!(f, "peak_time_s is {value_s} s; it must be a finite instant")
-            }
+            Self::CenterNotAPosition { center_x_m } => write!(
+                f,
+                "center_x_m is {center_x_m} m; it must be a finite position"
+            ),
+            Self::PeakTimeNotFinite { peak_time_s } => write!(
+                f,
+                "peak_time_s is {peak_time_s} s; it must be a finite instant"
+            ),
         }
     }
 }
@@ -509,19 +518,13 @@ impl WindBurstAnomaly {
         check_scale("zonal_scale_m", zonal_scale_m)?;
         check_scale("meridional_scale_m", meridional_scale_m)?;
         if !duration_s.is_finite() || duration_s <= 0.0 {
-            return Err(WindStressError::DurationNotPositive {
-                value_s: duration_s,
-            });
+            return Err(WindStressError::DurationNotPositive { duration_s });
         }
         if !center_x_m.is_finite() {
-            return Err(WindStressError::CenterNotAPosition {
-                value_m: center_x_m,
-            });
+            return Err(WindStressError::CenterNotAPosition { center_x_m });
         }
         if !peak_time_s.is_finite() {
-            return Err(WindStressError::PeakTimeNotFinite {
-                value_s: peak_time_s,
-            });
+            return Err(WindStressError::PeakTimeNotFinite { peak_time_s });
         }
         Ok(Self {
             peak_zonal_stress_pa,

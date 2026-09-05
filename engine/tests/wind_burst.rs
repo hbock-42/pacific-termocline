@@ -12,8 +12,10 @@
 //!
 //! The second is composability, which is the half of the ticket that says the
 //! burst is "addable on top of steady or seasonal winds, not exclusive with
-//! them": a `CompositeWind` is the pointwise sum of its components, and
-//! sampling one onto the C-grid gives the sum of the sampled components.
+//! them": a `CompositeWind` is the pointwise sum of its components — checked
+//! against T-03.1's steady trade winds, T-03.2's seasonal ones and a second
+//! burst — and sampling one onto the C-grid gives the sum of the sampled
+//! components.
 //!
 //! The third is the ticket's acceptance criterion: *injecting a burst on top
 //! of steady trade winds and running forward shows a visible eastward-
@@ -55,9 +57,9 @@
 //! (CODING_STANDARDS.md § Tests).
 
 use engine::{
-    max_stable_dt, Basin, BetaPlane, CompositeWind, Grid, OceanState, PhysicalParams, Solver,
-    Spacing, SteadyTradeWinds, WaveSpeed, WindBurstAnomaly, WindStress, WindStressError,
-    WindStressField, H_STAGGERING, U_STAGGERING,
+    max_stable_dt, Basin, BetaPlane, CompositeWind, Grid, OceanState, PhysicalParams,
+    SeasonalTradeWinds, Solver, Spacing, SteadyTradeWinds, WaveSpeed, WindBurstAnomaly, WindStress,
+    WindStressError, WindStressField, H_STAGGERING, U_STAGGERING,
 };
 
 /// Reduced gravity `g'` of the equatorial Pacific's first baroclinic mode, in
@@ -348,7 +350,7 @@ fn a_burst_duration_that_is_not_a_duration_is_refused_by_name() {
         )
         .expect_err("a burst duration must be a finite, positive time");
         let WindStressError::DurationNotPositive {
-            value_s: rejected_s,
+            duration_s: rejected_s,
         } = error
         else {
             panic!("expected the duration to be rejected, got {error}");
@@ -371,7 +373,7 @@ fn a_burst_centred_nowhere_is_refused_by_name() {
         )
         .expect_err("a burst centre must be a finite position");
         let WindStressError::CenterNotAPosition {
-            value_m: rejected_m,
+            center_x_m: rejected_m,
         } = error
         else {
             panic!("expected the centre to be rejected, got {error}");
@@ -394,7 +396,7 @@ fn a_burst_that_peaks_at_no_time_is_refused_by_name() {
         )
         .expect_err("a burst must peak at a finite time");
         let WindStressError::PeakTimeNotFinite {
-            value_s: rejected_s,
+            peak_time_s: rejected_s,
         } = error
         else {
             panic!("expected the peak time to be rejected, got {error}");
@@ -496,6 +498,45 @@ fn a_composite_wind_stacks_a_burst_on_a_burst() {
             "at x = {centre_x_m} m the composite is {tau_x_pa} Pa, expected one peak plus the \
              other's tail"
         );
+    }
+}
+
+/// Relative amplitude of the seasonal modulation, dimensionless — the alizés
+/// breathing by 20% over the year, T-03.2's own scale for it.
+const SEASONAL_RELATIVE_AMPLITUDE: f64 = 0.2;
+
+#[test]
+fn a_composite_wind_stacks_a_burst_on_the_seasonal_alizes() {
+    // The clause of the ticket that says a burst is "addable on top of steady
+    // *or seasonal* winds, not exclusive with them". The seasonal scenario is
+    // T-03.2's, and this is the test that nothing about the combinator
+    // privileges the steady one: the composite is the pointwise sum here too,
+    // at instants half a year apart where the modulation itself differs.
+    let seasonal = SeasonalTradeWinds::new(
+        pacific_trade_winds(),
+        SEASONAL_RELATIVE_AMPLITUDE,
+        BURST_PEAK_TIME_S,
+    )
+    .expect("a fraction of the steady field, peaking at a finite instant");
+    let burst = pacific_burst();
+    let composite = CompositeWind::new().with(seasonal).with(burst);
+
+    for t_s in [
+        0.0,
+        BURST_PEAK_TIME_S,
+        BURST_PEAK_TIME_S + engine::TROPICAL_YEAR_S / 2.0,
+    ] {
+        for y_m in PROBE_LATITUDES_M {
+            let (seasonal_x_pa, _) = seasonal.stress(BURST_CENTER_X_M, y_m, t_s);
+            let (burst_x_pa, _) = burst.stress(BURST_CENTER_X_M, y_m, t_s);
+            let (tau_x_pa, tau_y_pa) = composite.stress(BURST_CENTER_X_M, y_m, t_s);
+            assert_eq!(
+                tau_x_pa,
+                seasonal_x_pa + burst_x_pa,
+                "τx at (y = {y_m}, t = {t_s})"
+            );
+            assert_eq!(tau_y_pa, 0.0);
+        }
     }
 }
 
