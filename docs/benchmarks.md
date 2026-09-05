@@ -16,6 +16,10 @@ cargo bench -p engine -- --quick   # a single-pass estimate, about ten seconds
 Criterion writes its reports to `target/criterion/`, including an HTML index at
 `target/criterion/report/index.html`.
 
+For where the time inside those figures actually goes — a phase-by-phase and
+kernel-by-kernel profile of a step, and a sampled profile beside it — see
+[performance-notes.md](performance-notes.md) (T-10.2).
+
 Criterion's throughput line reads `elem/s` whatever the element is, so each
 benchmark prints one legend line before its results saying what its element is.
 Read the `thrpt` figures against that line.

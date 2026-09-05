@@ -172,7 +172,11 @@ impl ShallowWaterRhs {
 /// In-place because the gradient operators write straight into the tendency
 /// buffer, which is where the acceleration has to end up; `field` therefore
 /// arrives holding a gradient and leaves holding an acceleration.
-fn turn_gradient_into_acceleration(
+///
+/// `pub(crate)` so that [`crate::profiling`] can time this kernel on its own
+/// rather than re-implementing it: a per-term profile of a re-implementation
+/// would be a profile of the profiler.
+pub(crate) fn turn_gradient_into_acceleration(
     field: &mut Field2D<f64>,
     minus_g_prime_m_per_s2: f64,
     stress_pa: &Field2D<f64>,
@@ -192,7 +196,11 @@ fn turn_gradient_into_acceleration(
 /// `anomaly` and `tendency` are at the same staggering — this is `−r·u` on the
 /// east/west faces, `−r·v` on the north/south faces, `−r·h` at cell centers —
 /// so there is nothing to interpolate.
-fn subtract_damping(
+///
+/// `pub(crate)` for the same reason as
+/// [`turn_gradient_into_acceleration`]: [`crate::profiling`] times the kernel
+/// itself, not a copy of it.
+pub(crate) fn subtract_damping(
     tendency: &mut Field2D<f64>,
     anomaly: &Field2D<f64>,
     rayleigh_damping_per_s: f64,

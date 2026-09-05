@@ -15,10 +15,13 @@
 //! on the CLI side, the scenario runner behind `run` and the `inspect` command
 //! that reports a written run's header back to a terminal.
 //!
-//! [`benchmark`] is the odd one out: it computes nothing the simulation needs,
-//! and holds the workloads `benches/` measures — a module of the library
-//! rather than a benchmark-local helper so that its definitions can be
-//! asserted on by a test (`docs/benchmarks.md`).
+//! [`benchmark`] and [`profiling`] are the odd ones out: they compute nothing
+//! the simulation needs. [`benchmark`] holds the workloads `benches/` measures
+//! (`docs/benchmarks.md`), and [`profiling`] the instrument that says where a
+//! timestep's time goes (`docs/performance-notes.md`). Both are modules of the
+//! library rather than helpers local to a `benches/` or `examples/` target, so
+//! that a test can assert on them — which for a measurement is the difference
+//! between a number and a claim.
 
 // The acceptance criterion of T-02.1 is that every field states its unit; the
 // lint is what keeps that true as the crate grows.
@@ -32,6 +35,7 @@ pub mod forcing;
 pub mod inspect;
 pub mod integrator;
 pub mod params;
+pub mod profiling;
 pub mod progress;
 pub mod run;
 pub mod run_writer;

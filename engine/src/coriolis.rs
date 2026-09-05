@@ -260,7 +260,10 @@ impl CoriolisTerm {
 ///
 /// Both fields are at the same staggering, so this is a pointwise loop: the
 /// staggered neighbour arithmetic all happened in `termocline-numerics`.
-fn accumulate_rows(
+///
+/// `pub(crate)` so that [`crate::profiling`] times this kernel rather than a
+/// re-implementation of it.
+pub(crate) fn accumulate_rows(
     tendency: &mut Field2D<f64>,
     velocity: &Field2D<f64>,
     gain_per_s: impl Fn(usize) -> f64,
