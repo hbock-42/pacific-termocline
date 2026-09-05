@@ -183,12 +183,11 @@ use std::sync::OnceLock;
 
 use engine::{
     max_stable_dt, Basin, BetaPlane, Grid, OceanState, PhysicalParams, Solver, Spacing, WaveSpeed,
-    WindStressField, H_STAGGERING, U_STAGGERING, V_STAGGERING,
+    WindStressField, H_STAGGERING,
 };
 
 use support::{
-    equatorial_deformation_radius_m, gaussian_envelope, kelvin_wave_speed_m_per_s, pacific_params,
-    MeridionalStructure,
+    equatorial_deformation_radius_m, kelvin_wave_speed_m_per_s, pacific_params, MeridionalStructure,
 };
 
 /// Zonal extent of the test basin, in metres — 32 000 km.
@@ -594,76 +593,17 @@ impl Experiment {
     /// module header, Gaussian in `x`, centred at [`PACKET_CENTRE_X_M`] and
     /// travelling west.
     fn initial_state(self) -> OceanState {
-        let mut state = OceanState::at_rest(self.basin.grid());
-        let grid = self.basin.grid();
-        let mean_depth_m = self.params.mean_thermocline_depth_m();
-        let amplitude = PACKET_AMPLITUDE_M / mean_depth_m;
-        let envelope = |x_m: f64| gaussian_envelope(x_m, PACKET_CENTRE_X_M, self.packet_width_m);
-        // `dE/dx` of that envelope, in m⁻¹.
-        let envelope_slope_per_m = |x_m: f64| {
-            -(x_m - PACKET_CENTRE_X_M) / (self.packet_width_m * self.packet_width_m) * envelope(x_m)
-        };
-
-        let (h_nx, h_ny) = grid.field_shape(H_STAGGERING);
-        for j in 0..h_ny {
-            let y_hat = self.basin.y_of_row_m(H_STAGGERING, j) / self.deformation_radius_m;
-            let trapping = (-0.5 * y_hat * y_hat).exp();
-            for i in 0..h_nx {
-                let x_m = self.basin.x_of_column_m(H_STAGGERING, i);
-                *state
-                    .h_mut()
-                    .get_mut(i, j)
-                    .expect("the loop bounds are the field's own shape") = mean_depth_m
-                    * amplitude
-                    * envelope(x_m)
-                    * (2.0 * y_hat * y_hat + 1.0)
-                    * trapping;
-            }
-        }
-
-        let (u_nx, u_ny) = grid.field_shape(U_STAGGERING);
-        for j in 0..u_ny {
-            let y_hat = self.basin.y_of_row_m(U_STAGGERING, j) / self.deformation_radius_m;
-            let trapping = (-0.5 * y_hat * y_hat).exp();
-            for i in 0..u_nx {
-                let x_m = self.basin.x_of_column_m(U_STAGGERING, i);
-                *state
-                    .u_mut()
-                    .get_mut(i, j)
-                    .expect("the loop bounds are the field's own shape") = self
-                    .wave_speed_m_per_s()
-                    * amplitude
-                    * envelope(x_m)
-                    * (2.0 * y_hat * y_hat - 3.0)
-                    * trapping;
-            }
-        }
-
-        // `(8/3)·ŷ·e^{−ŷ²/2}` is `(4/3)·ψ₁`, and writing it that way is the
-        // point: the mode is defined by its meridional velocity sitting on
-        // `ψ₁` (module header), and every other field of it follows from that.
-        let (v_nx, v_ny) = grid.field_shape(V_STAGGERING);
-        for j in 0..v_ny {
-            let waveguide = MeridionalStructure::First.at(
-                self.basin.y_of_row_m(V_STAGGERING, j),
-                self.deformation_radius_m,
-            );
-            for i in 0..v_nx {
-                let x_m = self.basin.x_of_column_m(V_STAGGERING, i);
-                *state
-                    .v_mut()
-                    .get_mut(i, j)
-                    .expect("the loop bounds are the field's own shape") = self
-                    .wave_speed_m_per_s()
-                    * (4.0 / 3.0)
-                    * amplitude
-                    * self.deformation_radius_m
-                    * envelope_slope_per_m(x_m)
-                    * waveguide;
-            }
-        }
-
-        state
+        support::gravest_rossby_packet_state(
+            self.basin,
+            self.params,
+            self.deformation_radius_m,
+            self.wave_speed_m_per_s(),
+            support::Packet {
+                amplitude_m: PACKET_AMPLITUDE_M,
+                centre_x_m: PACKET_CENTRE_X_M,
+                width_m: self.packet_width_m,
+            },
+        )
     }
 
     /// Run the experiment: the packet in a closed, unforced, undamped basin,
