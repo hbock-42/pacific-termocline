@@ -323,9 +323,9 @@ fn the_header_describes_the_run_before_any_frame_is_read() {
     let symbols: Vec<&str> = read.variables.iter().map(|v| v.symbol.as_str()).collect();
     assert_eq!(symbols, ["h", "u", "v", "tau_x", "tau_y"]);
     assert_eq!(
-        Variable::ALL.len(),
+        Variable::LINEAR_CORE.len(),
         symbols.len(),
-        "the header lists every variable a frame carries"
+        "the header lists every variable a frame of this uncoupled run carries"
     );
 }
 

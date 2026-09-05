@@ -52,7 +52,20 @@ pub use variable::{Variable, VariableSpec};
 
 /// Version of the on-disk format, written into every run's header so a reader
 /// can tell whether it understands a file rather than guessing.
-pub const FORMAT_VERSION: u32 = 1;
+///
+/// Version 2 added the optional mixed-layer SST anomaly `T'` to the frame
+/// (T-05.4). Version 1 runs are still read — see
+/// [`OLDEST_READABLE_FORMAT_VERSION`].
+pub const FORMAT_VERSION: u32 = 2;
+
+/// The oldest format version this build reads.
+///
+/// Runs are archives: a version 1 run is a complete, valid run of the linear
+/// core, and the only thing version 2 added to it is a field it never had. So
+/// the reader keeps version 1's frame layout and reports the `T'` of such a
+/// run as absent, rather than refusing an archive that is not wrong about
+/// anything (ADR-0011). Writers only ever write [`FORMAT_VERSION`].
+pub const OLDEST_READABLE_FORMAT_VERSION: u32 = 1;
 
 /// Name of the JSON [`RunHeader`] inside a run directory.
 ///
@@ -84,7 +97,10 @@ mod tests {
     fn format_version_is_stable() {
         // A change here is a breaking change to every archived run; it should
         // be a deliberate edit accompanied by a migration note, not a drift.
-        assert_eq!(FORMAT_VERSION, 1);
+        assert_eq!(FORMAT_VERSION, 2);
+        // And every version from the oldest readable one up to it must be a
+        // version this build actually has a frame layout for.
+        assert_eq!(OLDEST_READABLE_FORMAT_VERSION, 1);
     }
 
     #[test]
@@ -92,6 +108,11 @@ mod tests {
         // The header's variable list is what a reader indexes frames by, so a
         // duplicated or missing entry would silently mislabel a field.
         let symbols: Vec<&str> = Variable::ALL.iter().map(|v| v.symbol()).collect();
-        assert_eq!(symbols, ["h", "u", "v", "tau_x", "tau_y"]);
+        assert_eq!(symbols, ["h", "u", "v", "tau_x", "tau_y", "sst"]);
+        // The linear core is the first five of them, in the same order: a
+        // coupled run's variable list extends an uncoupled one rather than
+        // rearranging it.
+        let core: Vec<&str> = Variable::LINEAR_CORE.iter().map(|v| v.symbol()).collect();
+        assert_eq!(core, symbols[..core.len()]);
     }
 }

@@ -1,7 +1,10 @@
 # ADR-0004: Engine output format — versioned custom binary + JSON metadata
 
 ## Status
-Accepted, revisitable
+Accepted, revisitable. Amended by
+[ADR-0011](0011-reading-runs-from-older-format-versions.md), which decides what
+a reader does with a run from an older `format_version` — the question this
+ADR's versioning left open.
 
 ## Context
 The engine and visualizer only communicate through files (ADR-0001). The

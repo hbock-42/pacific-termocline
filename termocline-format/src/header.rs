@@ -173,7 +173,12 @@ pub struct RunHeader {
 
 impl RunHeader {
     /// The header for a run on `grid` with `physical_params`, stamped with the
-    /// current [`FORMAT_VERSION`] and the full variable list.
+    /// current [`FORMAT_VERSION`] and the variable list of the linear core.
+    ///
+    /// A run that couples SST says so with [`RunHeader::with_sst_anomaly`];
+    /// the list is what a reader indexes a run's frames by, so it names the
+    /// variables that run actually wrote and not the ones the format knows
+    /// how to write.
     #[must_use]
     pub fn new(
         grid: GridSpec,
@@ -186,8 +191,31 @@ impl RunHeader {
             grid,
             physical_params,
             scenario_description: scenario_description.into(),
-            variables: Variable::ALL.map(VariableSpec::of).to_vec(),
+            variables: Variable::LINEAR_CORE.map(VariableSpec::of).to_vec(),
             output,
         }
+    }
+
+    /// The same header, declaring that the run's frames also carry the
+    /// mixed-layer SST anomaly `T'` of the Epic 12 coupling.
+    ///
+    /// A coupled run writes every variable the format knows, so the list is
+    /// [`Variable::ALL`] — whose first five entries are exactly
+    /// [`Variable::LINEAR_CORE`], in order, so the extension is additive on
+    /// the page as well as in the equations.
+    #[must_use]
+    pub fn with_sst_anomaly(mut self) -> Self {
+        self.variables = Variable::ALL.map(VariableSpec::of).to_vec();
+        self
+    }
+
+    /// Whether this run's frames carry `variable`.
+    ///
+    /// Asked of the header rather than of a frame, because it is a fact about
+    /// the run: every frame of a run carries the same variables, and a reader
+    /// needs to know which before it decodes one.
+    #[must_use]
+    pub fn carries(&self, variable: Variable) -> bool {
+        self.variables.iter().any(|spec| spec.variable == variable)
     }
 }

@@ -334,8 +334,8 @@ impl<'a> CellCentreStress<'a> {
         let cells = grid.grid();
         Ok(Self {
             cells,
-            tau_x: FaceField::of(cells, frame, Variable::ZonalWindStress),
-            tau_y: FaceField::of(cells, frame, Variable::MeridionalWindStress),
+            tau_x: FaceField::of(cells, frame, Variable::ZonalWindStress)?,
+            tau_y: FaceField::of(cells, frame, Variable::MeridionalWindStress)?,
         })
     }
 
@@ -384,8 +384,27 @@ struct FaceField<'a> {
 impl<'a> FaceField<'a> {
     /// `variable`'s field of `frame`, which must already have been validated
     /// against the grid `cells` describes.
-    fn of(cells: Grid, frame: &'a Frame, variable: Variable) -> Self {
-        Self::at(cells, frame.field(variable), variable.staggering())
+    ///
+    /// # Panics
+    /// If `frame` does not carry `variable`. Only the two wind-stress
+    /// components are read here and every frame carries both
+    /// ([`Variable::LINEAR_CORE`]), so an absent one means this code asked for
+    /// the wrong variable rather than that the run is short of a field.
+    fn of(cells: Grid, frame: &'a Frame, variable: Variable) -> Result<Self, FormatError> {
+        // Not an `expect`. `Frame::validate` deliberately skips a variable the
+        // frame does not carry — the absence of `T'` is a fact about the run,
+        // not a field of the wrong length — and the variable-list check lives
+        // in `validate_against`, which this path does not call. A frame lacking
+        // a stress therefore arrives here from a malformed file rather than
+        // from a bug in this crate, and CODING_STANDARDS.md gives that a
+        // `Result`.
+        let values = frame
+            .field(variable)
+            .ok_or(FormatError::UndeclaredVariable {
+                variable,
+                declared: true,
+            })?;
+        Ok(Self::at(cells, values, variable.staggering()))
     }
 
     /// `values`, read as a field staggered at `staggering` over `cells`.

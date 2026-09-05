@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 use std::process::{self, Command};
 
 use engine::{Scenario, ScenarioConfig, Staggering, FRAME_FILE_NAME, HEADER_FILE_NAME};
-use termocline_format::{RunReader, Variable, FORMAT_VERSION};
+use termocline_format::{RunReader, FORMAT_VERSION};
 
 mod common;
 
@@ -283,14 +283,26 @@ fn each_example_scenario_produces_a_readable_run_directory() {
                 index as f64 * header.output.interval_s,
                 "{stem}: time of frame {index}"
             );
-            for variable in Variable::ALL {
+            // The header's own list, not every variable the format knows: a
+            // frame carries what its run wrote, and these scenarios are the
+            // linear core's.
+            for spec in &header.variables {
+                let variable = spec.variable;
                 let (nx, ny) = grid.field_shape(variable.staggering());
+                let field = frame
+                    .field(variable)
+                    .unwrap_or_else(|| panic!("{stem}: frame {index} is missing {variable:?}"));
                 assert_eq!(
-                    frame.field(variable).len(),
+                    field.len(),
                     nx * ny,
                     "{stem}: shape of {variable:?} in frame {index}"
                 );
             }
+            assert_eq!(
+                frame.sst_anomaly_k(),
+                None,
+                "{stem}: frame {index} of an uncoupled scenario has no SST anomaly to carry"
+            );
         }
     }
 }

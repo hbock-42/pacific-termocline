@@ -61,8 +61,8 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use termocline_format::{
-    frame_encoding, FormatError, Frame, GridSpec, OutputTiming, RunHeader, FRAME_FILE_NAME,
-    HEADER_FILE_NAME,
+    frame_encoding, FormatError, Frame, GridSpec, OutputTiming, RunHeader, Variable,
+    FRAME_FILE_NAME, HEADER_FILE_NAME,
 };
 
 use crate::basin::BasinBounds;
@@ -298,6 +298,17 @@ pub enum RunWriteError {
         /// Frames the header promised.
         promised: u64,
     },
+    /// The state offered and the header written disagree about the SST
+    /// anomaly: a coupled run's header must list `T'` and an uncoupled run's
+    /// must not, because the header's variable list is what a reader believes
+    /// about every frame beside it.
+    ///
+    /// One boolean, not two: the error exists only where the two differ, so
+    /// the header's answer is the state's negated.
+    SstAnomalyMismatch {
+        /// Whether the header says the run's frames carry `T'`.
+        header_carries: bool,
+    },
     /// The run finished before writing every frame its header promised, which
     /// would leave a reader reading off the end of the frame file.
     MissingFrames {
@@ -320,6 +331,20 @@ impl fmt::Display for RunWriteError {
                 "the header promises {promised} frames and {promised} have been written; \
                  a further frame would be one no reader ever sees"
             ),
+            Self::SstAnomalyMismatch {
+                header_carries: true,
+            } => write!(
+                f,
+                "the run's header lists the SST anomaly and the state offered has none; \
+                 a run couples SST or it does not, and its header says which"
+            ),
+            Self::SstAnomalyMismatch {
+                header_carries: false,
+            } => write!(
+                f,
+                "the state offered carries an SST anomaly and the run's header does not \
+                 list one; a run couples SST or it does not, and its header says which"
+            ),
             Self::MissingFrames { promised, written } => write!(
                 f,
                 "the header promises {promised} frames but the run wrote {written}; \
@@ -336,7 +361,9 @@ impl std::error::Error for RunWriteError {
             Self::Header(error) => Some(error),
             Self::Frame(error) => Some(error),
             Self::Encode(error) => Some(error),
-            Self::TooManyFrames { .. } | Self::MissingFrames { .. } => None,
+            Self::TooManyFrames { .. }
+            | Self::SstAnomalyMismatch { .. }
+            | Self::MissingFrames { .. } => None,
         }
     }
 }
@@ -377,6 +404,9 @@ pub struct RunWriter<W: Write> {
     frame_sink: W,
     /// The grid the header describes; every frame is checked against it.
     grid: GridSpec,
+    /// Whether the header lists the SST anomaly, and so whether every frame
+    /// must carry one.
+    carries_sst_anomaly: bool,
     /// Frames the header promised.
     promised: u64,
     /// Frames written so far.
@@ -405,6 +435,7 @@ impl<W: Write> RunWriter<W> {
         Ok(Self {
             frame_sink,
             grid: header.grid,
+            carries_sst_anomaly: header.carries(Variable::SstAnomaly),
             promised: header.output.frame_count,
             written: 0,
         })
@@ -414,7 +445,10 @@ impl<W: Write> RunWriter<W> {
     ///
     /// `state` supplies `h`, `u` and `v`; `wind_stress` supplies the forcing
     /// `τx` and `τy` that drove the run to it, in pascals, which is the
-    /// `N m^-2` the format states.
+    /// `N m^-2` the format states. A coupled run's `state` also supplies the
+    /// mixed-layer SST anomaly `T'`, which is written as the frame's sixth
+    /// field; an uncoupled run's frame records its absence rather than a
+    /// basin of zeros it never integrated.
     ///
     /// A frame is built and encoded per call, so this allocates — which is why
     /// it belongs at the output cadence and not inside the time-stepping loop
@@ -422,9 +456,11 @@ impl<W: Write> RunWriter<W> {
     ///
     /// # Errors
     /// [`RunWriteError::Frame`] if the state or the stress does not cover the
-    /// basin the header describes, [`RunWriteError::TooManyFrames`] if the
-    /// header's frame count has already been written, and
-    /// [`RunWriteError::Encode`] if the frame could not be encoded or written.
+    /// basin the header describes, [`RunWriteError::SstAnomalyMismatch`] if
+    /// the state and the header disagree about whether the run couples SST,
+    /// [`RunWriteError::TooManyFrames`] if the header's frame count has
+    /// already been written, and [`RunWriteError::Encode`] if the frame could
+    /// not be encoded or written.
     pub fn append(
         &mut self,
         t_s: f64,
@@ -436,6 +472,11 @@ impl<W: Write> RunWriter<W> {
                 promised: self.promised,
             });
         }
+        if self.carries_sst_anomaly != state.couples_sst() {
+            return Err(RunWriteError::SstAnomalyMismatch {
+                header_carries: self.carries_sst_anomaly,
+            });
+        }
         let frame = Frame::new(
             t_s,
             &self.grid,
@@ -445,6 +486,10 @@ impl<W: Write> RunWriter<W> {
             wind_stress.tau_x_pa().as_slice().to_vec(),
             wind_stress.tau_y_pa().as_slice().to_vec(),
         )?;
+        let frame = match state.sst_anomaly_k() {
+            Some(sst) => frame.with_sst_anomaly(&self.grid, sst.as_slice().to_vec())?,
+            None => frame,
+        };
         bincode::serde::encode_into_std_write(&frame, &mut self.frame_sink, frame_encoding())?;
         self.written += 1;
         Ok(())

@@ -172,7 +172,24 @@ fn a_frame_is_written_under_the_field_names_the_format_specifies() {
         .map(String::as_str)
         .collect();
     keys.sort_unstable();
-    assert_eq!(keys, ["h", "t", "tau_x", "tau_y", "u", "v"]);
+    assert_eq!(keys, ["h", "sst", "t", "tau_x", "tau_y", "u", "v"]);
+    // `sst` is on the page of every frame, and it is null on a frame of a run
+    // that did not couple SST: the field says the run has no `T'`, rather than
+    // being quietly dropped so that a reader cannot tell an uncoupled run from
+    // a frame that lost a field (T-05.4).
+    assert!(json["sst"].is_null());
+
+    let coupled = frame()
+        .with_sst_anomaly(&grid(), awkward_values(NX * NY, 5))
+        .expect("the anomaly is built at the length the grid asks for");
+    let json = serde_json::to_value(coupled).expect("the frame is serializable");
+    assert_eq!(
+        json["sst"]
+            .as_array()
+            .expect("a coupled frame's anomaly is a list")
+            .len(),
+        NX * NY
+    );
 }
 
 #[test]
