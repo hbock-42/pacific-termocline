@@ -7,8 +7,9 @@
 //!
 //! The physics lands in Epics 01–04; so far the crate carries the time
 //! integrator, the prognostic [`OceanState`], the [`PhysicalParams`] the
-//! equations are written in terms of, and the [`Solver`] that puts them
-//! together into one time step of the linear shallow-water core.
+//! equations are written in terms of, the [`Solver`] that puts them together
+//! into one time step of the linear shallow-water core, and the [`RunWriter`]
+//! that saves the result at a configurable output cadence.
 
 // The acceptance criterion of T-02.1 is that every field states its unit; the
 // lint is what keeps that true as the crate grows.
@@ -17,6 +18,7 @@
 pub mod coriolis;
 pub mod integrator;
 pub mod params;
+pub mod run_writer;
 pub mod shallow_water;
 pub mod solver;
 pub mod state;
@@ -27,6 +29,11 @@ pub use integrator::{Rk4, StateVector};
 
 /// Re-exported so a scenario, the solver and its tests name one set of
 /// physical parameters and one state type.
+pub use run_writer::{
+    OutputSchedule, OutputScheduleError, RunWriteError, RunWriter, FRAME_FILE_NAME,
+    HEADER_FILE_NAME,
+};
+
 pub use params::{
     PhysicalParams, PhysicalParamsError, EQUATORIAL_BETA_PER_M_PER_S,
     SEAWATER_REFERENCE_DENSITY_KG_PER_M3,
