@@ -536,7 +536,8 @@ impl ScenarioConfig {
     /// A [`ScenarioError`] naming the section that was wrong and, through the
     /// error it wraps, the value and the bound.
     pub fn build(&self) -> Result<Scenario, ScenarioError> {
-        let basin = self.basin.build()?;
+        let bounds = self.basin.bounds()?;
+        let basin = bounds.basin();
         let physical_params = self.physics.build()?;
         let schedule = self.run.build()?;
         let winds = self
@@ -549,6 +550,7 @@ impl ScenarioConfig {
         check_timestep(schedule.dt_s(), basin.spacing(), wave_speed)?;
 
         Ok(Scenario {
+            bounds,
             basin,
             physical_params,
             winds,
@@ -567,6 +569,7 @@ impl ScenarioConfig {
 /// *Correctness and failure*).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Scenario {
+    bounds: BasinBounds,
     basin: Basin,
     physical_params: PhysicalParams,
     winds: Vec<ScenarioWind>,
@@ -595,6 +598,20 @@ impl Scenario {
     /// objected to.
     pub fn from_toml(source: &str) -> Result<Self, ScenarioError> {
         ScenarioConfig::from_toml(source)?.build()
+    }
+
+    /// Where this scenario's basin is on the globe, in degrees, and how
+    /// finely it is cut into cells.
+    ///
+    /// Kept beside the [`Basin`] rather than derived from it because the two
+    /// answer different questions and only one of them can answer this one: a
+    /// `Basin` is the truncation in metres the equations are solved on, with
+    /// `x` measured east from its own western wall, and it has forgotten which
+    /// meridians that wall lies between. A run's header records the basin in
+    /// degrees, so the degrees have to survive the build.
+    #[must_use]
+    pub const fn bounds(&self) -> BasinBounds {
+        self.bounds
     }
 
     /// Where this scenario's basin is, and how big its cells are.
