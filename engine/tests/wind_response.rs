@@ -36,8 +36,8 @@ use engine::wind_response::{
 };
 use engine::{
     Basin, BetaPlane, CompositeWind, Grid, OceanState, PhysicalParams, Scenario, ScenarioConfig,
-    ScenarioError, Solver, Spacing, SteadyTradeWinds, WindForcing, WindStress, WindStressField,
-    SEAWATER_REFERENCE_DENSITY_KG_PER_M3,
+    ScenarioError, SeasonalTradeWinds, Solver, Spacing, SteadyTradeWinds, WindForcing, WindStress,
+    WindStressField, SEAWATER_REFERENCE_DENSITY_KG_PER_M3,
 };
 
 /// Reduced gravity `g'` of the equatorial Pacific's first baroclinic mode, in
@@ -72,8 +72,9 @@ const TRADE_WIND_STRESS_PA: f64 = -0.05;
 /// Feedback strength `μ`, in Pa/K, for the tests that want the loop closed.
 ///
 /// A 1 K warming relaxing the trades by 0.02 Pa — 40% of
-/// [`TRADE_WIND_STRESS_PA`] — which is the order the observed regression of
-/// equatorial zonal stress on the Niño-3 index carries.
+/// [`TRADE_WIND_STRESS_PA`]. Nothing here turns on the value: these tests ask
+/// about the sign of the feedback and about the exactness of switching it off,
+/// and which strength actually oscillates is T-12.3's question.
 const FEEDBACK_STRENGTH_PA_PER_K: f64 = 0.02;
 
 fn physical_params() -> PhysicalParams {
@@ -504,6 +505,110 @@ fn the_closed_loop_flattens_the_thermocline_a_warm_anomaly_made() {
     );
 }
 
+#[test]
+fn superimposing_a_calm_wind_leaves_a_stress_exactly_as_it_was() {
+    // "Bit for bit" has to survive the sign of zero. A meridional decay
+    // underflows to exactly zero far enough from the equator, and an easterly
+    // stress times that is `-0.0`; IEEE addition turns `-0.0 + 0.0` into
+    // `+0.0`, so a response that added nothing at all would still change the
+    // bits of the field it was added to. It must not.
+    let basin = test_basin();
+    let mut field = WindStressField::uniform(basin.grid(), -0.0, -0.0);
+    // An empty composite is calm — the zero of the T-03.3 combinator.
+    field.add_sampled(basin, &CompositeWind::new(), 0.0);
+    assert!(
+        field
+            .tau_x_pa()
+            .get(0, 0)
+            .expect("the basin has a south-western corner")
+            .is_sign_negative(),
+        "superimposing calm flipped the sign of a negative zero in `τx`"
+    );
+    assert!(
+        field
+            .tau_y_pa()
+            .get(0, 0)
+            .expect("the basin has a south-western corner")
+            .is_sign_negative(),
+        "superimposing calm flipped the sign of a negative zero in `τy`"
+    );
+}
+
+#[test]
+fn zero_feedback_strength_is_bit_for_bit_under_a_wind_that_reaches_zero() {
+    // The regression above runs on a steady, uniform wind. This one widens it
+    // to a forcing that both varies in time and reaches exactly zero — a
+    // season at full amplitude, on a decay scale far narrower than the basin,
+    // so the stress underflows to zero well before the northern and southern
+    // walls — and hands it to the forcing *directly* rather than through a
+    // composite. Two things are under test at once: that the T-10.5 cache
+    // still invalidates correctly on the prescribed half of a coupled forcing,
+    // and that the response adds nothing where it should add nothing.
+    // `superimposing_a_calm_wind_leaves_a_stress_exactly_as_it_was` is the
+    // narrow check on the sign of zero; this is the wide one on a whole run.
+    let params = physical_params();
+    let basin = test_basin();
+    let plane = BetaPlane::of_basin(params, basin);
+    let dt_s = 1800.0;
+    let steps = 200;
+    // A decay scale of 100 km over a basin reaching 2000 km: `exp(−(y/L)²)`
+    // underflows to exactly zero well before the wall.
+    let seasonal = || {
+        SeasonalTradeWinds::new(
+            SteadyTradeWinds::with_meridional_decay(TRADE_WIND_STRESS_PA, 1.0e5)
+                .expect("an easterly stress with a positive decay scale"),
+            1.0,
+            0.0,
+        )
+        .expect("a full-amplitude season peaking at the start of the run")
+    };
+
+    let fields = |feedback: Option<f64>| {
+        let mut solver = Solver::coupled_to_sst(
+            basin.grid(),
+            basin.spacing(),
+            params,
+            plane,
+            dt_s,
+            sst_params(),
+        )
+        .expect("half an hour is well inside both timestep bounds");
+        let mut state = OceanState::at_rest_with_sst_anomaly(basin.grid());
+        state.h_mut().as_mut_slice().fill(5.0);
+        match feedback {
+            None => {
+                let mut forcing = WindForcing::new(basin, seasonal());
+                for step in 0..steps {
+                    solver.step_with_forcing(&mut state, step as f64 * dt_s, &mut forcing);
+                }
+            }
+            Some(strength) => {
+                let mut forcing = CoupledWind::new(
+                    basin,
+                    seasonal(),
+                    SstWindResponse::new(basin, response_params(strength)),
+                );
+                for step in 0..steps {
+                    solver.step_with_forcing(&mut state, step as f64 * dt_s, &mut forcing);
+                }
+            }
+        }
+        (
+            state.h().as_slice().to_vec(),
+            state
+                .sst_anomaly_k()
+                .expect("a coupled state carries `T'`")
+                .as_slice()
+                .to_vec(),
+        )
+    };
+
+    let prescribed = fields(None);
+    let unfed_back = fields(Some(0.0));
+    assert_eq!(prescribed.0, unfed_back.0, "the thermocline `h` differs");
+    assert_eq!(prescribed.1, unfed_back.1, "the SST anomaly `T'` differs");
+}
+
 // ---------------------------------------------------------------------------
 // The config parameter
 // ---------------------------------------------------------------------------
@@ -712,6 +817,11 @@ fn a_field_of_the_wrong_shape_never_reaches_the_index() {
 fn the_response_is_a_wind_stress_like_any_other() {
     // The deliverable: it implements `WindStress`, so it stacks in a
     // `CompositeWind` beside the trades exactly as the burst of T-03.3 does.
+    //
+    // Whoever stacks it that way owns the `observe`, though — a composite
+    // cannot reach inside a boxed component to refresh it, and a response
+    // nobody refreshes serves one frozen index for the whole run. That is why
+    // a *run* uses `CoupledWind`, which owns the refresh; see ADR-0010.
     let basin = test_basin();
     let mut state = OceanState::at_rest_with_sst_anomaly(basin.grid());
     state

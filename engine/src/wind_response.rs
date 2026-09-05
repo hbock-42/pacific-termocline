@@ -103,7 +103,9 @@ use std::fmt;
 use termocline_grid::{Field2D, Grid, H_STAGGERING};
 
 use crate::basin::Basin;
-use crate::forcing::{StageForcing, TimeDependence, WindForcing, WindStress, WindStressField};
+use crate::forcing::{
+    gaussian, StageForcing, TimeDependence, WindForcing, WindStress, WindStressField,
+};
 use crate::state::OceanState;
 
 /// Value the meridional stress of this response takes everywhere.
@@ -240,18 +242,6 @@ impl WindResponseParams {
     }
 }
 
-/// The equatorially trapped meridional structure of the response,
-/// `exp(−(y/L_a)²)` (Gill 1980).
-///
-/// The same convention as the Gaussians of
-/// [`SteadyTradeWinds`](crate::SteadyTradeWinds) and
-/// [`WindBurstAnomaly`](crate::WindBurstAnomaly): the scale is the e-folding
-/// distance, so a scenario reading one number reads it the same way everywhere.
-fn meridional_structure(y_m: f64, meridional_scale_m: f64) -> f64 {
-    let scaled = y_m / meridional_scale_m;
-    (-scaled * scaled).exp()
-}
-
 /// The statistical, Gill-type atmospheric wind response to the SST anomaly:
 /// the wind half of the Bjerknes feedback.
 ///
@@ -262,6 +252,14 @@ fn meridional_structure(y_m: f64, meridional_scale_m: f64) -> f64 {
 /// [`SstWindResponse::observe`], before it is sampled. Between two such calls
 /// it is the pure function of `(x, y, t)` the trait requires; the module header
 /// is why that is enough, and [`CoupledWind`] is what does the showing.
+///
+/// **Whoever holds one owes it that call.** Dropped into a
+/// [`CompositeWind`](crate::CompositeWind) it sums like any other forcing, but
+/// a composite cannot reach inside a boxed component to refresh it, so a
+/// response nobody observes serves one frozen index for a whole run. A run
+/// therefore holds it through [`CoupledWind`], which owns both the response and
+/// the refresh; ADR-0010 records why that is the shape rather than a
+/// `[[wind]]` entry.
 ///
 /// Built once per run: the row weights of its index are allocated here and
 /// reused at every stage (CODING_STANDARDS.md § *Performance*).
@@ -294,7 +292,7 @@ impl SstWindResponse {
         let grid = basin.grid();
         let row_weights: Vec<f64> = (0..grid.ny())
             .map(|j| {
-                meridional_structure(
+                gaussian(
                     basin.y_of_row_m(H_STAGGERING, j),
                     params.meridional_scale_m(),
                 )
@@ -356,12 +354,6 @@ impl SstWindResponse {
         self.index_k
     }
 
-    /// The parameters this response was built with.
-    #[must_use]
-    pub const fn params(&self) -> WindResponseParams {
-        self.params
-    }
-
     /// The basin whose SST anomaly this response reads.
     #[must_use]
     pub const fn grid(&self) -> Grid {
@@ -380,7 +372,7 @@ impl WindStress for SstWindResponse {
         (
             self.params.feedback_strength_pa_per_k()
                 * self.index_k
-                * meridional_structure(y_m, self.params.meridional_scale_m()),
+                * gaussian(y_m, self.params.meridional_scale_m()),
             NO_MERIDIONAL_STRESS,
         )
     }
@@ -468,13 +460,6 @@ impl<W: WindStress> CoupledWind<W> {
         total.assign(prescribed.at(t_s));
         total.add_sampled(basin, response, t_s);
         total
-    }
-
-    /// The atmospheric response this forcing adds, as of the last
-    /// [`CoupledWind::at`].
-    #[must_use]
-    pub const fn response(&self) -> &SstWindResponse {
-        &self.response
     }
 
     /// The basin the two halves are sampled over.
