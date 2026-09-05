@@ -27,13 +27,10 @@ pub mod wind;
 pub use coriolis::{BetaPlane, BetaPlaneError, CoriolisTerm};
 pub use integrator::{Rk4, StateVector};
 
+pub use run_writer::{OutputSchedule, OutputScheduleError, RunWriteError, RunWriter};
+
 /// Re-exported so a scenario, the solver and its tests name one set of
 /// physical parameters and one state type.
-pub use run_writer::{
-    OutputSchedule, OutputScheduleError, RunWriteError, RunWriter, FRAME_FILE_NAME,
-    HEADER_FILE_NAME,
-};
-
 pub use params::{
     PhysicalParams, PhysicalParamsError, EQUATORIAL_BETA_PER_M_PER_S,
     SEAWATER_REFERENCE_DENSITY_KG_PER_M3,
@@ -43,8 +40,10 @@ pub use solver::{step, Solver, SolverError};
 pub use state::OceanState;
 pub use wind::WindStress;
 
-/// Re-exported so binaries and the visualizer agree on one format version.
-pub use termocline_format::FORMAT_VERSION;
+/// Re-exported so binaries and the visualizer agree on one format version, and
+/// on where a run's two files live (ADR-0004: the format crate is the one
+/// place either is defined).
+pub use termocline_format::{FORMAT_VERSION, FRAME_FILE_NAME, HEADER_FILE_NAME};
 
 /// Re-exported so the solver, its tests and the scenario loader all share one
 /// definition of what a grid cell is and where each variable sits on it.

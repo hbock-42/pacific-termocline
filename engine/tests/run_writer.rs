@@ -22,7 +22,7 @@
 //! a plain byte stream, front to back, with no seeking and no trailer: if the
 //! format written here needed either, the web reader could not be built on it.
 //!
-//! [ADR-0006]: ../../docs/planning/adr/0006-visualizer-in-browser.md
+//! [ADR-0006]: ../../docs/planning/adr/0006-web-visualizer.md
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -31,10 +31,11 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use engine::{
     BetaPlane, Grid, OceanState, OutputSchedule, OutputScheduleError, PhysicalParams,
-    RunWriteError, RunWriter, Solver, Spacing, WindStress, FRAME_FILE_NAME, HEADER_FILE_NAME,
+    RunWriteError, RunWriter, Solver, Spacing, WindStress,
 };
 use termocline_format::{
-    BasinExtent, FormatError, Frame, GridSpec, RunHeader, Variable, FORMAT_VERSION,
+    frame_encoding, BasinExtent, FormatError, Frame, GridSpec, RunHeader, Variable, FORMAT_VERSION,
+    FRAME_FILE_NAME, HEADER_FILE_NAME,
 };
 
 /// Reduced gravity `g'` of the equatorial Pacific's first baroclinic mode, in
@@ -213,9 +214,9 @@ fn read_header(bytes: &[u8]) -> RunHeader {
 /// count from the header exactly as [ADR-0006]'s source-agnostic reader must:
 /// no seek, no index, no trailer.
 ///
-/// [ADR-0006]: ../../docs/planning/adr/0006-visualizer-in-browser.md
+/// [ADR-0006]: ../../docs/planning/adr/0006-web-visualizer.md
 fn read_frames(header: &RunHeader, bytes: &[u8]) -> Vec<Frame> {
-    let config = bincode::config::standard();
+    let config = frame_encoding();
     let mut cursor = std::io::Cursor::new(bytes);
     let mut frames = Vec::new();
     for index in 0..header.output.frame_count {

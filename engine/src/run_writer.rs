@@ -18,9 +18,15 @@
 //! - the frames are `bincode`-encoded, one after another, with nothing
 //!   between them and nothing after them.
 //!
-//! Frames are encoded with **`bincode::config::standard()`**. That is the
-//! whole of the frame encoding: a reader (T-05.3) that picks the same
-//! configuration reads what this writes, and one that picks another does not.
+//! A run cut short by a crash therefore still describes its scenario — the
+//! header is on disk from the first moment — and its frame file simply ends
+//! early, which a reader counting the header's frames sees as the truncation
+//! it is.
+//!
+//! Frames are encoded with [`termocline_format::frame_encoding`], which the
+//! format crate owns rather than this one: nothing in the bytes says which
+//! `bincode` configuration wrote them, so writer and reader have to be reading
+//! the same line of the contract (ADR-0004).
 //!
 //! # Why the header's frame count is promised up front
 //!
@@ -47,24 +53,21 @@
 //!
 //! [ADR-0001]: ../../docs/planning/adr/0001-engine-visualizer-split.md
 //! [ADR-0004]: ../../docs/planning/adr/0004-data-interchange-format.md
-//! [ADR-0006]: ../../docs/planning/adr/0006-visualizer-in-browser.md
+//! [ADR-0006]: ../../docs/planning/adr/0006-web-visualizer.md
 
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
-use termocline_format::{FormatError, Frame, GridSpec, OutputTiming, RunHeader};
+use termocline_format::{
+    frame_encoding, FormatError, Frame, GridSpec, OutputTiming, RunHeader, FRAME_FILE_NAME,
+    HEADER_FILE_NAME,
+};
 
 use crate::params::PhysicalParams;
 use crate::state::OceanState;
 use crate::wind::WindStress;
-
-/// Name of the JSON header inside a run directory.
-pub const HEADER_FILE_NAME: &str = "header.json";
-
-/// Name of the binary frame file inside a run directory.
-pub const FRAME_FILE_NAME: &str = "frames.bin";
 
 /// The engine's physical parameters as the format records them.
 ///
@@ -178,12 +181,6 @@ impl OutputSchedule {
     #[must_use]
     pub const fn total_steps(self) -> u64 {
         self.total_steps
-    }
-
-    /// Steps between saved frames.
-    #[must_use]
-    pub const fn every_n_steps(self) -> u64 {
-        self.every_n_steps
     }
 
     /// Model time between consecutive frames, in seconds — the *output*
@@ -306,15 +303,6 @@ impl From<bincode::error::EncodeError> for RunWriteError {
     }
 }
 
-/// The `bincode` configuration every frame is encoded with.
-///
-/// Named here because it is half of the format: the reader of T-05.3 must
-/// decode with the same configuration, and there is nothing in the bytes to
-/// tell it which one was used.
-fn frame_encoding() -> bincode::config::Configuration {
-    bincode::config::standard()
-}
-
 /// An open run: the header already written, the frames still arriving.
 ///
 /// Built at the start of a run from the [`RunHeader`] that describes it, fed
@@ -324,7 +312,7 @@ fn frame_encoding() -> bincode::config::Configuration {
 #[derive(Debug)]
 pub struct RunWriter<W: Write> {
     /// Where encoded frames go, in order, with nothing between them.
-    frames: W,
+    frame_sink: W,
     /// The grid the header describes; every frame is checked against it.
     grid: GridSpec,
     /// Frames the header promised.
@@ -344,7 +332,7 @@ impl<W: Write> RunWriter<W> {
     /// [`RunWriteError::Header`] if the header could not be encoded or written.
     pub fn new<H: Write>(
         mut header_sink: H,
-        frames: W,
+        frame_sink: W,
         header: &RunHeader,
     ) -> Result<Self, RunWriteError> {
         serde_json::to_writer(&mut header_sink, header)?;
@@ -353,7 +341,7 @@ impl<W: Write> RunWriter<W> {
         header_sink.write_all(b"\n")?;
         header_sink.flush()?;
         Ok(Self {
-            frames,
+            frame_sink,
             grid: header.grid,
             promised: header.output.frame_count,
             written: 0,
@@ -395,21 +383,9 @@ impl<W: Write> RunWriter<W> {
             wind_stress.tau_x_pa().as_slice().to_vec(),
             wind_stress.tau_y_pa().as_slice().to_vec(),
         )?;
-        bincode::serde::encode_into_std_write(&frame, &mut self.frames, frame_encoding())?;
+        bincode::serde::encode_into_std_write(&frame, &mut self.frame_sink, frame_encoding())?;
         self.written += 1;
         Ok(())
-    }
-
-    /// Frames written so far.
-    #[must_use]
-    pub const fn frames_written(&self) -> u64 {
-        self.written
-    }
-
-    /// Frames the header promised.
-    #[must_use]
-    pub const fn frames_promised(&self) -> u64 {
-        self.promised
     }
 
     /// Close the run, returning the frame sink.
@@ -425,8 +401,8 @@ impl<W: Write> RunWriter<W> {
                 written: self.written,
             });
         }
-        self.frames.flush()?;
-        Ok(self.frames)
+        self.frame_sink.flush()?;
+        Ok(self.frame_sink)
     }
 }
 
