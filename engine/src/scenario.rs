@@ -199,11 +199,13 @@ const BYTES_PER_GIB: u64 = 1 << 30;
 
 /// Bytes of solver state a run holds resident per grid cell.
 ///
-/// A run keeps eight `OceanState`-sized buffers alive from before its first
-/// step to after its last (`run.rs` § *What is allocated, and when*): the
-/// state, RK4's five stage buffers, and the two wind-stress fields — 22 `f64`
-/// per cell, rounded up to 24 for the one-row-and-column margin the staggered
-/// `u` and `v` fields carry. At 8 bytes a `f64` that is 192 bytes per cell.
+/// Counted off what a run holds alive from before its first step to after its
+/// last (`run.rs` § *What is allocated, and when*): the state and RK4's five
+/// stage buffers are six [`OceanState`](crate::OceanState)s of three fields
+/// each, and the two [`WindStressField`](crate::WindStressField)s carry two
+/// components apiece — 18 + 4 = 22 `f64` a cell, rounded up to 24 for the
+/// extra row and column the staggered `u` and `v` fields carry. At 8 bytes a
+/// `f64` that is 192 bytes a cell.
 ///
 /// It is an estimate of the resident set, not a measurement of it: what the
 /// budget below is protecting is the difference between a basin that fits in
@@ -644,8 +646,7 @@ impl ScenarioConfig {
 
         let wave_speed = WaveSpeed::new(physical_params.kelvin_wave_speed_m_per_s())?;
         check_timestep(schedule.dt_s(), basin.spacing(), wave_speed)?;
-        let plane = BetaPlane::new(physical_params, basin.spacing(), basin.southern_edge_y_m())
-            .expect("validated bounds place the basin at a finite position");
+        let plane = BetaPlane::of_basin(physical_params, basin);
         check_rotation_timestep(schedule.dt_s(), basin.grid(), plane)?;
 
         Ok(Scenario {

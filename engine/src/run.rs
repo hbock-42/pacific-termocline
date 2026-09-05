@@ -181,9 +181,10 @@ pub fn run_scenario(
 
     // The beta-plane is placed by the basin's southern boundary rather than
     // centred on the grid, so a scenario that does not straddle the equator
-    // gets the rotation of the latitudes it actually covers.
-    let plane = BetaPlane::new(params, basin.spacing(), basin.southern_edge_y_m())
-        .expect("a validated basin sits at a finite position");
+    // gets the rotation of the latitudes it actually covers. It is the same
+    // plane the scenario loader checked the rotation bound against, because
+    // both ask the basin for it.
+    let plane = BetaPlane::of_basin(params, basin);
     let mut solver = Solver::new(grid, basin.spacing(), params, plane, schedule.dt_s())?;
 
     let header = RunHeader::new(

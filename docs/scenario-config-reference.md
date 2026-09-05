@@ -187,9 +187,11 @@ resident bytes = nx · ny · 192           192 B/cell, see below
 budget         = 2 GiB                   ≈ 11.2 × 10⁶ cells
 ```
 
-The 192 bytes are the eight `OceanState`-sized buffers a run holds resident from
-before its first step to after its last — the state, RK4's five stage buffers,
-and the two wind-stress fields, 22 `f64` a cell rounded up to 24. The 2 GiB is
+The 192 bytes are counted off what a run holds resident from before its first
+step to after its last: the state and RK4's five stage buffers are six ocean
+states of three fields each, and the two wind-stress fields carry two components
+apiece — 18 + 4 = 22 `f64` a cell, rounded up to 24 for the extra row and column
+the staggered `u` and `v` fields carry, at 8 bytes each. The 2 GiB is
 project policy in the same sense as `CFL_SAFETY_FACTOR`: it admits 350 times the
 320 × 100 of the default basin — the Pacific at 0.03°, far finer than the
 deformation radius the model resolves — so a scenario past it is a scenario with

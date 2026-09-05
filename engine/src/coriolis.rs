@@ -28,6 +28,7 @@ use std::fmt;
 use termocline_grid::{Field2D, Grid, Staggering, U_STAGGERING, V_STAGGERING};
 use termocline_numerics::{CGridOperators, Spacing};
 
+use crate::basin::Basin;
 use crate::params::PhysicalParams;
 use crate::state::OceanState;
 
@@ -97,6 +98,24 @@ impl BetaPlane {
             dy_m: spacing.dy_m(),
             southern_edge_y_m,
         })
+    }
+
+    /// The beta-plane `basin` sits on: its own southern edge, its own cell
+    /// height, and `β` from `params`.
+    ///
+    /// The constructor a run uses, and the reason it is infallible where
+    /// [`BetaPlane::new`] is not: a [`Basin`] has already been refused a
+    /// southern edge that is not a finite position, so there is nothing left
+    /// here to reject. Named rather than written out at each call site so that
+    /// the loader's pre-flight check and the run it clears cannot place the
+    /// same basin on two different planes.
+    #[must_use]
+    pub fn of_basin(params: PhysicalParams, basin: Basin) -> Self {
+        Self {
+            beta_per_m_per_s: params.beta_per_m_per_s(),
+            dy_m: basin.spacing().dy_m(),
+            southern_edge_y_m: basin.southern_edge_y_m(),
+        }
     }
 
     /// The beta-plane of a basin straddling the equator symmetrically: half

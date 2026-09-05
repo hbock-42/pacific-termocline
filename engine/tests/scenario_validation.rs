@@ -1,40 +1,41 @@
-//! Acceptance tests for T-06.3 — config validation and actionable errors.
+//! Acceptance tests for T-06.3 — scenario validation and actionable errors.
 //!
-//! The criterion is that *each known-bad config, from a small table of
+//! The criterion is that *each known-bad scenario, from a small table of
 //! deliberately broken examples, fails immediately with a message that says
 //! what's wrong and how to fix it, not a panic/stack trace*. So this file is
 //! that table: [`BROKEN_SCENARIOS`] holds one deliberately broken example per
 //! way a scenario can be wrong, each as a one-line mutation of a template that
 //! is itself checked to be valid, and every one of them is driven through the
-//! same three assertions —
+//! same four assertions —
 //!
 //! 1. it is refused as a `Result`, never a panic (CODING_STANDARDS.md
 //!    § *Correctness and failure*);
 //! 2. the message names what is wrong — the offending value, and the field or
 //!    section it came from;
 //! 3. the message says how to fix it — the bound, the substitute value, or the
-//!    knob to turn.
+//!    knob to turn;
+//! 4. and none of it reads like a stack trace.
 //!
 //! *Immediately* is the other half of the ticket, and it is checked twice: at
 //! the library boundary, where `Scenario::from_toml` refuses the file rather
 //! than letting `Solver::new` refuse it later; and through the real binary,
-//! where a broken config has to leave the output directory untouched rather
+//! where a refused scenario has to leave the output directory untouched rather
 //! than a half-written run behind.
 //!
 //! # Where the expected numbers come from
 //!
-//! Nothing here is read back from the engine. Every bound a case sits the
+//! Nothing here is read back from the engine. Every bound an example sits the
 //! wrong side of is computed in the comment above it from the published
 //! formula — the CFL bound of `docs/planning/adr/0003-numerical-scheme.md`,
 //! the rotation bound of ADR-0007, the projection of
-//! `docs/scenario-config-reference.md` — so a case that stops being a
+//! `docs/scenario-config-reference.md` — so an example that stops being a
 //! violation fails here rather than passing for a new reason.
 //!
 //! # Tolerances
 //!
 //! None. Every assertion is either a substring of a message or a boolean about
 //! a file existing; the arithmetic in the comments only has to be right to the
-//! order of magnitude that puts a case on the wrong side of a bound, and each
+//! order of magnitude that puts an example on the wrong side of a bound, and each
 //! is over a factor of two clear of it.
 
 use std::fs;
@@ -84,7 +85,7 @@ struct BrokenScenario {
     /// What this example gets wrong, as the failure message reports it.
     what: &'static str,
     /// The line of [`VALID_TOML`] to replace, and what to replace it with. A
-    /// `from` that is not in the template is a broken case rather than a
+    /// `from` that is not in the template is a broken example rather than a
     /// broken engine, and is caught by
     /// [`every_broken_example_really_is_a_mutation_of_the_template`].
     from: &'static str,
@@ -132,14 +133,14 @@ const BROKEN_SCENARIOS: &[BrokenScenario] = &[
         what: "a cell size that is not a size",
         from: "resolution_deg = 0.5",
         to: "resolution_deg = -0.5",
-        names: &["resolution_deg", "-0.5"],
+        names: &["resolution_deg is -0.5"],
         remedy: &["greater than 0"],
     },
     BrokenScenario {
         what: "a northern boundary south of the southern one",
         from: "northern_latitude_deg = 25.0",
         to: "northern_latitude_deg = -25.0",
-        names: &["northern_latitude_deg", "southern_latitude_deg", "-25"],
+        names: &["northern_latitude_deg is -25", "southern_latitude_deg -25"],
         remedy: &["swap"],
     },
     BrokenScenario {
@@ -179,14 +180,14 @@ const BROKEN_SCENARIOS: &[BrokenScenario] = &[
         what: "a reduced gravity of zero, which would collapse the wave speed",
         from: "reduced_gravity_m_per_s2 = 0.06",
         to: "reduced_gravity_m_per_s2 = 0.0",
-        names: &["reduced_gravity_m_per_s2", "0"],
+        names: &["reduced_gravity_m_per_s2 is 0"],
         remedy: &["greater than 0"],
     },
     BrokenScenario {
         what: "a negative damping coefficient, which would amplify rather than damp",
         from: "rayleigh_damping_per_s = 1.0e-7",
         to: "rayleigh_damping_per_s = -1.0e-7",
-        names: &["rayleigh_damping_per_s", "-0.0000001"],
+        names: &["rayleigh_damping_per_s is -0.0000001"],
         remedy: &["at least 0"],
     },
     // --- `[run]`. ---
@@ -194,14 +195,14 @@ const BROKEN_SCENARIOS: &[BrokenScenario] = &[
         what: "a timestep of zero",
         from: "dt_s = 3600.0",
         to: "dt_s = 0.0",
-        names: &["dt_s", "0"],
+        names: &["dt_s is 0"],
         remedy: &["greater than 0"],
     },
     BrokenScenario {
         what: "an output cadence of zero, which is not a cadence",
         from: "output_every_n_steps = 24",
         to: "output_every_n_steps = 0",
-        names: &["every_n_steps", "0"],
+        names: &["every_n_steps is 0"],
         remedy: &["at least 1"],
     },
     BrokenScenario {
@@ -212,7 +213,7 @@ const BROKEN_SCENARIOS: &[BrokenScenario] = &[
         what: "an output cadence longer than the run",
         from: "output_every_n_steps = 24",
         to: "output_every_n_steps = 480",
-        names: &["every_n_steps", "480", "240"],
+        names: &["every_n_steps is 480", "240 steps long"],
         remedy: &["at most 240"],
     },
     BrokenScenario {
@@ -231,7 +232,7 @@ const BROKEN_SCENARIOS: &[BrokenScenario] = &[
         what: "westerly trade winds",
         from: "equatorial_zonal_stress_pa = -0.05",
         to: "equatorial_zonal_stress_pa = 0.05",
-        names: &["0.05"],
+        names: &["is 0.05 Pa"],
         remedy: &["negative"],
     },
 ];
@@ -273,81 +274,65 @@ output_every_n_steps = 24
 "#;
 
 // ---------------------------------------------------------------------------
-// Criterion: every known-bad config is refused, by name, with a remedy.
+// Criterion: every known-bad scenario is refused, by name, with a remedy.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn the_template_the_broken_examples_mutate_is_itself_valid() {
-    // Otherwise every case below could pass for the wrong reason.
+    // Otherwise every example below could pass for the wrong reason.
     Scenario::from_toml(VALID_TOML).expect("the template is a scenario the engine runs");
 }
 
 #[test]
 fn every_broken_example_really_is_a_mutation_of_the_template() {
-    for case in BROKEN_SCENARIOS {
+    for broken in BROKEN_SCENARIOS {
         assert!(
-            VALID_TOML.contains(case.from),
-            "the case for {} replaces `{}`, which the template does not carry, so it would \
+            VALID_TOML.contains(broken.from),
+            "the example for {} replaces `{}`, which the template does not carry, so it would \
              be tested against an unmodified — and valid — scenario",
-            case.what,
-            case.from
+            broken.what,
+            broken.from
         );
     }
 }
 
 #[test]
 fn every_broken_example_is_refused_rather_than_panicking() {
-    for case in BROKEN_SCENARIOS {
-        let error = refusal_of(case);
+    for broken in BROKEN_SCENARIOS {
+        let error = refusal_of(broken);
         // The refusal is a value, so the caller chooses what to do with it;
         // reaching this line at all is the assertion.
         assert!(
             !error.to_string().is_empty(),
-            "the case for {} was refused without saying anything",
-            case.what
+            "the example for {} was refused without saying anything",
+            broken.what
         );
     }
 }
 
 #[test]
 fn every_broken_example_names_what_is_wrong() {
-    for case in BROKEN_SCENARIOS {
-        let message = refusal_of(case).to_string();
-        for expected in case.names {
-            assert!(
-                message.contains(expected),
-                "the refusal of {} should name `{expected}`, got: {message}",
-                case.what
-            );
-        }
-    }
+    assert_every_refusal_carries(
+        |broken| broken.names,
+        "name the value or field that is wrong",
+    );
 }
 
 #[test]
 fn every_broken_example_says_how_to_fix_it() {
-    for case in BROKEN_SCENARIOS {
-        let message = refusal_of(case).to_string();
-        for expected in case.remedy {
-            assert!(
-                message.contains(expected),
-                "the refusal of {} should say how to fix it by mentioning `{expected}`, \
-                 got: {message}",
-                case.what
-            );
-        }
-    }
+    assert_every_refusal_carries(|broken| broken.remedy, "say how to fix it");
 }
 
 #[test]
 fn no_refusal_reads_like_a_stack_trace() {
-    for case in BROKEN_SCENARIOS {
-        let message = refusal_of(case).to_string();
+    for broken in BROKEN_SCENARIOS {
+        let message = refusal_of(broken).to_string();
         for leaked in ["panicked", "unwrap", "RUST_BACKTRACE", "src/"] {
             assert!(
                 !message.contains(leaked),
                 "the refusal of {} leaks `{leaked}` into a message a scenario author reads, \
                  got: {message}",
-                case.what
+                broken.what
             );
         }
     }
@@ -359,8 +344,8 @@ fn no_refusal_reads_like_a_stack_trace() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_timestep_past_the_rotation_bound_is_refused_when_the_config_is_read() {
-    // Both bounds on `dt_s` are part of reading the config, so a scenario the
+fn a_timestep_past_the_rotation_bound_is_refused_when_the_scenario_is_read() {
+    // Both bounds on `dt_s` are part of reading the scenario, so one the
     // solver would refuse is one the loader has already refused: validation
     // is complete when `Scenario::from_toml` returns, and nothing downstream
     // gets to discover a new objection.
@@ -380,7 +365,7 @@ fn a_timestep_past_the_rotation_bound_is_refused_when_the_config_is_read() {
 }
 
 #[test]
-fn the_rotation_bound_case_is_refused_only_by_rotation() {
+fn the_rotation_bound_example_is_refused_only_by_rotation() {
     // Otherwise the test above would pass on the CFL bound instead, and the
     // rotation check could be deleted without anything noticing.
     let cfl_safe = ROTATION_BOUND_TOML.replace("dt_s = 30000.0", "dt_s = 14000.0");
@@ -392,7 +377,7 @@ fn the_rotation_bound_case_is_refused_only_by_rotation() {
 fn a_basin_the_engine_can_hold_is_accepted() {
     // The memory budget is a bound, not a ban on refinement: 0.05° over the
     // Pacific is 3200 × 1000 = 3.2 × 10⁶ cells, which at the same 192 bytes a
-    // cell is ≈ 586 MiB — a tenth of the cells the refused 0.01° case asks
+    // cell is ≈ 586 MiB — a tenth of the cells the refused 0.01° example asks
     // for, times a hundredth.
     // At 0.05° the cells are ten times shorter, so the gravity-wave bound is
     // ten times shorter too — 0.8 · 5559.75 / 3.0 ≈ 1483 s — and the step has
@@ -404,7 +389,7 @@ fn a_basin_the_engine_can_hold_is_accepted() {
 }
 
 #[test]
-fn a_broken_config_leaves_no_half_written_run_behind() {
+fn a_refused_scenario_leaves_no_half_written_run_behind() {
     // "Fail fast rather than partway through a long run": the output
     // directory is untouched, so a second attempt is not competing with the
     // wreckage of the first.
@@ -421,7 +406,7 @@ fn a_broken_config_leaves_no_half_written_run_behind() {
 
     assert!(
         !output.status.success(),
-        "a broken config must fail the command"
+        "a scenario the engine refuses must fail the command"
     );
     assert!(
         !out.exists(),
@@ -430,7 +415,7 @@ fn a_broken_config_leaves_no_half_written_run_behind() {
 }
 
 #[test]
-fn the_binary_reports_a_broken_config_on_stderr_rather_than_panicking() {
+fn the_binary_reports_a_refused_scenario_on_stderr_rather_than_panicking() {
     let scratch = ScratchDir::new(TICKET, "no-stack-trace");
     let config = scratch.path().join("broken.toml");
     let out = scratch.path().join("run");
@@ -445,7 +430,7 @@ fn the_binary_reports_a_broken_config_on_stderr_rather_than_panicking() {
 
     assert!(
         !output.status.success(),
-        "a broken config must fail the command, got stderr: {stderr}"
+        "a scenario the engine refuses must fail the command, got stderr: {stderr}"
     );
     assert!(
         !stderr.contains("panicked"),
@@ -457,12 +442,34 @@ fn the_binary_reports_a_broken_config_on_stderr_rather_than_panicking() {
     );
 }
 
+/// Assert that every refusal in the table carries the substrings `wanted`
+/// picks out of its example, reporting `duty` when one is missing.
+///
+/// The two criteria — naming what is wrong and saying how to fix it — are the
+/// same walk over the same table, differing only in which column they read, so
+/// they are one helper rather than two loops that could drift apart.
+fn assert_every_refusal_carries(
+    wanted: fn(&BrokenScenario) -> &'static [&'static str],
+    duty: &str,
+) {
+    for broken in BROKEN_SCENARIOS {
+        let message = refusal_of(broken).to_string();
+        for expected in wanted(broken) {
+            assert!(
+                message.contains(expected),
+                "the refusal of {} should {duty}, by carrying `{expected}`; got: {message}",
+                broken.what
+            );
+        }
+    }
+}
+
 /// The refusal of one broken example, as the loader reports it.
-fn refusal_of(case: &BrokenScenario) -> ScenarioError {
-    let toml = VALID_TOML.replace(case.from, case.to);
+fn refusal_of(broken: &BrokenScenario) -> ScenarioError {
+    let toml = VALID_TOML.replace(broken.from, broken.to);
     Scenario::from_toml(&toml)
         .err()
-        .unwrap_or_else(|| panic!("the engine accepted {}:\n{toml}", case.what))
+        .unwrap_or_else(|| panic!("the engine accepted {}:\n{toml}", broken.what))
 }
 
 /// `termocline run` over `config`, writing into `out`.
