@@ -540,8 +540,11 @@ impl BasinMap {
                 ui.label("east");
             });
         });
+        // The chart and the two rows of text around it come out of the height
+        // the map would otherwise have taken, so that turning it on shrinks the
+        // map rather than pushing the colour bar off a short window.
         let reserved_pt = if self.show_section {
-            CROSS_SECTION_HEIGHT_PT + COLOR_BAR_HEIGHT
+            CROSS_SECTION_HEIGHT_PT + ui.text_style_height(&egui::TextStyle::Body) * 2.0
         } else {
             0.0
         };
@@ -549,16 +552,14 @@ impl BasinMap {
         if self.show_wind {
             draw_wind_arrows(ui, map, drawn);
         }
-        // Read off before the colour bar, which needs the map by mutable
-        // borrow to build the run's bar the first time it is asked for.
-        let strongest_pa = drawn.wind.scale().max_magnitude_pa();
         draw_color_bar(ui, self.bar.as_ref().expect("a colour bar was just built"));
         if self.show_section {
             draw_cross_section(ui, &drawn.section);
         }
         if self.show_wind {
             ui.label(format!(
-                "Wind stress τ: the longest arrow is {strongest_pa:.3} N m^-2, the strongest in the run"
+                "Wind stress τ: the longest arrow is {:.3} N m^-2, the strongest in the run",
+                drawn.wind.scale().max_magnitude_pa()
             ));
         }
     }
