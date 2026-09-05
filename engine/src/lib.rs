@@ -14,12 +14,18 @@
 //! [`RunWriter`] that saves the result at a configurable output cadence; and,
 //! on the CLI side, the scenario runner behind `run` and the `inspect` command
 //! that reports a written run's header back to a terminal.
+//!
+//! [`benchmark`] is the odd one out: it computes nothing the simulation needs,
+//! and holds the workloads `benches/` measures — a module of the library
+//! rather than a benchmark-local helper so that its definitions can be
+//! asserted on by a test (`docs/benchmarks.md`).
 
 // The acceptance criterion of T-02.1 is that every field states its unit; the
 // lint is what keeps that true as the crate grows.
 #![warn(missing_docs)]
 
 pub mod basin;
+pub mod benchmark;
 pub mod boundary;
 pub mod coriolis;
 pub mod forcing;

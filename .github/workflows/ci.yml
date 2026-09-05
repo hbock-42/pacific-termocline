@@ -47,3 +47,59 @@ jobs:
       # `std::fs` import leaked into the core reader.
       - name: Check the format crate without its filesystem feature
         run: cargo check -p termocline-format --no-default-features
+
+  # Non-blocking by design (T-10.1): a benchmark is a measurement, and a
+  # measurement taken on a shared runner whose neighbours we do not control is
+  # not a thing to fail a pull request on. `continue-on-error` keeps a slow or
+  # broken run from blocking a merge, and the job id is deliberately *not*
+  # `ci`, which is the one the `main` ruleset requires (ADR-0005).
+  #
+  # What it is for is the report: the figures land in the job summary, so a
+  # change to the hot path arrives at review with numbers attached rather than
+  # with an argument about whether it is faster (CODING_STANDARDS.md
+  # § *Optimize against a measurement*).
+  bench:
+    name: bench (report only)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      # `--quick` trades criterion's hundred samples for a single-pass
+      # estimate. The full suite takes about a minute of wall clock on a warm
+      # machine, which is more than a report on every pull request is worth;
+      # a real comparison is run locally, per `docs/benchmarks.md`.
+      # `pipefail` because the pipe into `tee` would otherwise report a failed
+      # benchmark run as a success; the job is non-blocking either way, but a
+      # summary that says nothing went wrong when something did is worse than
+      # no summary.
+      - name: Benchmark
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo bench -p engine -- --quick | tee benchmarks.txt
+
+      - name: Report
+        if: always()
+        run: |
+          {
+            echo '## Benchmarks (report only, not a gate)'
+            echo
+            echo 'Grid cells per second for the right-hand side, timesteps per second'
+            echo 'for a short scenario run. Runner hardware varies between jobs, so'
+            echo 'compare figures within one run, not across pull requests.'
+            echo
+            echo '```'
+            if [ -s benchmarks.txt ]; then
+              cat benchmarks.txt
+            else
+              echo 'the benchmark run produced no output — see the Benchmark step'
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
