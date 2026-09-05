@@ -19,10 +19,11 @@ The project is split into two independent components:
   types: indexing and staggering, no physics
   ([ADR-0003](docs/planning/adr/0003-numerical-scheme.md)).
 
-The physics is not implemented yet: the crates are skeletons, and the equations
-land in Epics 01–04. The scientific model, architecture, and full backlog were
-specified up front under `docs/planning/`, and the backlog now lives as
+The scientific model, architecture, and full backlog were specified up front
+under `docs/planning/`, and the backlog now lives as
 [GitHub issues](https://github.com/hbock-42/pacific-termocline/issues).
+[`docs/getting-started.md`](docs/getting-started.md) walks from a clean
+checkout to a simulation on screen.
 
 ```sh
 cargo build --workspace
@@ -53,15 +54,16 @@ with the run copied into `visualizer/dist/run-demo/`.
 
 ## Where to start reading
 
-1. [`docs/planning/00-vision-and-scope.md`](docs/planning/00-vision-and-scope.md) — what we're building and why.
-2. [`docs/planning/01-scientific-model.md`](docs/planning/01-scientific-model.md) — the physics and equations being simulated.
-3. [`docs/the-physics-explained.md`](docs/the-physics-explained.md) — the same physics in plain language, for readers who want to understand a run rather than derive the equations.
-4. [`docs/validation-report.md`](docs/validation-report.md) — how we know the simulation is scientifically correct: each scientific test, its analytic prediction, the measured result and the derived tolerance.
-5. [`docs/scenario-config-reference.md`](docs/scenario-config-reference.md) — every field of a scenario TOML file, its units and its valid range.
-6. [`docs/benchmarks.md`](docs/benchmarks.md) — what the performance suite measures, how to run it, and how to read its figures.
-7. [`docs/planning/adr/`](docs/planning/adr/) — key architecture decisions.
-8. [`docs/planning/epics/`](docs/planning/epics/) — the full backlog, epic by epic, each broken into ticket-sized units of work. Frozen: the GitHub issues are authoritative.
-9. [`CONTEXT.md`](CONTEXT.md) — the domain glossary, physics terms with their symbols.
+1. [`docs/getting-started.md`](docs/getting-started.md) — running your first simulation: build, run a scenario, inspect it, open it in the visualizer.
+2. [`docs/planning/00-vision-and-scope.md`](docs/planning/00-vision-and-scope.md) — what we're building and why.
+3. [`docs/planning/01-scientific-model.md`](docs/planning/01-scientific-model.md) — the physics and equations being simulated.
+4. [`docs/the-physics-explained.md`](docs/the-physics-explained.md) — the same physics in plain language, for readers who want to understand a run rather than derive the equations.
+5. [`docs/validation-report.md`](docs/validation-report.md) — how we know the simulation is scientifically correct: each scientific test, its analytic prediction, the measured result and the derived tolerance.
+6. [`docs/scenario-config-reference.md`](docs/scenario-config-reference.md) — every field of a scenario TOML file, its units and its valid range.
+7. [`docs/benchmarks.md`](docs/benchmarks.md) — what the performance suite measures, how to run it, and how to read its figures.
+8. [`docs/planning/adr/`](docs/planning/adr/) — key architecture decisions.
+9. [`docs/planning/epics/`](docs/planning/epics/) — the full backlog, epic by epic, each broken into ticket-sized units of work. Frozen: the GitHub issues are authoritative.
+10. [`CONTEXT.md`](CONTEXT.md) — the domain glossary, physics terms with their symbols.
 
 ## Contributing
 
