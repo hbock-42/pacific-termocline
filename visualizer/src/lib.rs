@@ -18,6 +18,7 @@ mod app;
 mod heatmap;
 mod loading;
 mod pending;
+mod playback;
 mod run;
 mod scrubber;
 mod wind;
@@ -28,6 +29,7 @@ pub use heatmap::{DivergingScale, Heatmap};
 pub use loading::native::read_run_directory;
 pub use loading::Loader;
 pub use pending::PendingRun;
+pub use playback::{Playback, MAX_STALL_S, PLAYBACK_SPEEDS_FPS};
 pub use run::{LoadedRun, MetadataRow, RunBytes};
 pub use scrubber::Scrubber;
 pub use wind::{
