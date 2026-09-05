@@ -72,13 +72,17 @@ pub const REFERENCE_DENSITY_KG_PER_M3: f64 = engine::SEAWATER_REFERENCE_DENSITY_
 /// measurement that reads positions.
 pub const UNDAMPED_PER_S: f64 = 0.0;
 
-/// The equatorial-Pacific parameter set the validations run in.
+/// The equatorial-Pacific parameter set the validations run in, undamped.
 ///
 /// # Panics
 /// If the published parameters above are rejected as unphysical, which would
 /// mean the engine's validation is wrong rather than the values.
 pub fn pacific_params() -> PhysicalParams {
-    params_with_reduced_gravity_and_beta(PACIFIC_REDUCED_GRAVITY_M_PER_S2, BETA_PER_M_PER_S)
+    params_with(
+        PACIFIC_REDUCED_GRAVITY_M_PER_S2,
+        BETA_PER_M_PER_S,
+        UNDAMPED_PER_S,
+    )
 }
 
 /// The same ocean with `g'` and `β` replaced, and `H`, `ρ₀` and the undamped
@@ -97,14 +101,50 @@ pub fn params_with_reduced_gravity_and_beta(
     reduced_gravity_m_per_s2: f64,
     beta_per_m_per_s: f64,
 ) -> PhysicalParams {
+    params_with(reduced_gravity_m_per_s2, beta_per_m_per_s, UNDAMPED_PER_S)
+}
+
+/// The same ocean, damped at `rayleigh_damping_per_s`.
+///
+/// A wave-speed validation reads positions and wants [`UNDAMPED_PER_S`]; a
+/// *steady-state* validation cannot, because an undamped closed basin never
+/// stops ringing — the free modes a switched-on wind excites conserve their
+/// energy and the run has no equilibrium to reach. Damping is therefore part
+/// of the configuration of a steady-state test rather than a nuisance in it,
+/// and this is the same published ocean with `r` left to the test that states
+/// how long it is prepared to spin up for.
+///
+/// # Panics
+/// If the published parameters are rejected as unphysical, or if
+/// `rayleigh_damping_per_s` is not a finite, non-negative rate.
+pub fn pacific_damped_params(rayleigh_damping_per_s: f64) -> PhysicalParams {
+    params_with(
+        PACIFIC_REDUCED_GRAVITY_M_PER_S2,
+        BETA_PER_M_PER_S,
+        rayleigh_damping_per_s,
+    )
+}
+
+/// The published ocean with the three parameters the validations vary left
+/// open. `H` and `ρ₀` are never varied, so they stay written out here rather
+/// than travelling through every caller.
+///
+/// # Panics
+/// If the combination is rejected as unphysical: the caller asked for an ocean
+/// that does not exist, rather than the engine being at fault.
+fn params_with(
+    reduced_gravity_m_per_s2: f64,
+    beta_per_m_per_s: f64,
+    rayleigh_damping_per_s: f64,
+) -> PhysicalParams {
     PhysicalParams::new(
         reduced_gravity_m_per_s2,
         PACIFIC_MEAN_DEPTH_M,
-        UNDAMPED_PER_S,
+        rayleigh_damping_per_s,
         beta_per_m_per_s,
         REFERENCE_DENSITY_KG_PER_M3,
     )
-    .expect("the caller's reduced gravity and beta are physical")
+    .expect("the caller's reduced gravity, beta and damping are physical")
 }
 
 /// Kelvin wave speed `c = √(g'·H)`, in m/s, written out from the definition in
@@ -269,6 +309,32 @@ impl Waveguide {
         integral * (self.dy_m / self.le_m) / structure.hermite_norm()
     }
 
+    /// The `ψₘ` coefficient of a cell-centred field given as `value(i, j)`,
+    /// column by column, on this waveguide's *analytic* normalisation.
+    ///
+    /// [`Waveguide::coefficient`] applied to each of `nx` columns in turn, and
+    /// so the twin of [`project_columns`] that divides by the analytic
+    /// `∫ψₘ² dŷ` rather than by the discrete `Σψₘ²`. That is the normalisation
+    /// a test needs when it compares a projected column against an amplitude
+    /// written down from theory — the forcing's own `ψₘ` coefficient, say —
+    /// rather than one projection against another.
+    pub fn column_coefficients(
+        &self,
+        nx: usize,
+        structure: MeridionalStructure,
+        value: impl Fn(usize, usize) -> f64,
+    ) -> Vec<f64> {
+        let mut column = vec![0.0; self.row_y_m.len()];
+        (0..nx)
+            .map(|i| {
+                for (j, row) in column.iter_mut().enumerate() {
+                    *row = value(i, j);
+                }
+                self.coefficient(&column, structure)
+            })
+            .collect()
+    }
+
     /// The second-order meridional truncation bound for `structure`, as a
     /// fraction of a wave speed: `(2m + 1)·(Δy/Le)²`, with the remaining `O(1)`
     /// constant taken as one.
@@ -359,12 +425,29 @@ pub fn gravest_current_projection(
         basin,
         deformation_radius_m,
         MeridionalStructure::Gravest,
-        |i, j| {
-            let west = state.u().get(i, j).expect("an east/west face");
-            let east = state.u().get(i + 1, j).expect("an east/west face");
-            0.5 * (west + east) / wave_speed_m_per_s
-        },
+        |i, j| zonal_current_at_cell_centre_in_c(state, i, j, wave_speed_m_per_s),
     )
+}
+
+/// The zonal current at the centre of cell `(i, j)`, in units of
+/// `wave_speed_m_per_s`.
+///
+/// `u` lives on the cell's two east/west faces, so reading it where `h` is
+/// means averaging them. Every test that forms an invariant of `u` and `h`
+/// needs that average at the same positions, which is why it is one definition
+/// here rather than one closure per caller.
+///
+/// # Panics
+/// If `(i, j)` is not a cell of `state`'s basin.
+pub fn zonal_current_at_cell_centre_in_c(
+    state: &OceanState,
+    i: usize,
+    j: usize,
+    wave_speed_m_per_s: f64,
+) -> f64 {
+    let west = state.u().get(i, j).expect("an east/west face");
+    let east = state.u().get(i + 1, j).expect("an east/west face");
+    0.5 * (west + east) / wave_speed_m_per_s
 }
 
 /// The two `ψ₀` invariants of a state, column by column.
