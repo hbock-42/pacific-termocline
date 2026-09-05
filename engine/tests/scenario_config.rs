@@ -40,6 +40,14 @@ const OUTPUT_EVERY_N_STEPS: u64 = 24;
 const TRADE_STRESS_PA: f64 = -0.05;
 const TRADE_DECAY_SCALE_M: f64 = 361_000.0;
 
+/// The example scenarios the ticket asks for, one per scenario of
+/// `docs/planning/01-scientific-model.md`.
+const EXAMPLE_FILE_NAMES: [&str; 3] = [
+    "steady-trades.toml",
+    "seasonal-cycle.toml",
+    "wind-burst.toml",
+];
+
 fn scenarios_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("scenarios")
 }
@@ -107,17 +115,11 @@ fn assert_shared_basin_physics_and_run(scenario: &Scenario) {
 
 #[test]
 fn every_example_scenario_loads() {
-    for file_name in [
-        "steady-trades.toml",
-        "seasonal-cycle.toml",
-        "wind-burst.toml",
-    ] {
+    for file_name in EXAMPLE_FILE_NAMES {
         let path = scenarios_dir().join(file_name);
-        assert!(
-            Scenario::load(&path).is_ok(),
-            "{file_name} should load, got {:?}",
-            Scenario::load(&path).err()
-        );
+        if let Err(error) = Scenario::load(&path) {
+            panic!("{file_name} should load, got: {error}");
+        }
     }
 }
 
@@ -251,16 +253,20 @@ fn wind_burst_example_stacks_a_burst_on_the_trades() {
 }
 
 #[test]
-fn a_scenario_round_trips_through_toml() {
-    // serde-based (de)serialization, not just deserialization: the config a
-    // future `termocline run` records alongside a run must read back as the
-    // same scenario.
-    let source = std::fs::read_to_string(scenarios_dir().join("wind-burst.toml"))
-        .expect("the example file is in the repository");
-    let config = ScenarioConfig::from_toml(&source).expect("the example file parses");
-    let written = config.to_toml().expect("a valid config serializes");
-    let reparsed = ScenarioConfig::from_toml(&written).expect("what we wrote is what we read");
-    assert_eq!(reparsed, config);
+fn every_example_round_trips_through_toml() {
+    // serde-based (de)serialization, not just deserialization: what the loader
+    // read has to write back out as the same scenario, so a run can record the
+    // scenario that produced it.
+    for file_name in EXAMPLE_FILE_NAMES {
+        let source = std::fs::read_to_string(scenarios_dir().join(file_name))
+            .expect("the example file is in the repository");
+        let config = ScenarioConfig::from_toml(&source)
+            .unwrap_or_else(|error| panic!("{file_name}: {error}"));
+        let written = config.to_toml().expect("a valid scenario serializes");
+        let reparsed = ScenarioConfig::from_toml(&written)
+            .unwrap_or_else(|error| panic!("{file_name}, written back: {error}"));
+        assert_eq!(reparsed, config, "{file_name} should survive a round trip");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -307,6 +313,19 @@ fn a_zero_grid_extent_is_rejected_by_name() {
     assert!(
         message.contains("ny") && message.contains('0'),
         "the message should name the offending extent, got: {message}"
+    );
+}
+
+#[test]
+fn a_negative_grid_extent_is_rejected_at_the_line_that_carries_it() {
+    // A count of cells has no negative values to reject downstream, so this
+    // one is refused while the file is still being parsed. The message still
+    // has to point at the offending line rather than at the file.
+    let error = error_from(&VALID_TOML.replace("nx = 200", "nx = -200"));
+    let message = error.to_string();
+    assert!(
+        message.contains("nx = -200"),
+        "the message should quote the line it rejected, got: {message}"
     );
 }
 
@@ -401,12 +420,14 @@ fn a_malformed_file_is_reported_rather_than_panicked() {
 
 #[test]
 fn a_missing_section_is_reported_by_name() {
-    let without_run = VALID_TOML.replace("[run]", "[unused]");
-    let error = error_from(&without_run);
+    let (before_run, _) = VALID_TOML
+        .split_once("[run]")
+        .expect("the template has a [run] section to drop");
+    let error = error_from(before_run);
     let message = error.to_string();
     assert!(
-        message.contains("run"),
-        "the message should name the section that is missing, got: {message}"
+        message.contains("missing field") && message.contains("run"),
+        "the message should say which section is missing, got: {message}"
     );
 }
 

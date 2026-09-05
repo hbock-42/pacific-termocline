@@ -85,11 +85,13 @@ use crate::run_writer::{OutputSchedule, OutputScheduleError};
 
 /// Why a scenario could not be read.
 ///
-/// Every variant is invalid *input* — a file that is not a scenario, or a
-/// scenario the engine cannot run — so they are returned rather than panicked.
-/// The variants that wrap another crate's error do so precisely to keep that
-/// error's message, which already names the offending value and the bound it
-/// violated; this type only says which part of the file it came from.
+/// All but one variant describe invalid *input* — a file that is not a
+/// scenario, or a scenario the engine cannot run — so they are returned rather
+/// than panicked; [`ScenarioError::Unwritable`] is the exception, and reports
+/// a scenario the engine holds that TOML cannot express. The variants that
+/// wrap another crate's error do so precisely to keep that error's message,
+/// which already names the offending value and the bound it violated; this
+/// type only says which part of the file it came from.
 #[derive(Debug)]
 pub enum ScenarioError {
     /// The scenario file could not be read from disk.
@@ -213,7 +215,7 @@ impl From<CflError> for ScenarioError {
 /// where its southwest corner sits.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct BasinConfig {
+pub struct BasinSection {
     /// Cells east–west.
     pub nx: usize,
     /// Cells north–south.
@@ -233,7 +235,7 @@ pub struct BasinConfig {
     pub southern_edge_y_m: Option<f64>,
 }
 
-impl BasinConfig {
+impl BasinSection {
     /// The [`Basin`] this section describes.
     ///
     /// # Errors
@@ -243,11 +245,16 @@ impl BasinConfig {
     pub fn build(&self) -> Result<Basin, ScenarioError> {
         let grid = Grid::new(self.nx, self.ny)?;
         let spacing = Spacing::new(self.dx_m, self.dy_m)?;
-        let centered = Basin::centered_on_equator(grid, spacing);
-        let western_edge_x_m = self.western_edge_x_m.unwrap_or(centered.western_edge_x_m());
+        // The defaults are read off `Basin::centered_on_equator` rather than
+        // restated here, so the file format and the basin cannot drift apart
+        // about where an unplaced basin sits.
+        let default_placement = Basin::centered_on_equator(grid, spacing);
+        let western_edge_x_m = self
+            .western_edge_x_m
+            .unwrap_or(default_placement.western_edge_x_m());
         let southern_edge_y_m = self
             .southern_edge_y_m
-            .unwrap_or(centered.southern_edge_y_m());
+            .unwrap_or(default_placement.southern_edge_y_m());
         Ok(Basin::new(
             grid,
             spacing,
@@ -264,7 +271,7 @@ impl BasinConfig {
 /// only states them when it deliberately varies them.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PhysicsConfig {
+pub struct PhysicsSection {
     /// Reduced gravity `g'`, in m/s².
     pub reduced_gravity_m_per_s2: f64,
     /// Mean thermocline depth `H`, in metres.
@@ -281,7 +288,7 @@ pub struct PhysicsConfig {
     pub reference_density_kg_per_m3: Option<f64>,
 }
 
-impl PhysicsConfig {
+impl PhysicsSection {
     /// The [`PhysicalParams`] this section describes.
     ///
     /// # Errors
@@ -302,7 +309,7 @@ impl PhysicsConfig {
 /// The `[run]` section: how long the run is and how often it is saved.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RunConfig {
+pub struct RunSection {
     /// Length of one solver step, in seconds.
     pub dt_s: f64,
     /// Steps the run takes from its initial state — the run length, in steps
@@ -313,7 +320,7 @@ pub struct RunConfig {
     pub output_every_n_steps: u64,
 }
 
-impl RunConfig {
+impl RunSection {
     /// The [`OutputSchedule`] this section describes.
     ///
     /// # Errors
@@ -337,7 +344,7 @@ impl RunConfig {
 /// be — the components sum, and a sum is flat.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum WindConfig {
+pub enum WindSection {
     /// [`SteadyTradeWinds`]: the control scenario.
     SteadyTradeWinds {
         /// Zonal stress `τ₀` on the equator, in Pa. Strictly negative.
@@ -380,7 +387,7 @@ pub enum WindConfig {
     },
 }
 
-impl WindConfig {
+impl WindSection {
     /// The forcing this entry describes.
     ///
     /// # Errors
@@ -474,16 +481,16 @@ impl WindStress for ScenarioWind {
 #[serde(deny_unknown_fields)]
 pub struct ScenarioConfig {
     /// The `[basin]` section.
-    pub basin: BasinConfig,
+    pub basin: BasinSection,
     /// The `[physics]` section.
-    pub physics: PhysicsConfig,
+    pub physics: PhysicsSection,
     /// The `[run]` section.
-    pub run: RunConfig,
+    pub run: RunSection,
     /// The `[[wind]]` entries, in the order they are summed. An empty list is
     /// a calm ocean, which is the undriven limit of
     /// `docs/planning/01-scientific-model.md` rather than a mistake.
     #[serde(default)]
-    pub wind: Vec<WindConfig>,
+    pub wind: Vec<WindSection>,
 }
 
 impl ScenarioConfig {
@@ -524,7 +531,7 @@ impl ScenarioConfig {
         let winds = self
             .wind
             .iter()
-            .map(WindConfig::build)
+            .map(WindSection::build)
             .collect::<Result<Vec<_>, _>>()?;
 
         let wave_speed = WaveSpeed::new(physical_params.kelvin_wave_speed_m_per_s())?;
@@ -601,6 +608,10 @@ impl Scenario {
     /// file order.
     ///
     /// An empty `[[wind]]` list gives an empty composite, which is calm.
+    ///
+    /// This allocates one box per component, so it is a once-per-run call:
+    /// assemble the composite before the first step and reuse it, never inside
+    /// the time-stepping loop (CODING_STANDARDS.md § *Performance*).
     #[must_use]
     pub fn wind(&self) -> CompositeWind {
         self.winds
