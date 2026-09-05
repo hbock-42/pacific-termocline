@@ -94,6 +94,50 @@ pub trait WindStress {
     /// Easterly stress — the alizés — is `τx < 0` (`CONTEXT.md`, *Wind
     /// stress*).
     fn stress(&self, x_m: f64, y_m: f64, t_s: f64) -> (f64, f64);
+
+    /// Whether this wind depends on `t` at all — what lets
+    /// [`WindForcing`] reuse a field it has already sampled.
+    ///
+    /// The default is [`TimeDependence::Varying`], which is the answer that is
+    /// always safe: an implementation that says nothing is re-sampled at every
+    /// instant, exactly as before this method existed. Overriding it with
+    /// [`TimeDependence::Steady`] is a *promise* that `stress(x, y, t)` does
+    /// not depend on `t`, and breaking that promise silently freezes the
+    /// forcing of a whole run.
+    fn time_dependence(&self) -> TimeDependence {
+        TimeDependence::Varying
+    }
+}
+
+/// Whether a [`WindStress`] varies with time.
+///
+/// The declaration T-10.5 turns on. `docs/performance-notes.md` measured
+/// re-sampling the wind at 71% of a timestep, all of it recomputing what the
+/// previous RK4 stage had already computed — but only for a forcing that does
+/// not actually move, and [`SeasonalTradeWinds`] and [`WindBurstAnomaly`]
+/// genuinely do. So the property is asked of the wind rather than assumed of
+/// the scenario, and the variant that costs nothing to be wrong about is the
+/// default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeDependence {
+    /// `stress(x, y, t)` is the same for every `t`: one sampling is the field
+    /// for the whole run.
+    Steady,
+    /// The stress moves with time, so a field is only the field of the instant
+    /// it was sampled at.
+    Varying,
+}
+
+impl TimeDependence {
+    /// The dependence of a sum of two winds: steady only if both are, because
+    /// a sum is constant in time exactly when every term is.
+    #[must_use]
+    const fn and(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Steady, Self::Steady) => Self::Steady,
+            _ => Self::Varying,
+        }
+    }
 }
 
 /// Why a wind-stress scenario could not be built.
@@ -309,6 +353,12 @@ impl WindStress for SteadyTradeWinds {
         };
         (self.equatorial_zonal_stress_pa * decay, CALM)
     }
+
+    /// Steady is the scenario's name and its whole content: `stress` above
+    /// does not read `t_s`.
+    fn time_dependence(&self) -> TimeDependence {
+        TimeDependence::Steady
+    }
 }
 
 /// The trade winds breathing with the year — the seasonal-cycle scenario of
@@ -409,6 +459,21 @@ impl WindStress for SeasonalTradeWinds {
         let modulation = self.modulation(t_s);
         let (tau_x_pa, tau_y_pa) = self.steady.stress(x_m, y_m, t_s);
         (tau_x_pa * modulation, tau_y_pa * modulation)
+    }
+
+    /// A season varies with time — that is what it is for — unless its
+    /// amplitude is zero, in which case `1 + a·cos(…)` is the literal `1.0`
+    /// for every `t`: `mul_add(cos, 1.0)` with `a = 0` is exact whatever the
+    /// cosine is, so the modulated field *is* the steady one and the promise
+    /// holds. A scenario configured with no season at all therefore costs what
+    /// the control scenario costs, rather than paying for a harmonic it turned
+    /// off.
+    fn time_dependence(&self) -> TimeDependence {
+        if self.relative_amplitude == 0.0 {
+            self.steady.time_dependence()
+        } else {
+            TimeDependence::Varying
+        }
     }
 }
 
@@ -578,6 +643,13 @@ impl WindStress for WindBurstAnomaly {
             * gaussian(t_s - self.peak_time_s, self.duration_s);
         (self.peak_zonal_stress_pa * envelope, CALM)
     }
+
+    /// A burst is a Gaussian in `t` with a strictly positive duration, so it
+    /// varies at every instant: there is no configuration of one that is
+    /// steady.
+    fn time_dependence(&self) -> TimeDependence {
+        TimeDependence::Varying
+    }
 }
 
 /// Several wind scenarios blowing at once: the pointwise sum of its
@@ -639,6 +711,18 @@ impl WindStress for CompositeWind {
             .fold((CALM, CALM), |(tau_x_pa, tau_y_pa), component| {
                 let (component_x_pa, component_y_pa) = component.stress(x_m, y_m, t_s);
                 (tau_x_pa + component_x_pa, tau_y_pa + component_y_pa)
+            })
+    }
+
+    /// Steady only if every component is, which is superposition read
+    /// backwards: the sum stops being constant in time as soon as one term
+    /// does. An empty composite is calm, and calm does not change — the same
+    /// reason it is the zero of this combinator.
+    fn time_dependence(&self) -> TimeDependence {
+        self.components
+            .iter()
+            .fold(TimeDependence::Steady, |dependence, component| {
+                dependence.and(component.time_dependence())
             })
     }
 }
@@ -762,6 +846,133 @@ impl WindStressField {
     #[must_use]
     pub const fn tau_y_pa(&self) -> &Field2D<f64> {
         &self.tau_y_pa
+    }
+}
+
+/// Which instant a sampled field is the field of, and whether that can go
+/// stale.
+///
+/// The whole invalidation rule of T-10.5, in one place because two callers
+/// need it: [`WindForcing`], which keeps a field across the steps of a run,
+/// and [`Solver::step_forced_by`](crate::Solver::step_forced_by), which is
+/// handed the wind per call and so can only keep one across the stages of a
+/// step.
+///
+/// A held field may be reused on exactly two grounds, both of them properties
+/// of the [`WindStress`] contract rather than of any scenario:
+///
+/// - the instant asked for is the instant held, bit for bit — a `WindStress`
+///   is a pure function of `(x, y, t)`, so the same `t` gives the same field.
+///   RK4's four stages ask about three instants (`t`, `t + dt/2` twice,
+///   `t + dt`), and a step's last stage asks about what the next step's first
+///   stage asks about, so this alone halves the sampling of a wind that varies
+///   in time as fast as it likes;
+/// - the wind declared itself [`TimeDependence::Steady`], in which case every
+///   instant is the instant held.
+///
+/// Anything else re-samples. There is deliberately no third ground.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct HeldInstant {
+    /// What the wind said about its own dependence on time. Captured once: a
+    /// `WindStress` is a pure function, so its answer cannot change under an
+    /// immutable wind.
+    dependence: TimeDependence,
+    /// The instant the field holds, in seconds, or `None` before anything has
+    /// been sampled into it.
+    sampled_t_s: Option<f64>,
+}
+
+impl HeldInstant {
+    /// A cache holding nothing yet, for a wind of `dependence`.
+    pub(crate) const fn nothing(dependence: TimeDependence) -> Self {
+        Self {
+            dependence,
+            sampled_t_s: None,
+        }
+    }
+
+    /// Whether the field this describes is already the field at `t_s`.
+    pub(crate) fn holds(self, t_s: f64) -> bool {
+        match self.sampled_t_s {
+            None => false,
+            Some(held_t_s) => matches!(self.dependence, TimeDependence::Steady) || held_t_s == t_s,
+        }
+    }
+
+    /// Record that the field has just been sampled at `t_s`.
+    pub(crate) const fn record(&mut self, t_s: f64) {
+        self.sampled_t_s = Some(t_s);
+    }
+}
+
+/// A wind and the field it was last sampled into: the forcing of a run.
+///
+/// [`WindStressField`] is a stress at one instant; this is the pair a time
+/// loop actually holds — the [`WindStress`] itself, the basin it is sampled
+/// over, and the field, re-sampled only when the wind can have changed since
+/// it was written.
+///
+/// # Why it owns the wind
+///
+/// T-10.5's cache is only correct as long as the field belongs to the wind
+/// that produced it, and a cache that is *told* which wind it belongs to on
+/// every call has to trust the caller not to change its mind. Owning the wind
+/// removes the question: a `WindForcing` cannot outlive, be re-pointed at, or
+/// disagree with the wind it was built from, so "is this field this wind's?"
+/// is answered by the type rather than by a comment. A different wind is a
+/// different `WindForcing`.
+///
+/// Sampling writes into a buffer this owns, so a whole run allocates its
+/// forcing exactly once (CODING_STANDARDS.md § Performance), as
+/// [`Solver::step_forced_by`](crate::Solver::step_forced_by) already did — what
+/// is new is that it does not *rewrite* it four times a step for a wind that
+/// is not going anywhere.
+#[derive(Debug)]
+pub struct WindForcing<W: WindStress> {
+    /// The basin the wind is sampled over.
+    basin: Basin,
+    /// The wind this forcing is of.
+    wind: W,
+    /// The stress at the instant [`WindForcing::held`] names.
+    field: WindStressField,
+    /// Which instant `field` is the field of, and whether it can go stale.
+    held: HeldInstant,
+}
+
+impl<W: WindStress> WindForcing<W> {
+    /// `wind` over `basin`, with nothing sampled yet.
+    ///
+    /// The field is allocated here and reused for the life of the forcing; the
+    /// first call to [`WindForcing::at`] fills it.
+    #[must_use]
+    pub fn new(basin: Basin, wind: W) -> Self {
+        let dependence = wind.time_dependence();
+        Self {
+            basin,
+            field: WindStressField::calm(basin.grid()),
+            wind,
+            held: HeldInstant::nothing(dependence),
+        }
+    }
+
+    /// The stress field at `t_s` seconds, sampling the wind only if the field
+    /// in hand is not already that field.
+    pub fn at(&mut self, t_s: f64) -> &WindStressField {
+        if !self.held.holds(t_s) {
+            self.field.sample(self.basin, &self.wind, t_s);
+            self.held.record(t_s);
+        }
+        &self.field
+    }
+
+    /// The wind this forcing is of.
+    pub const fn wind(&self) -> &W {
+        &self.wind
+    }
+
+    /// The basin the wind is sampled over.
+    pub const fn basin(&self) -> Basin {
+        self.basin
     }
 }
 

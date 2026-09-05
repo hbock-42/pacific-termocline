@@ -7,8 +7,14 @@ it — a rayon-parallel inner loop (T-10.3) and an `f32` field layout
 (T-10.4) — can cite a profile rather than an intuition, which
 [CODING_STANDARDS.md](../CODING_STANDARDS.md) § *Performance* requires of them.
 
-Nothing in the hot path changed for this ticket. The solver, the right-hand
-side, the Coriolis term and the integrator are exactly as T-07.4 left them.
+It now carries two profiles rather than one. Everything before
+[*After T-10.5: the sampled field is cached*](#after-t-105-the-sampled-field-is-cached)
+is T-10.2's baseline, taken with the solver, the right-hand side, the Coriolis
+term and the integrator exactly as T-07.4 left them and nothing optimised at
+all. [*After T-10.5: the sampled field is cached*](#after-t-105-the-sampled-field-is-cached)
+is the same two instruments run again after the ticket that baseline provoked,
+and it is where the current decomposition of a timestep is. Both are kept,
+because the point of a before is to be compared with an after.
 
 ## The finding
 
@@ -276,6 +282,12 @@ are the place for those.
   tickets together. Raising that is what this note is for; choosing to do it is
   a human's call, and it is not made here.
 
+  It was made: the paragraph above became T-10.5, and the last section of this
+  note is what it did. The two bullets before it are left as they were written,
+  because they are the reasoning that ticket was created from — but the
+  arithmetic in the first of them is superseded, and the section below redoes
+  it against the step that now exists.
+
 ## What this note does not measure
 
 - **The run around the loop.** These figures are the time loop. Scenario build,
@@ -284,13 +296,201 @@ are the place for those.
   is a constant rather than a term that grows.
 - **Any scenario but the control one.** A `SeasonalTradeWinds` or a
   `WindBurstAnomaly` sample a genuinely time-varying stress: the *per-point*
-  cost is the same, but the redundancy identified above is smaller, and a
-  cached field would be wrong for them.
+  cost is the same, but the redundancy identified above is smaller. (T-10.5
+  measured how much smaller, and what a field cache may and may not do about
+  it: see below.)
 - **Accuracy.** Whether a future optimisation changed the answer is Epic 07's
   validation suite, not this note.
 - **Any machine but this one.** The shares held across two grids on one laptop.
   A machine with a different memory system could move them, which is why the
   instrument is committed and the commands to re-run it are below.
+
+## After T-10.5: the sampled field is cached
+
+The change is one sentence of design. A [`WindStress`](../engine/src/forcing.rs)
+now declares its `TimeDependence` — `Steady` or `Varying`, defaulting to
+`Varying` so that a wind which says nothing is re-sampled exactly as before —
+and a `WindForcing` owns a wind together with the one field it is sampled into,
+re-sampling only when the field in hand is not already the field of the instant
+asked for. A run holds one across its whole time loop
+(`Solver::step_with_forcing`), so the control scenario samples the wind **once
+for the run** instead of 4 times a step.
+
+### The benchmark
+
+`cargo bench -p engine --bench scenario_run`, the same machine and the same two
+workloads as the tables above, before and after the change:
+
+| workload | before | after | criterion's own comparison |
+|---|---|---|---|
+| 320 × 100 | 505.56 ms / run, **474.7 steps/s** | 146.27 ms / run, **1 640.8 steps/s** | −71.06% [−71.27%, −70.87%], p < 0.05 |
+| 160 × 50 | 128.67 ms / run, **1 865.2 steps/s** | 38.24 ms / run, **6 276.6 steps/s** | −70.34% [−70.47%, −70.21%], p < 0.05 |
+
+**3.46× at 0.5° and 3.37× at 1.0°**, end to end through the entry point the
+`run` command uses. That is the deliverable, and it is what a user feels: the
+0.5° control run that took 505 ms takes 146 ms.
+
+It is also what the baseline predicted almost exactly. A phase measured at 71.0%
+of a step, removed, leaves 29.0% — a 3.45× ceiling. The benchmark reports 3.46×,
+which is the same number, and the agreement is the check on the baseline rather
+than a coincidence: had the wind's share been mis-measured, this is where it
+would have shown.
+
+### The new phase table
+
+`cargo run --release --example profile`, 24 steps per grid after a quarter of a
+second of warm-up, exactly as before:
+
+```
+== 160x50 cells, 24 steps, 162.48µs per step ==
+   phase                       share    per step
+   wind stress sampling         2.9%      4.631µs
+   shallow-water terms         44.0%     71.571µs
+   coriolis                    22.2%     36.114µs
+   boundary condition           0.5%        779ns
+   rk4 stage algebra           30.4%     49.383µs
+
+== 320x100 cells, 24 steps, 642.984µs per step ==
+   phase                       share    per step
+   wind stress sampling         2.5%     15.946µs
+   shallow-water terms         44.6%    286.913µs
+   coriolis                    22.2%    142.880µs
+   boundary condition           0.2%      1.555µs
+   rk4 stage algebra           30.4%    195.689µs
+```
+
+**Wind stress sampling: 71.0% → 2.5%. The shallow-water right-hand side is now
+the hot path it was always assumed to be, at 44.6%.**
+
+Two readings that say the cache did what it claims rather than moving work
+somewhere the table cannot see.
+
+**Every other phase costs what it cost.** At 0.5°: shallow-water terms
+281.1 µs → 286.9 µs, coriolis 137.4 µs → 142.9 µs, RK4 stage algebra
+187.6 µs → 195.7 µs — within 4% of the baseline, in a decomposition whose five
+shares sum to one by construction. The step got smaller because one phase left,
+not because the clock moved.
+
+**The 2.5% that is left is one sampling, amortised.** The profiler is rebuilt
+after warm-up, so its 24 timed steps contain exactly one full sampling of the
+field. 15.946 µs × 24 = 382.7 µs, against 371.9 µs for one sampling measured at
+the baseline (1.4876 ms per step ÷ 4 stages). The 10.8 µs difference over 24
+steps is 0.45 µs per step, and the phase's own 8 clock reads per step cost
+0.39 µs at the 49 ns the example measures. The 1.0° grid agrees to within a
+microsecond per step. In a real run — the control scenario is 17 520 steps —
+that one sampling is 0.002% of the run, and the phase's residual is the branch
+that decides not to sample.
+
+### The sampled profile says the same thing
+
+The baseline was only stated as a conclusion because two instruments with
+different failure modes agreed on it, so the after is held to the same
+standard. `/usr/bin/sample` against
+`cargo run --profile profiling --example profile -- spin 30`, 15 s, 11 096
+in-loop samples, kept at
+[`docs/profiles/2026-09-05-m1-pro-320x100-cached.sample`](profiles/2026-09-05-m1-pro-320x100-cached.sample)
+beside the baseline's artefact. (`spin` now holds a `WindForcing` across its
+loop, because a sampler pointed at a loop that samples the wind differently
+from a run would be profiling a program nobody runs.)
+
+Its summary by self time, demangled and truncated here:
+
+```
+Sort by top of stack, same collapsed (when >= 5):
+    ShallowWaterRhs::evaluate                                     3261   29.4%
+    <OceanState as StateVector>::add_scaled                       2858   25.8%
+    CoriolisTerm::add_to_tendency                                 1053    9.5%
+    CGridOperators::face_y_to_face_x                               749    6.8%
+    CGridOperators::face_x_to_face_y                               709    6.4%
+    _platform_memmove  (in libsystem_platform.dylib)               641    5.8%
+    CGridOperators::ddx_center_to_face                             513    4.6%
+    CGridOperators::ddx_face_to_center                             466    4.2%
+    CGridOperators::ddy_center_to_face                             421    3.8%
+    CGridOperators::ddy_face_to_center                             414    3.7%
+    boundary::hold_walls_at_rest                                    11    0.1%
+```
+
+**The wind is not in it at all.** `exp` was 24.1% of the baseline's samples,
+the two `stress` implementations 36.1% between them, the lazy-binding stub
+`DYLD-STUB$$exp` 4.5%, and the sampling loop inlined into the step closure
+7.0%. None of the five now reaches the summary's five-sample threshold, in a
+run of 48 672 steps that samples the field once.
+
+Folded into phases, and set beside the timed table — the timed shares
+renormalised over its four non-wind phases, because the spin's single sampling
+is spread over 48 672 steps where the profiler's is spread over 24, so the two
+instruments cannot be compared on that row:
+
+| Phase | timed | sampled |
+|---|---|---|
+| shallow-water terms | 45.8% | 45.7% |
+| coriolis | 22.8% | 22.6% |
+| rk4 stage algebra | 31.2% | 31.5% |
+| boundary condition | 0.2% | 0.1% |
+| wind stress sampling | (one sampling, amortised) | below the threshold |
+
+Within 0.3 of a point on every row, which is the agreement the baseline had.
+
+The spin itself reports 1 622 steps/s, against 464 alone and 445 under the
+sampler at the baseline. As before, that is not the engine's speed — it is a
+laptop under a 30-second sustained load with a sampler walking its stacks for
+half of it — and the benchmark above is the figure to quote.
+
+### What a wind that genuinely varies gets
+
+The ticket is explicit that a cache correct only for steady winds is a bug, so
+the reuse rule is stated in terms of the `WindStress` contract rather than of a
+scenario. A held field may be returned on two grounds: the instant asked for is
+the instant held, bit for bit — a `WindStress` is a pure function of
+`(x, y, t)`, so the same `t` gives the same field — or the wind declared itself
+`Steady`. There is no third ground.
+
+That first ground pays a time-varying wind on its own. RK4's four stages ask
+about three instants (`t`, `t + dt/2` twice, `t + dt`), and where a schedule's
+`t_{n+1}` is the bit-identical `t_n + dt` — which `step as f64 * dt_s` gives for
+the timesteps a scenario actually uses — a step's last stage has already
+sampled what the next step's first stage asks for. So a `SeasonalTradeWinds` or
+a `WindBurstAnomaly` run samples **twice per step instead of four times**, with
+no promise about time dependence involved at all.
+
+That is stated as a sampling count rather than as a speed-up because it is
+asserted rather than measured: `engine/tests/wind_stress_cache.rs` counts the
+evaluations at the `WindStress` itself, deriving the expected count from the
+RK4 tableau. No benchmark workload has a time-varying wind — `BENCHMARK_WORKLOADS`
+is the control scenario at two grids — so this note does not put a wall-clock
+figure on it, and a halving of the sampling is not a halving of a step.
+
+The correctness of all of it is `engine/tests/wind_stress_cache.rs` and the
+suite that was already there: a cached run is compared bit for bit against an
+uncached stepper that re-samples the wind at every stage, for steady, seasonal,
+burst and composite forcings, and Epic 07's validations and
+`engine/tests/wind_burst.rs` pass unchanged, with tolerances untouched.
+
+### What this leaves for the rest of Epic 10
+
+The Amdahl arithmetic the baseline did for T-10.3 and T-10.4 has to be redone,
+because it was computed against a step that no longer exists. Against the
+643 µs step at 0.5°:
+
+- **T-10.3 (rayon) now attacks 44.6%, not 13.4%.** Parallelising the
+  shallow-water evaluator perfectly across this machine's 10 cores takes a step
+  from 643 µs to 385 µs — **1.67×**, against the 1.14× the same calculation gave
+  before. Both evaluators together give 2.5×. The ticket's own instruction not
+  to measure itself only against `rhs_evaluation` stands, and matters more now
+  that the whole-step figure has something to show.
+- **T-10.4 (`f32`) now attacks 97% of a step.** The two evaluators and the RK4
+  stage algebra are 97.2% of what is left, and the baseline's term table said
+  all of it looks memory-bandwidth-bound — fourteen flat kernels, and an
+  `add_scaled` that costs what a kernel costs. Halving the width of every field
+  halves the traffic that argument says is being paid for.
+- **The `exp` per point was not hoisted, deliberately.** The baseline's other
+  suggestion — that the trade-wind stress is a function of `y` alone, so 320
+  points of a row recompute one `exp` — is untouched. For a steady wind it is
+  now worth 0.002% of a run. It is still the cost of the two samplings a
+  time-varying wind takes per step, and that is where the case for it would have
+  to be made, on a workload this suite does not have. Optimising it now would be
+  the speculative micro-optimisation
+  [CODING_STANDARDS.md](../CODING_STANDARDS.md) § *Performance* rules out.
 
 ## Reproducing this
 

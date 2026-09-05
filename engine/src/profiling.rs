@@ -69,10 +69,9 @@ use std::time::{Duration, Instant};
 use termocline_grid::{Field2D, Grid, H_STAGGERING, U_STAGGERING, V_STAGGERING};
 use termocline_numerics::{check_timestep, CGridOperators, Spacing, WaveSpeed};
 
-use crate::basin::Basin;
 use crate::boundary::NoNormalFlow;
 use crate::coriolis::{accumulate_rows, BetaPlane, CoriolisTerm};
-use crate::forcing::{CompositeWind, WindStressField};
+use crate::forcing::{CompositeWind, WindForcing, WindStressField};
 use crate::integrator::Rk4;
 use crate::params::PhysicalParams;
 use crate::scenario::Scenario;
@@ -256,10 +255,10 @@ impl StepProfile {
 /// step.
 #[derive(Debug)]
 pub struct StepProfiler {
-    /// The basin the wind is sampled over.
-    basin: Basin,
-    /// The scenario's wind, re-sampled at each stage exactly as a run does.
-    wind: CompositeWind,
+    /// The scenario's wind and the field it is sampled into, re-sampled at
+    /// each stage exactly as a run does — which since T-10.5 means *when the
+    /// stage asks about an instant the field is not already the field of*.
+    forcing: WindForcing<CompositeWind>,
     /// Length of one step, in seconds.
     dt_s: f64,
     /// The pressure-gradient, continuity, surface-stress and damping terms.
@@ -268,8 +267,6 @@ pub struct StepProfiler {
     coriolis: CoriolisTerm,
     /// The integrator and its stage buffers.
     integrator: Rk4<OceanState>,
-    /// The current stage's surface stress, re-sampled in place.
-    stage_stress: WindStressField,
     /// The state being advanced.
     state: OceanState,
     /// Model time of `state`, in seconds.
@@ -308,13 +305,11 @@ impl StepProfiler {
         check_rotation_timestep(dt_s, grid, plane)?;
 
         Ok(Self {
-            basin,
-            wind: scenario.wind(),
+            forcing: WindForcing::new(basin, scenario.wind()),
             dt_s,
             rhs: ShallowWaterRhs::new(grid, spacing, params),
             coriolis: CoriolisTerm::new(grid, spacing, plane),
             integrator: Rk4::new(&OceanState::at_rest(grid)),
-            stage_stress: WindStressField::calm(grid),
             state: OceanState::at_rest(grid),
             t_s: 0.0,
             timed: [Duration::ZERO; TIMED_PHASES],
@@ -337,13 +332,11 @@ impl StepProfiler {
     /// Take one step, charging each phase the time it took.
     pub fn step(&mut self) {
         let Self {
-            basin,
-            wind,
+            forcing,
             dt_s,
             rhs,
             coriolis,
             integrator,
-            stage_stress,
             state,
             t_s,
             timed,
@@ -372,7 +365,7 @@ impl StepProfiler {
                 // writes every point, the Coriolis term adds to it, and the
                 // boundary condition has the last word.
                 let sampled = Instant::now();
-                stage_stress.sample(*basin, wind, stage_t_s);
+                let stage_stress = forcing.at(stage_t_s);
                 let evaluated = Instant::now();
                 rhs.evaluate(now, stage_stress, tendency);
                 let rotated = Instant::now();
