@@ -26,6 +26,7 @@ pub mod forcing;
 pub mod inspect;
 pub mod integrator;
 pub mod params;
+pub mod progress;
 pub mod run;
 pub mod run_writer;
 pub mod scenario;
@@ -44,7 +45,15 @@ pub use inspect::{inspect_run, render_header};
 /// scenario runner: [`run::run_scenario_file`] is the whole command — load,
 /// run, write — and [`run::run_scenario`] the same run from a scenario already
 /// in hand.
-pub use run::{run_scenario, run_scenario_file, RunError, RunReport};
+pub use run::{
+    run_scenario, run_scenario_file, run_scenario_file_observed, run_scenario_observed, RunError,
+    RunReport,
+};
+
+/// Re-exported so the `run` command and its tests name one progress reporter:
+/// [`progress::RunObserver`] is what a run tells, and [`progress::RunProgress`]
+/// the reporter that turns it into a progress line and structured logs.
+pub use progress::{ProgressReport, ProgressStyle, RunObserver, RunProgress, Verbosity};
 
 pub use run_writer::{OutputSchedule, OutputScheduleError, RunWriteError, RunWriter};
 

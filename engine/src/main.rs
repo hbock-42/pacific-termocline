@@ -4,6 +4,12 @@
 //! scenario file and produces a run (T-06.1), and `inspect` reports on one that
 //! already exists (T-06.4).
 //!
+//! A run reports its progress to stderr as it goes (T-06.2), so a multi-minute
+//! run is not a black box; `--quiet` suppresses that for a scripted or CI run,
+//! and `--verbose` adds the run's per-frame detail. stdout carries the run's
+//! one-line summary and nothing else, so a script may read it without
+//! filtering.
+//!
 //! Anything the user got wrong — a scenario that is not there, a timestep the
 //! scheme refuses, a run this build cannot read — comes back as an
 //! [`ExitCode::FAILURE`] and a message on stderr naming what was asked for, per
@@ -13,7 +19,9 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
+
+use engine::progress::{RunProgress, Verbosity};
 
 /// The engine: run a scenario, or look at a run one has already produced.
 #[derive(Debug, Parser)]
@@ -36,6 +44,8 @@ enum Command {
         /// that will hold `header.json` and `frames.bin`.
         #[arg(long = "out", value_name = "DIR")]
         out: PathBuf,
+        #[command(flatten)]
+        reporting: Reporting,
     },
     /// Print a run's header — grid, physical parameters, scenario, frame
     /// count — without reading its frames.
@@ -47,27 +57,62 @@ enum Command {
     },
 }
 
+/// How loudly a run reports on itself.
+///
+/// The two flags are contradictory instructions, so clap refuses them together
+/// rather than the binary picking one silently.
+#[derive(Debug, Args)]
+struct Reporting {
+    /// Suppress progress and log output, for a scripted or CI run.
+    #[arg(long = "quiet", short = 'q')]
+    quiet: bool,
+    /// Log the run's per-frame detail as well as its progress.
+    #[arg(long = "verbose", short = 'v', conflicts_with = "quiet")]
+    verbose: bool,
+}
+
+impl Reporting {
+    /// The verbosity these flags ask for.
+    const fn verbosity(&self) -> Verbosity {
+        if self.quiet {
+            Verbosity::Quiet
+        } else if self.verbose {
+            Verbosity::Verbose
+        } else {
+            Verbosity::Normal
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        Command::Run { config, out } => match engine::run_scenario_file(&config, &out) {
-            Ok(report) => {
-                // One line, at the end: what the run wrote and where. Progress
-                // during the run is T-06.2's, not this command's.
-                println!(
-                    "{}: {} steps, {} frames written to {}",
-                    config.display(),
-                    report.steps_taken(),
-                    report.frames_written(),
-                    out.display()
-                );
-                ExitCode::SUCCESS
+        Command::Run {
+            config,
+            out,
+            reporting,
+        } => {
+            // Progress goes to stderr, so the summary below stays the only
+            // thing on stdout.
+            let mut progress = RunProgress::to_stderr(reporting.verbosity());
+            match engine::run_scenario_file_observed(&config, &out, &mut progress) {
+                Ok(report) => {
+                    // One line, at the end: what the run wrote and where.
+                    println!(
+                        "{}: {} steps, {} frames written to {}",
+                        config.display(),
+                        report.steps_taken(),
+                        report.frames_written(),
+                        out.display()
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("could not run {}: {error}", config.display());
+                    ExitCode::FAILURE
+                }
             }
-            Err(error) => {
-                eprintln!("could not run {}: {error}", config.display());
-                ExitCode::FAILURE
-            }
-        },
+        }
         Command::Inspect { run } => match engine::inspect_run(&run) {
             Ok(summary) => {
                 print!("{summary}");
