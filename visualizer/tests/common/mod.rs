@@ -29,6 +29,16 @@ pub const FRAME_INTERVAL_S: f64 = 86_400.0;
 /// every 24 makes 730 daily frames, and the frame at t = 0 makes 731.
 pub const STEADY_TRADES_FRAMES: u64 = 731;
 
+/// T-07.4's measured equilibrium `h` at the western wall of the steady-trades
+/// basin, in metres. Positive is deeper than the mean depth `H`
+/// (`CONTEXT.md`): sustained easterly stress piles the warm layer up in the
+/// west.
+pub const WESTERN_WALL_H_M: f64 = 38.2;
+
+/// T-07.4's measured equilibrium `h` at the eastern wall, in metres. The
+/// west-to-east drop is therefore 66.4 m.
+pub const EASTERN_WALL_H_M: f64 = -28.2;
+
 /// The physical parameters of `steady-trades.toml`: g' = 0.06 m s^-2 and
 /// H = 150 m give c = √(g'H) = 3.0 m s^-1, the observed first-baroclinic
 /// Kelvin speed of the equatorial Pacific (CONTEXT.md).

@@ -6,7 +6,8 @@
 //! run they opened, and under it the basin map of one chosen frame.
 //!
 //! Everything with a value in it lives in [`crate::run`], [`crate::heatmap`],
-//! [`crate::wind`] and [`crate::pending`]; this module is the part that needs a
+//! [`crate::wind`], [`crate::cross_section`] and [`crate::pending`]; this
+//! module is the part that needs a
 //! GPU, and so is deliberately thin. What it adds on top of them is a texture
 //! cache and a layout, and neither is where a wrong basin map would come from.
 
@@ -15,7 +16,8 @@ use egui::{Color32, RichText};
 use crate::loading::Loaded;
 use crate::run::SECONDS_PER_DAY;
 use crate::{
-    DivergingScale, Heatmap, LoadedRun, Loader, PendingRun, Playback, Scrubber, WindOverlay,
+    CrossSection, DivergingScale, Heatmap, LoadedRun, Loader, PendingRun, Playback, Scrubber,
+    WindOverlay,
 };
 
 /// What the central panel is showing.
@@ -321,6 +323,24 @@ const ARROW_COLOR: Color32 = Color32::from_rgb(16, 16, 16);
 /// from the dark blue and dark red the scale ends on.
 const ARROW_CASING_COLOR: Color32 = Color32::from_rgb(245, 245, 245);
 
+/// Height of the cross-section chart, in points.
+///
+/// Tall enough that the ±`half_range` axis has room to show a tilt changing by
+/// a few per cent, and short enough that the basin map above it still gets the
+/// bulk of a window: the chart says how much, the map says where.
+const CROSS_SECTION_HEIGHT_PT: f32 = 120.0;
+
+/// Width of the cross-section line, in points.
+const CROSS_SECTION_WIDTH_PT: f32 = 1.6;
+
+/// The cross-section line: the deep end of the basin map's colour scale, so
+/// the chart and the map are read as one picture of the same field.
+const CROSS_SECTION_COLOR: Color32 = Color32::from_rgb(178, 24, 43);
+
+/// The chart's frame and its zero line: grey, so the line drawn over them is
+/// what the eye lands on.
+const CROSS_SECTION_AXIS_COLOR: Color32 = Color32::from_gray(128);
+
 /// Width of the pale casing drawn under each arrow, in points.
 ///
 /// The map underneath runs from a dark blue through a near-white to a dark red,
@@ -353,7 +373,10 @@ const ARROW_CASING_WIDTH_PT: f32 = 3.0;
 ///
 /// The wind overlay rides on that same [`Attempt`]: it is built with the frame
 /// and drawn from geometry, so neither showing it nor hiding it is a reason to
-/// rebuild anything, and it adds nothing per frame a drag passes through.
+/// rebuild anything, and it adds nothing per frame a drag passes through. The
+/// equatorial cross-section (T-09.3) rides on it the same way, and is drawn
+/// from the same run-wide scale as the colour bar, so it too costs nothing per
+/// repaint and nothing per toggle.
 struct BasinMap {
     /// The frame the reader has chosen, and the ways they choose another.
     scrubber: Scrubber,
@@ -361,6 +384,8 @@ struct BasinMap {
     playback: Playback,
     /// Whether the wind-stress overlay is drawn over the map.
     show_wind: bool,
+    /// Whether the equatorial cross-section is drawn under the map.
+    show_section: bool,
     /// The last attempt at drawing a frame, if there has been one.
     attempt: Option<Attempt>,
     /// The run's colour bar, built the first time a frame of it is drawn.
@@ -380,6 +405,10 @@ impl Default for BasinMap {
             // and a reader who does not know the overlay exists cannot ask for
             // it.
             show_wind: true,
+            // On by default: the tilt is what the run is about, and the
+            // section is the view that states it as a number rather than as a
+            // colour (T-09.3).
+            show_section: true,
             attempt: None,
             bar: None,
         }
@@ -413,6 +442,13 @@ struct DrawnFrame {
     /// neither rebuilds the texture under it nor re-decodes the frame — and so
     /// that there is no path at all from the toggle to the map.
     wind: WindOverlay,
+    /// The frame's `h` along the equator, in the same unit rectangle the chart
+    /// is drawn into.
+    ///
+    /// Built with the frame, like the overlay and for the same reason: the
+    /// section is the frame's, so a repaint that lands on the frame already
+    /// drawn rebuilds nothing, and toggling the chart cannot reach the map.
+    section: CrossSection,
 }
 
 /// The colour bar of a run, and the scale it was sampled from.
@@ -457,7 +493,10 @@ impl BasinMap {
         self.playback.draw(ui, &mut self.scrubber, keyboard_free);
         // The overlay is drawn over the map, never into it: nothing the map is
         // built from depends on this.
-        ui.checkbox(&mut self.show_wind, "Wind stress τ");
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.show_wind, "Wind stress τ");
+            ui.checkbox(&mut self.show_section, "Equatorial cross-section");
+        });
 
         let index = self.scrubber.index();
         if self.attempt.as_ref().is_none_or(|last| last.index != index) {
@@ -466,6 +505,10 @@ impl BasinMap {
                 outcome: self.build(ui, run, index),
             });
         }
+        // Before the frame is read back, because that read borrows the panel
+        // for as long as the frame is drawn and this is the one thing left
+        // that writes to it.
+        self.ensure_color_bar(ui, run.anomaly_scale());
         let outcome = &self
             .attempt
             .as_ref()
@@ -497,23 +540,35 @@ impl BasinMap {
                 ui.label("east");
             });
         });
-        let map = draw_texture_fitted(ui, &drawn.map);
+        // The chart and the two rows of text around it come out of the height
+        // the map would otherwise have taken, so that turning it on shrinks the
+        // map rather than pushing the colour bar off a short window.
+        let reserved_pt = if self.show_section {
+            CROSS_SECTION_HEIGHT_PT + ui.text_style_height(&egui::TextStyle::Body) * 2.0
+        } else {
+            0.0
+        };
+        let map = draw_texture_fitted(ui, &drawn.map, reserved_pt);
         if self.show_wind {
             draw_wind_arrows(ui, map, drawn);
         }
-        // Read off before the colour bar, which needs the map by mutable
-        // borrow to build the run's bar the first time it is asked for.
-        let strongest_pa = drawn.wind.scale().max_magnitude_pa();
-        draw_color_bar(ui, self.color_bar(ui, run.anomaly_scale()));
+        // Directly under the map and across exactly its width, so a longitude
+        // on the chart sits under the column of the map it came from. The
+        // colour bar goes below both: the scale is the same one.
+        if self.show_section {
+            draw_cross_section(ui, &drawn.section, map);
+        }
+        draw_color_bar(ui, self.bar.as_ref().expect("a colour bar was just built"));
         if self.show_wind {
             ui.label(format!(
-                "Wind stress τ: the longest arrow is {strongest_pa:.3} N m^-2, the strongest in the run"
+                "Wind stress τ: the longest arrow is {:.3} N m^-2, the strongest in the run",
+                drawn.wind.scale().max_magnitude_pa()
             ));
         }
     }
 
-    /// The run's colour bar, sampled the first time a frame of it is drawn.
-    fn color_bar(&mut self, ui: &egui::Ui, scale: DivergingScale) -> &ColorBar {
+    /// Sample the run's colour bar, the first time a frame of it is drawn.
+    fn ensure_color_bar(&mut self, ui: &egui::Ui, scale: DivergingScale) {
         if self.bar.as_ref().is_none_or(|bar| bar.scale != scale) {
             self.bar = Some(ColorBar {
                 scale,
@@ -527,7 +582,6 @@ impl BasinMap {
                 ),
             });
         }
-        self.bar.as_ref().expect("a bar was just built")
     }
 
     /// Colour-map frame `index` and upload it, or say what stopped that.
@@ -539,10 +593,13 @@ impl BasinMap {
             .map_err(|error| error.to_string())?;
         let wind = WindOverlay::of_frame(run.header().grid, &frame, run.wind_stress_scale())
             .map_err(|error| error.to_string())?;
+        let section = CrossSection::of_frame(run.header().grid, &frame, run.anomaly_scale())
+            .map_err(|error| error.to_string())?;
         let image = egui::ColorImage::from_rgb([heatmap.width(), heatmap.height()], heatmap.rgb());
         Ok(DrawnFrame {
             t_s: frame.t_s(),
             wind,
+            section,
             // Nearest, not linear: a texel is a cell of the model, and
             // smoothing between them would draw an anomaly the run never
             // produced.
@@ -581,16 +638,142 @@ fn draw_color_bar(ui: &mut egui::Ui, bar: &ColorBar) {
     });
 }
 
+/// Draw the equatorial cross-section: `h` along the equator against longitude.
+///
+/// The chart's coordinates are the section's own — a unit rectangle, `y` down
+/// — so placing a point is one multiplication by however large the chart was
+/// drawn, and the module that knows what `h` is never learns what a panel is
+/// ([`crate::cross_section`]).
+///
+/// It is drawn across `map`, the rectangle the basin map landed in, rather
+/// than across the panel: the map is fitted to its own shape and so is
+/// narrower than the panel on a short window, and a chart wider than the map
+/// would put a longitude under the wrong column of it. The two views are only
+/// worth having together if a place on one is the same place on the other.
+///
+/// The line breaks where a point has no position: a `NaN` in `h` means the
+/// integration diverged there, and a segment drawn across the gap would claim
+/// a value the run never produced.
+fn draw_cross_section(ui: &mut egui::Ui, section: &CrossSection, map: egui::Rect) {
+    ui.label(format!(
+        "Thermocline depth anomaly h {}",
+        section_latitude(section)
+    ));
+    let (row, _response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), CROSS_SECTION_HEIGHT_PT),
+        egui::Sense::hover(),
+    );
+    let chart = egui::Rect::from_min_max(
+        egui::pos2(map.left(), row.top()),
+        egui::pos2(map.right(), row.bottom()),
+    );
+    let painter = ui.painter().with_clip_rect(chart);
+    let axis = egui::Stroke::new(1.0_f32, CROSS_SECTION_AXIS_COLOR);
+    painter.rect_stroke(chart, 0.0, axis, egui::StrokeKind::Inside);
+    // The zero line, at the middle of a scale that is symmetric about zero: it
+    // is where the thermocline sits at its mean depth, and where the tilt
+    // changes sign.
+    let zero_y = chart.center().y;
+    painter.line_segment(
+        [
+            egui::pos2(chart.left(), zero_y),
+            egui::pos2(chart.right(), zero_y),
+        ],
+        axis,
+    );
+
+    #[allow(clippy::cast_possible_truncation)]
+    let to_screen = |(x, y): (f64, f64)| {
+        chart.min + egui::vec2(x as f32 * chart.width(), y as f32 * chart.height())
+    };
+    let mut run_of_points: Vec<egui::Pos2> = Vec::new();
+    let flush = |points: &mut Vec<egui::Pos2>| {
+        if points.len() > 1 {
+            painter.add(egui::Shape::line(
+                std::mem::take(points),
+                egui::Stroke::new(CROSS_SECTION_WIDTH_PT, CROSS_SECTION_COLOR),
+            ));
+        } else {
+            points.clear();
+        }
+    };
+    for point in section.points() {
+        match section.plot_position(point) {
+            Some(position) => run_of_points.push(to_screen(position)),
+            None => flush(&mut run_of_points),
+        }
+    }
+    flush(&mut run_of_points);
+
+    let half_range_m = section.scale().half_range_m();
+    ui.columns(3, |columns| {
+        columns[0].label(format!(
+            "{} (west) — the axis reaches ±{half_range_m:.1} m",
+            longitude_label(section.points().first())
+        ));
+        columns[1].with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+            ui.label("0 m")
+        });
+        columns[2].with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(format!(
+                "{} (east)",
+                longitude_label(section.points().last())
+            ));
+        });
+    });
+}
+
+/// Where the section was read, in words.
+///
+/// Every scenario's basin is laid out symmetrically about the equator
+/// (`CONTEXT.md`, *Basin*), and then the two innermost rows straddle it and
+/// their mean is the equator itself. A basin that is not says so rather than
+/// having its off-equator line labelled as the equator.
+fn section_latitude(section: &CrossSection) -> String {
+    let latitude_deg_north = section.latitude_deg_north();
+    let read_at = if latitude_deg_north == 0.0 {
+        "along the equator".to_owned()
+    } else {
+        format!(
+            "along {:.2}°{}",
+            latitude_deg_north.abs(),
+            if latitude_deg_north < 0.0 { 'S' } else { 'N' }
+        )
+    };
+    match section.rows_averaged() {
+        1 => format!("{read_at}, on the row of cells there"),
+        rows => format!("{read_at}, the mean of the {rows} rows nearest it"),
+    }
+}
+
+/// A point's longitude, as a chart labels it: a magnitude and a hemisphere,
+/// never a minus sign.
+fn longitude_label(point: Option<&crate::CrossSectionPoint>) -> String {
+    let Some(point) = point else {
+        return String::new();
+    };
+    let deg_east = point.longitude_deg_east();
+    format!(
+        "{:.1}°{}",
+        deg_east.abs(),
+        if deg_east < 0.0 { 'W' } else { 'E' }
+    )
+}
+
 /// Draw `texture` as large as the panel allows without changing its shape, and
 /// say where it landed so a layer can be drawn over it.
 ///
 /// The basin is far wider than it is tall, so fitting it to the width alone
 /// would push the colour bar off the bottom of a short window.
-fn draw_texture_fitted(ui: &mut egui::Ui, texture: &egui::TextureHandle) -> egui::Rect {
+fn draw_texture_fitted(
+    ui: &mut egui::Ui,
+    texture: &egui::TextureHandle,
+    reserved_pt: f32,
+) -> egui::Rect {
     let size = texture.size_vec2();
     let available = egui::vec2(
         ui.available_width(),
-        (ui.available_height() - COLOR_BAR_HEIGHT * 3.0).max(COLOR_BAR_HEIGHT),
+        (ui.available_height() - COLOR_BAR_HEIGHT * 3.0 - reserved_pt).max(COLOR_BAR_HEIGHT),
     );
     let scale = (available.x / size.x).min(available.y / size.y);
     ui.add(egui::Image::new(egui::load::SizedTexture::new(
@@ -757,6 +940,48 @@ mod tests {
         );
         assert!(!map.playback.is_playing());
         assert_ne!(last, first_map, "and the panel is drawing it");
+    }
+
+    #[test]
+    fn toggling_the_cross_section_rebuilds_nothing() {
+        // The section is built with the frame and drawn from its own geometry,
+        // so there is no path from the toggle to the texture under it — the
+        // same structural claim T-09.1 makes for the wind overlay.
+        let (ctx, run) = (egui::Context::default(), run());
+        let mut map = BasinMap::default();
+        let first = repaint(&ctx, &mut map, &run);
+        map.show_section = !map.show_section;
+        assert_eq!(repaint(&ctx, &mut map, &run), first);
+        map.show_section = !map.show_section;
+        assert_eq!(repaint(&ctx, &mut map, &run), first);
+    }
+
+    #[test]
+    fn the_cross_section_shows_the_frame_the_map_shows() {
+        // The one thing the ticket asks of the two views together: the section
+        // is of the frame the map draws, whichever frame that is. This run's
+        // `h` is everywhere the frame's own index in metres, so the section's
+        // own values say which frame it was built from.
+        let (ctx, run) = (egui::Context::default(), run());
+        let mut map = BasinMap::default();
+        for index in 0..run.header().output.frame_count {
+            map.scrubber.set_index(index);
+            let _ = repaint(&ctx, &mut map, &run);
+            let drawn = map
+                .attempt
+                .as_ref()
+                .expect("a frame was drawn")
+                .outcome
+                .as_ref()
+                .expect("it drew");
+            #[allow(clippy::cast_precision_loss)]
+            let expected_m = index as f64;
+            assert!(drawn
+                .section
+                .points()
+                .iter()
+                .all(|point| point.h_m() == expected_m));
+        }
     }
 
     #[test]

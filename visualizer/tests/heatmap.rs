@@ -11,7 +11,7 @@
 //! # Where the expected values come from
 //!
 //! The tilt is T-07.4's measured equilibrium of `engine/scenarios/steady-trades.toml`:
-//! `h` = +38.2 m at the western wall and -28.2 m at the eastern, a 60.1 m
+//! `h` = +38.2 m at the western wall and -28.2 m at the eastern, a 66.4 m
 //! west-to-east drop. It is the *input* these tests draw, named by the
 //! acceptance criterion itself ("matching T-07.4's known result"), not an
 //! expected output read back off this code; what is asserted about it — the
@@ -26,15 +26,11 @@
 
 mod common;
 
-use common::{encoded_frames_with_h, steady_trades_header, NX, NY};
+use common::{
+    encoded_frames_with_h, steady_trades_header, EASTERN_WALL_H_M, NX, NY, WESTERN_WALL_H_M,
+};
 use termocline_format::RunHeader;
 use visualizer::{DivergingScale, Heatmap, LoadedRun, RunBytes};
-
-/// T-07.4's equilibrium `h` at the western wall of the steady-trades basin, in
-/// metres. Positive is deeper than the mean depth `H` (`CONTEXT.md`).
-const WESTERN_WALL_H_M: f64 = 38.2;
-/// T-07.4's equilibrium `h` at the eastern wall, in metres.
-const EASTERN_WALL_H_M: f64 = -28.2;
 
 /// ColorBrewer 11-class `RdBu`, reversed so it runs from the most negative
 /// anomaly to the most positive: blue (shallow) through near-white (no
