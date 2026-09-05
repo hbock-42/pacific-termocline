@@ -13,7 +13,7 @@ use std::io::Read;
 
 use termocline_format::{decode_frame, Frame, RunHeader, RunReadError, RunReader};
 
-use crate::DivergingScale;
+use crate::{DivergingScale, StressScale};
 
 /// Seconds in a day, for reporting a run's model time in the unit its output
 /// cadence is chosen in (`steady-trades.toml` writes a frame a day).
@@ -79,6 +79,8 @@ pub struct LoadedRun {
     /// A colour scale covering every frame of the run, built on the pass that
     /// counts them.
     scale: DivergingScale,
+    /// A stress scale covering every frame of the run, built on the same pass.
+    stress_scale: StressScale,
 }
 
 impl LoadedRun {
@@ -125,11 +127,14 @@ impl LoadedRun {
         let mut scale = DivergingScale::symmetric_over(&[]);
         let mut frame_offsets = Vec::new();
         let mut offset = 0;
+        let mut stress_scale = StressScale::calm();
         for frame in reader.by_ref() {
             let frame = frame?;
             frame_offsets.push(offset);
             offset = consumed.get();
             scale = scale.widened(DivergingScale::symmetric_over(frame.h()));
+            stress_scale = stress_scale
+                .widened(StressScale::covering(header.grid, &frame).map_err(RunReadError::Frame)?);
         }
         Ok(Self {
             source: source.into(),
@@ -137,6 +142,7 @@ impl LoadedRun {
             frames,
             frame_offsets,
             scale,
+            stress_scale,
         })
     }
 
@@ -150,6 +156,18 @@ impl LoadedRun {
     #[must_use]
     pub const fn anomaly_scale(&self) -> DivergingScale {
         self.scale
+    }
+
+    /// A length scale for the run's wind stress, reaching as far as the
+    /// strongest stress anywhere in the run.
+    ///
+    /// One scale for the whole run, for the reason [`LoadedRun::anomaly_scale`]
+    /// is one: an arrow then means the same stress wherever it is seen, so a
+    /// wind burst relaxing back to the trades is seen to relax instead of being
+    /// redrawn at full length frame by frame.
+    #[must_use]
+    pub const fn wind_stress_scale(&self) -> StressScale {
+        self.stress_scale
     }
 
     /// Where the run came from: a directory, a pair of dropped files, or a URL.

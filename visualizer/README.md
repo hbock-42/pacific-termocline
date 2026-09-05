@@ -6,8 +6,9 @@ engine's simulation code ([ADR-0001](../docs/planning/adr/0001-engine-visualizer
 
 Binary: `termocline-viz`. It loads a run — dropped files, a `?run=` URL, or a
 directory natively — and draws the thermocline depth anomaly `h` of one chosen
-frame as a colour map over the basin. Time series, cross-sections and playback
-land in Epic 09.
+frame as a colour map over the basin, with the wind stress `τ` that forced it
+drawn over the top as arrows. Time series, cross-sections and playback land in
+Epic 09.
 
 The frame on screen is chosen with the scrubber above the map: drag it, step a
 frame at a time with the arrow keys or the buttons beside it, a page of ten
@@ -22,3 +23,10 @@ whatever the frame holds, and the scale reaches equally far either side of it.
 Red is a deeper-than-average thermocline and blue a shallower one, which puts
 the warm pool warm and the cold tongue cool. `src/heatmap.rs` has the rest of
 the reasoning.
+
+The wind overlay is a toggleable layer of arrows, one every twelfth cell, each
+pointing the way the stress there pushes the ocean and as long as that stress
+is against the strongest in the run. Under the steady trades they point west
+along the equator, which is why the thermocline under them tilts. It is drawn
+over the map rather than into it, so turning it off leaves the map untouched;
+`src/wind.rs` has the rest.

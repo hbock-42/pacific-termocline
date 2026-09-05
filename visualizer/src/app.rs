@@ -5,16 +5,16 @@
 //! because that is what tells a reader the run they think they opened is the
 //! run they opened, and under it the basin map of one chosen frame.
 //!
-//! Everything with a value in it lives in [`crate::run`], [`crate::heatmap`]
-//! and [`crate::pending`]; this module is the part that needs a GPU, and so is
-//! deliberately thin. What it adds on top of them is a texture cache and a
-//! layout, and neither is where a wrong basin map would come from.
+//! Everything with a value in it lives in [`crate::run`], [`crate::heatmap`],
+//! [`crate::wind`] and [`crate::pending`]; this module is the part that needs a
+//! GPU, and so is deliberately thin. What it adds on top of them is a texture
+//! cache and a layout, and neither is where a wrong basin map would come from.
 
 use egui::{Color32, RichText};
 
 use crate::loading::Loaded;
 use crate::run::SECONDS_PER_DAY;
-use crate::{DivergingScale, Heatmap, LoadedRun, Loader, PendingRun, Scrubber};
+use crate::{DivergingScale, Heatmap, LoadedRun, Loader, PendingRun, Scrubber, WindOverlay};
 
 /// What the central panel is showing.
 enum Shown {
@@ -308,6 +308,39 @@ const COLOR_BAR_HEIGHT: f32 = 14.0;
 /// beyond the frame it belongs to.
 const COLOR_BAR_SAMPLES: usize = 256;
 
+/// Cells between neighbouring wind arrows, along both axes.
+///
+/// The stress is a field: one arrow per cell would be 32 000 of them over the
+/// control basin, which is ink rather than information. Twelve of its
+/// half-degree cells is six degrees of arc, so a dozen rows still fall inside
+/// the equatorial waveguide the trades force.
+const ARROW_SPACING_CELLS: usize = 12;
+
+/// Length in cells of an arrow drawing the strongest stress in the run.
+///
+/// Shorter than [`ARROW_SPACING_CELLS`], so that even a basin of arrows at full
+/// length does not run into itself.
+const MAX_ARROW_LENGTH_CELLS: f64 = 9.0;
+
+/// Width of the arrow line, in points.
+const ARROW_WIDTH_PT: f32 = 1.2;
+
+/// The arrow itself: near-black, so it reads over the pale middle of the
+/// colour scale and over the casing at the scale's two dark ends.
+const ARROW_COLOR: Color32 = Color32::from_rgb(16, 16, 16);
+
+/// The casing under it: opaque white, so the near-black arrow stays separable
+/// from the dark blue and dark red the scale ends on.
+const ARROW_CASING_COLOR: Color32 = Color32::from_rgb(245, 245, 245);
+
+/// Width of the pale casing drawn under each arrow, in points.
+///
+/// The map underneath runs from a dark blue through a near-white to a dark red,
+/// so no single colour reads over all of it. Each arrow is drawn twice — a
+/// wider pale stroke, then a narrow dark one — which is the cartographic casing
+/// that keeps a line legible over any ground.
+const ARROW_CASING_WIDTH_PT: f32 = 3.0;
+
 /// The basin map of one chosen frame of the loaded run.
 ///
 /// The map is a texture rather than a mesh: `h` is one value per cell, and the
@@ -325,14 +358,33 @@ const COLOR_BAR_SAMPLES: usize = 256;
 /// the run's and not the frame's, is uploaded once per run ([`ColorBar`]).
 /// What is left is one frame decoded, colour-mapped and uploaded per frame the
 /// reader actually asks for, which is the work the drag is for.
-#[derive(Default)]
+///
+/// The wind overlay rides on that same [`Attempt`]: it is built with the frame
+/// and drawn from geometry, so neither showing it nor hiding it is a reason to
+/// rebuild anything, and it adds nothing per frame a drag passes through.
 struct BasinMap {
     /// The frame the reader has chosen, and the ways they choose another.
     scrubber: Scrubber,
+    /// Whether the wind-stress overlay is drawn over the map.
+    show_wind: bool,
     /// The last attempt at drawing a frame, if there has been one.
     attempt: Option<Attempt>,
     /// The run's colour bar, built the first time a frame of it is drawn.
     bar: Option<ColorBar>,
+}
+
+impl Default for BasinMap {
+    fn default() -> Self {
+        Self {
+            scrubber: Scrubber::default(),
+            // On by default: the forcing is why the map looks the way it does,
+            // and a reader who does not know the overlay exists cannot ask for
+            // it.
+            show_wind: true,
+            attempt: None,
+            bar: None,
+        }
+    }
 }
 
 /// What came of trying to draw one frame.
@@ -349,12 +401,19 @@ struct Attempt {
     outcome: Result<DrawnFrame, String>,
 }
 
-/// A frame already colour-mapped and uploaded.
+/// A frame already colour-mapped and uploaded, and the overlay that goes over
+/// it.
 struct DrawnFrame {
     /// Its model time, in seconds since the start of the run.
     t_s: f64,
     /// The map itself, one texel per cell.
     map: egui::TextureHandle,
+    /// The frame's wind stress, as arrows in the map's own cell coordinates.
+    ///
+    /// Built whether or not it is currently shown, so that toggling the overlay
+    /// neither rebuilds the texture under it nor re-decodes the frame — and so
+    /// that there is no path at all from the toggle to the map.
+    wind: WindOverlay,
 }
 
 /// The colour bar of a run, and the scale it was sampled from.
@@ -371,7 +430,8 @@ struct ColorBar {
 }
 
 impl BasinMap {
-    /// Forget the run this was a map of.
+    /// Forget the run this was a map of. The overlay toggle is the reader's
+    /// choice rather than the run's, so it survives.
     fn forget(&mut self) {
         self.scrubber = Scrubber::new();
         self.attempt = None;
@@ -387,6 +447,9 @@ impl BasinMap {
             return;
         }
         self.scrubber.draw(ui, keyboard_free);
+        // The overlay is drawn over the map, never into it: nothing the map is
+        // built from depends on this.
+        ui.checkbox(&mut self.show_wind, "Wind stress τ");
 
         let index = self.scrubber.index();
         if self.attempt.as_ref().is_none_or(|last| last.index != index) {
@@ -426,8 +489,19 @@ impl BasinMap {
                 ui.label("east");
             });
         });
-        draw_texture_fitted(ui, &drawn.map);
+        let map = draw_texture_fitted(ui, &drawn.map);
+        if self.show_wind {
+            draw_wind_arrows(ui, map, drawn);
+        }
+        // Read off before the colour bar, which needs the map by mutable
+        // borrow to build the run's bar the first time it is asked for.
+        let strongest_pa = drawn.wind.scale().max_magnitude_pa();
         draw_color_bar(ui, self.color_bar(ui, run.anomaly_scale()));
+        if self.show_wind {
+            ui.label(format!(
+                "Wind stress τ: the longest arrow is {strongest_pa:.3} N m^-2, the strongest in the run"
+            ));
+        }
     }
 
     /// The run's colour bar, sampled the first time a frame of it is drawn.
@@ -455,9 +529,17 @@ impl BasinMap {
             .ok_or_else(|| format!("this run holds no frame {index}"))?;
         let heatmap = Heatmap::of_frame(run.header().grid, &frame, run.anomaly_scale())
             .map_err(|error| error.to_string())?;
+        let wind = WindOverlay::of_frame(
+            run.header().grid,
+            &frame,
+            run.wind_stress_scale(),
+            ARROW_SPACING_CELLS,
+        )
+        .map_err(|error| error.to_string())?;
         let image = egui::ColorImage::from_rgb([heatmap.width(), heatmap.height()], heatmap.rgb());
         Ok(DrawnFrame {
             t_s: frame.t_s(),
+            wind,
             // Nearest, not linear: a texel is a cell of the model, and
             // smoothing between them would draw an anomaly the run never
             // produced.
@@ -496,11 +578,12 @@ fn draw_color_bar(ui: &mut egui::Ui, bar: &ColorBar) {
     });
 }
 
-/// Draw `texture` as large as the panel allows without changing its shape.
+/// Draw `texture` as large as the panel allows without changing its shape, and
+/// say where it landed so a layer can be drawn over it.
 ///
 /// The basin is far wider than it is tall, so fitting it to the width alone
 /// would push the colour bar off the bottom of a short window.
-fn draw_texture_fitted(ui: &mut egui::Ui, texture: &egui::TextureHandle) {
+fn draw_texture_fitted(ui: &mut egui::Ui, texture: &egui::TextureHandle) -> egui::Rect {
     let size = texture.size_vec2();
     let available = egui::vec2(
         ui.available_width(),
@@ -510,7 +593,36 @@ fn draw_texture_fitted(ui: &mut egui::Ui, texture: &egui::TextureHandle) {
     ui.add(egui::Image::new(egui::load::SizedTexture::new(
         texture.id(),
         size * scale,
-    )));
+    )))
+    .rect
+}
+
+/// Draw the frame's wind stress as arrows over the map occupying `map`.
+///
+/// The overlay's coordinates are the map's own — cells from its northwest
+/// corner — so placing an arrow is one multiplication by however large the map
+/// was drawn. Nothing here reads or writes the texture under it.
+fn draw_wind_arrows(ui: &egui::Ui, map: egui::Rect, drawn: &DrawnFrame) {
+    let cells = drawn.map.size_vec2();
+    if cells.x <= 0.0 || cells.y <= 0.0 {
+        return;
+    }
+    let per_cell = egui::vec2(map.width() / cells.x, map.height() / cells.y);
+    #[allow(clippy::cast_possible_truncation)]
+    let to_screen = |(x_cells, y_cells): (f64, f64)| {
+        map.min + egui::vec2(x_cells as f32 * per_cell.x, y_cells as f32 * per_cell.y)
+    };
+    let painter = ui.painter().with_clip_rect(map);
+    for arrow in drawn.wind.arrows() {
+        let tail = to_screen(arrow.tail_cells());
+        let along = to_screen(arrow.tip_cells(MAX_ARROW_LENGTH_CELLS)) - tail;
+        for (width, color) in [
+            (ARROW_CASING_WIDTH_PT, ARROW_CASING_COLOR),
+            (ARROW_WIDTH_PT, ARROW_COLOR),
+        ] {
+            painter.arrow(tail, along, egui::Stroke::new(width, color));
+        }
+    }
 }
 
 #[cfg(test)]
