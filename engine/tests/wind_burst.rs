@@ -639,6 +639,23 @@ impl EquatorialHistory {
     }
 }
 
+/// A solver for `basin` at the longest timestep its CFL bound admits, and that
+/// timestep.
+///
+/// The rig every run in this file starts from: the two ways a run is made —
+/// [`run_recording_equatorial_h`], which keeps the equatorial history, and
+/// [`state_after`], which keeps only the final state — differ in what they
+/// record, not in how they are set up.
+fn solver_for(basin: Basin, params: PhysicalParams) -> (Solver, f64) {
+    let wave_speed =
+        WaveSpeed::new(params.kelvin_wave_speed_m_per_s()).expect("a positive wave speed");
+    let dt_s = max_stable_dt(basin.spacing(), wave_speed);
+    let plane = BetaPlane::centered_on_equator(params, basin.spacing(), basin.grid());
+    let solver = Solver::new(basin.grid(), basin.spacing(), params, plane, dt_s)
+        .unwrap_or_else(|error| panic!("the test's own timestep must be admissible: {error}"));
+    (solver, dt_s)
+}
+
 /// Run `basin` from rest under `wind` for [`RUN_S`] seconds, recording the
 /// equatorial `h` of every column at every step.
 fn run_recording_equatorial_h(
@@ -646,12 +663,7 @@ fn run_recording_equatorial_h(
     params: PhysicalParams,
     wind: &dyn WindStress,
 ) -> EquatorialHistory {
-    let wave_speed =
-        WaveSpeed::new(params.kelvin_wave_speed_m_per_s()).expect("a positive wave speed");
-    let dt_s = max_stable_dt(basin.spacing(), wave_speed);
-    let plane = BetaPlane::centered_on_equator(params, basin.spacing(), basin.grid());
-    let mut solver = Solver::new(basin.grid(), basin.spacing(), params, plane, dt_s)
-        .unwrap_or_else(|error| panic!("the test's own timestep must be admissible: {error}"));
+    let (mut solver, dt_s) = solver_for(basin, params);
 
     let mut state = OceanState::at_rest(basin.grid());
     let steps = (RUN_S / dt_s).ceil() as usize;
@@ -676,17 +688,24 @@ fn burst_signal(basin: Basin, params: PhysicalParams) -> EquatorialHistory {
     with_burst.difference(&without_burst)
 }
 
-/// The column of `basin` whose centre is nearest `x_m` metres east of the
-/// western boundary.
-fn column_nearest_x(basin: Basin, x_m: f64) -> usize {
-    (0..basin.grid().nx())
+/// The index in `0..count` whose `position_m` is nearest `target_m`.
+fn index_nearest_m(count: usize, target_m: f64, position_m: impl Fn(usize) -> f64) -> usize {
+    (0..count)
         .min_by(|&a, &b| {
-            let distance = |i: usize| (basin.x_of_column_m(H_STAGGERING, i) - x_m).abs();
+            let distance = |index: usize| (position_m(index) - target_m).abs();
             distance(a)
                 .partial_cmp(&distance(b))
                 .expect("positions are finite")
         })
-        .expect("a basin has at least one column")
+        .expect("a basin has at least one cell in each direction")
+}
+
+/// The column of `basin` whose centre is nearest `x_m` metres east of the
+/// western boundary.
+fn column_nearest_x(basin: Basin, x_m: f64) -> usize {
+    index_nearest_m(basin.grid().nx(), x_m, |i| {
+        basin.x_of_column_m(H_STAGGERING, i)
+    })
 }
 
 #[test]
@@ -697,10 +716,12 @@ fn a_westerly_burst_deepens_the_thermocline_and_the_signal_travels_east() {
     // `CONTEXT.md`, *Westerly wind burst* — and it must reach the eastern
     // station after the western one, never before.
     //
-    // "Visible in raw field data" is a statement about magnitude: the scale
-    // analysis is `h ~ (τ/(ρ₀·H))·Lt·(H/Lx)·Lt ≈ 10 m` for the burst above, so
-    // a peak of at least 0.1 m is two orders of magnitude of headroom on
-    // "visible" while still excluding a numerically negligible wobble.
+    // "Visible in raw field data" is a statement about magnitude. The scale
+    // analysis `h ~ (τ/(ρ₀·H))·Lt·(H/Lx)·Lt ≈ 10 m` bounds the whole response
+    // of the burst above, of which the Kelvin mode carries a fraction — it is
+    // an upper bound, not a prediction — so the threshold is set two orders of
+    // magnitude below it. A tenth of a metre still excludes a numerically
+    // negligible wobble.
     const VISIBLE_SIGNAL_M: f64 = 0.1;
     let basin = equatorial_basin(100, 20);
     let signal = burst_signal(basin, undamped_pacific_params());
@@ -765,11 +786,13 @@ fn the_signal_travels_at_the_kelvin_wave_speed() {
 fn the_measured_speed_approaches_the_kelvin_speed_under_refinement() {
     // Convergence rather than a point check (CODING_STANDARDS.md § Tests). The
     // scheme is second-order in space, so halving both cell dimensions — which
-    // halves the timestep with them — should cut the phase-speed error by
-    // about four. Requiring a factor of two is the weakest statement that the
-    // discrepancy is discretisation error and not a modelling error that would
-    // survive refinement.
-    const REQUIRED_ERROR_REDUCTION: f64 = 0.5;
+    // halves the timestep with them — must cut the phase-speed error by four.
+    // The bound is 0.35 rather than 0.25 because the measurement is not exact:
+    // each arrival time is a sub-sample parabolic estimate, itself only
+    // second-order accurate in `dt`, so the measured ratio carries a little of
+    // its own error. A modelling error — one that survived refinement — would
+    // leave the ratio at one.
+    const REQUIRED_ERROR_REDUCTION: f64 = 0.35;
     let params = undamped_pacific_params();
     let kelvin_m_per_s = params.kelvin_wave_speed_m_per_s();
 
@@ -855,14 +878,7 @@ fn the_signal_is_trapped_near_the_equator() {
     let ny = basin.grid().ny();
     let equatorial_m = (anomaly_m(ny / 2 - 1) + anomaly_m(ny / 2)) / 2.0;
     let two_radii_m = 2.0 * equatorial_deformation_radius_m(params);
-    let far = (0..ny)
-        .min_by(|&a, &b| {
-            let distance = |j: usize| (basin.y_of_row_m(H_STAGGERING, j) - two_radii_m).abs();
-            distance(a)
-                .partial_cmp(&distance(b))
-                .expect("positions are finite")
-        })
-        .expect("a basin has at least one row");
+    let far = index_nearest_m(ny, two_radii_m, |j| basin.y_of_row_m(H_STAGGERING, j));
 
     assert!(
         equatorial_m.abs() > 0.0,
@@ -884,12 +900,7 @@ fn state_after(
     wind: &dyn WindStress,
     run_s: f64,
 ) -> OceanState {
-    let wave_speed =
-        WaveSpeed::new(params.kelvin_wave_speed_m_per_s()).expect("a positive wave speed");
-    let dt_s = max_stable_dt(basin.spacing(), wave_speed);
-    let plane = BetaPlane::centered_on_equator(params, basin.spacing(), basin.grid());
-    let mut solver = Solver::new(basin.grid(), basin.spacing(), params, plane, dt_s)
-        .unwrap_or_else(|error| panic!("the test's own timestep must be admissible: {error}"));
+    let (mut solver, dt_s) = solver_for(basin, params);
     let mut state = OceanState::at_rest(basin.grid());
     let steps = (run_s / dt_s).ceil() as usize;
     for step in 0..steps {
