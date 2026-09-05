@@ -27,10 +27,11 @@ use engine::{ScenarioConfig, WindStress, TROPICAL_YEAR_S};
 const STRESS_RELATIVE_TOLERANCE: f64 = 1e-12;
 
 /// Parameters shared by all three example files, read off them by eye.
-const NX: usize = 200;
-const NY: usize = 60;
-const DX_M: f64 = 50_000.0;
-const DY_M: f64 = 50_000.0;
+const WESTERN_LONGITUDE_DEG: f64 = 120.0;
+const EASTERN_LONGITUDE_DEG: f64 = -80.0;
+const SOUTHERN_LATITUDE_DEG: f64 = -25.0;
+const NORTHERN_LATITUDE_DEG: f64 = 25.0;
+const RESOLUTION_DEG: f64 = 0.5;
 const REDUCED_GRAVITY_M_PER_S2: f64 = 0.06;
 const MEAN_THERMOCLINE_DEPTH_M: f64 = 150.0;
 const RAYLEIGH_DAMPING_PER_S: f64 = 1.0e-7;
@@ -72,16 +73,43 @@ fn gaussian(offset: f64, scale: f64) -> f64 {
     (-(offset / scale) * (offset / scale)).exp()
 }
 
+/// One degree of arc at Earth's mean radius, in metres: `R·π/180` for the
+/// IUGG mean radius `R₁ = 6 371 008.8 m`. The projection the equatorial
+/// beta-plane implies, written here rather than read from the engine so that
+/// the files' degrees are checked against an independent number of metres.
+fn metres_per_degree() -> f64 {
+    6_371_008.8 * std::f64::consts::PI / 180.0
+}
+
 fn assert_shared_basin_physics_and_run(scenario: &Scenario) {
     let basin = scenario.basin();
-    assert_eq!(basin.grid().nx(), NX);
-    assert_eq!(basin.grid().ny(), NY);
-    assert_eq!(basin.spacing().dx_m(), DX_M);
-    assert_eq!(basin.spacing().dy_m(), DY_M);
-    // No `western_edge_x_m` or `southern_edge_y_m` in any example file, so the
-    // basin is the one centred on the equator with its west wall at x = 0.
+    let degree_m = metres_per_degree();
+    // 160° of longitude by 50° of latitude, in cells of half a degree.
+    assert_eq!(
+        basin.grid().nx(),
+        ((EASTERN_LONGITUDE_DEG + 360.0 - WESTERN_LONGITUDE_DEG) / RESOLUTION_DEG) as usize
+    );
+    assert_eq!(
+        basin.grid().ny(),
+        ((NORTHERN_LATITUDE_DEG - SOUTHERN_LATITUDE_DEG) / RESOLUTION_DEG) as usize
+    );
+    assert_close(
+        basin.spacing().dx_m(),
+        RESOLUTION_DEG * degree_m,
+        "the cell width of the example basin",
+    );
+    assert_close(
+        basin.spacing().dy_m(),
+        RESOLUTION_DEG * degree_m,
+        "the cell height of the example basin",
+    );
+    // x is measured east from the western wall, and y north from the equator.
     assert_eq!(basin.western_edge_x_m(), 0.0);
-    assert_eq!(basin.southern_edge_y_m(), -(NY as f64 * DY_M) / 2.0);
+    assert_close(
+        basin.southern_edge_y_m(),
+        SOUTHERN_LATITUDE_DEG * degree_m,
+        "the southern wall of the example basin",
+    );
 
     let physics = scenario.physical_params();
     assert_eq!(physics.reduced_gravity_m_per_s2(), REDUCED_GRAVITY_M_PER_S2);
@@ -276,10 +304,11 @@ fn every_example_round_trips_through_toml() {
 /// A valid config, as a template the failure cases mutate one line of.
 const VALID_TOML: &str = r#"
 [basin]
-nx = 200
-ny = 60
-dx_m = 50000.0
-dy_m = 50000.0
+western_longitude_deg = 120.0
+eastern_longitude_deg = -80.0
+southern_latitude_deg = -25.0
+northern_latitude_deg = 25.0
+resolution_deg = 0.5
 
 [physics]
 reduced_gravity_m_per_s2 = 0.06
@@ -308,34 +337,41 @@ fn the_template_the_failure_cases_mutate_is_itself_valid() {
 
 #[test]
 fn a_zero_grid_extent_is_rejected_by_name() {
-    let error = error_from(&VALID_TOML.replace("ny = 60", "ny = 0"));
+    // A basin whose northern boundary is its southern one has no cells.
+    let error = error_from(&VALID_TOML.replace(
+        "northern_latitude_deg = 25.0",
+        "northern_latitude_deg = -25.0",
+    ));
     let message = error.to_string();
     assert!(
-        message.contains("ny") && message.contains('0'),
+        message.contains("northern_latitude_deg") && message.contains("-25"),
         "the message should name the offending extent, got: {message}"
     );
 }
 
 #[test]
-fn a_negative_grid_extent_is_rejected_at_the_line_that_carries_it() {
-    // A count of cells has no negative values to reject downstream, so this
-    // one is refused while the file is still being parsed. The message still
-    // has to point at the offending line rather than at the file.
-    let error = error_from(&VALID_TOML.replace("nx = 200", "nx = -200"));
+fn a_boundary_that_is_not_a_number_is_rejected_at_the_line_that_carries_it() {
+    // A boundary the format cannot even parse is refused while the file is
+    // still being read, and the message has to point at the offending line
+    // rather than at the file.
+    let error = error_from(&VALID_TOML.replace(
+        "western_longitude_deg = 120.0",
+        r#"western_longitude_deg = "120E""#,
+    ));
     let message = error.to_string();
     assert!(
-        message.contains("nx = -200"),
+        message.contains("western_longitude_deg = \"120E\""),
         "the message should quote the line it rejected, got: {message}"
     );
 }
 
 #[test]
-fn a_negative_cell_spacing_is_rejected_by_name() {
-    let error = error_from(&VALID_TOML.replace("dx_m = 50000.0", "dx_m = -50000.0"));
+fn a_negative_cell_size_is_rejected_by_name() {
+    let error = error_from(&VALID_TOML.replace("resolution_deg = 0.5", "resolution_deg = -0.5"));
     let message = error.to_string();
     assert!(
-        message.contains("dx"),
-        "the message should name the offending spacing, got: {message}"
+        message.contains("resolution_deg") && message.contains("-0.5"),
+        "the message should name the offending cell size, got: {message}"
     );
 }
 
@@ -394,9 +430,9 @@ fn a_non_positive_reduced_gravity_is_rejected_by_name() {
 
 #[test]
 fn a_timestep_past_the_cfl_bound_is_rejected_before_the_run_starts() {
-    // c = √(0.06 · 150) = 3.0 m/s and dx = dy = 50 km, so the bound of
-    // `termocline-numerics` is 0.8 · dx / c ≈ 13 333 s (see its module
-    // comment). A day-long step is an order of magnitude past it.
+    // c = √(0.06 · 150) = 3.0 m/s and dx = dy = 0.5° of arc ≈ 55.6 km, so the
+    // bound of `termocline-numerics` is 0.8 · dx / c ≈ 14 800 s (see its
+    // module comment). A day-long step is nearly six times past it.
     let error = error_from(&VALID_TOML.replace("dt_s = 3600.0", "dt_s = 86400.0"));
     let message = error.to_string();
     assert!(
@@ -411,7 +447,7 @@ fn a_timestep_past_the_cfl_bound_is_rejected_before_the_run_starts() {
 
 #[test]
 fn a_malformed_file_is_reported_rather_than_panicked() {
-    let error = error_from("[basin\nnx = 200");
+    let error = error_from("[basin\nresolution_deg = 0.5");
     assert!(
         !error.to_string().is_empty(),
         "a parse failure still has to say something"
