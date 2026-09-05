@@ -85,7 +85,7 @@ use crate::basin::Basin;
 
 use crate::boundary::NoNormalFlow;
 use crate::coriolis::{BetaPlane, CoriolisTerm};
-use crate::forcing::{WindStress, WindStressField};
+use crate::forcing::{BorrowedForcing, StageForcing, WindForcing, WindStress, WindStressField};
 use crate::integrator::Rk4;
 use crate::params::PhysicalParams;
 use crate::shallow_water::ShallowWaterRhs;
@@ -367,19 +367,110 @@ impl Solver {
             integrator,
             stage_stress,
         } = self;
-        NoNormalFlow::apply_to_state(state);
-        integrator.step(
+        // The forcing lives for this call only: the wind arrives as an
+        // argument, so nothing here can know it is the same wind the previous
+        // call passed. Within one step it is still worth one sampling instead
+        // of four for a steady wind and three instead of four for a wind that
+        // varies; a run that wants the field kept across steps holds a
+        // `WindForcing` and calls `step_with_forcing`.
+        integrate(
             state,
             t_s,
             *dt_s,
-            &mut |now: &OceanState, stage_t_s: f64, tendency: &mut OceanState| {
-                stage_stress.sample(basin, wind, stage_t_s);
-                rhs.evaluate(now, stage_stress, tendency);
-                coriolis.add_to_tendency(now, tendency);
-                NoNormalFlow::apply_to_tendency(tendency);
-            },
+            rhs,
+            coriolis,
+            integrator,
+            &mut BorrowedForcing::new(basin, wind, stage_stress),
         );
     }
+
+    /// Advance `state` from time `t_s` to `t_s + dt` under `forcing`, in place.
+    ///
+    /// The form a *run* uses, and the difference from
+    /// [`Solver::step_forced_by`] is which side of the call the sampled field
+    /// lives on. There, the wind arrives per call, so the field it is sampled
+    /// into cannot be trusted past the end of the call and is written afresh
+    /// every step. Here the caller holds a [`WindForcing`] — a wind and its
+    /// field, bound together — across the whole time loop, so a wind that
+    /// declares itself [`TimeDependence`](crate::TimeDependence)`::Steady` is
+    /// sampled once for the run rather than once a step.
+    ///
+    /// That is T-10.5's finding turned into an API: `docs/performance-notes.md`
+    /// measured re-sampling the wind at 71% of a timestep on the control
+    /// scenario, all of it recomputing a field that had not changed. What the
+    /// integration sees is unchanged — the forcing is still asked for the
+    /// stress at each of RK4's four stage times, and it still answers with the
+    /// stress at *that* time, which is why a seasonal or burst forcing steps
+    /// exactly as it did before.
+    ///
+    /// `state` is brought onto the boundary condition on the way in, exactly
+    /// as in [`Solver::step`].
+    ///
+    /// # Panics
+    /// If `forcing` covers a different grid from the one this solver was built
+    /// for — asserted here — or if `state` does, which the evaluators refuse
+    /// in their turn. A shape mismatch means the calling code is wrong, which
+    /// is what panics are for (CODING_STANDARDS.md § Correctness and failure).
+    pub fn step_with_forcing<W: WindStress>(
+        &mut self,
+        state: &mut OceanState,
+        t_s: f64,
+        forcing: &mut WindForcing<W>,
+    ) {
+        // The solver's grid, which its own stage buffer is the shape of.
+        let grid = self.stage_stress.grid();
+        assert!(
+            forcing.basin().grid() == grid,
+            "the forcing covers {:?}, but this solver was built for {:?}",
+            forcing.basin().grid(),
+            grid
+        );
+        // That buffer stays idle here, which is exactly the point: the field
+        // the forcing brings is the one the *previous* step wrote, and often
+        // does not need rewriting.
+        let Self {
+            dt_s,
+            rhs,
+            coriolis,
+            integrator,
+            stage_stress: _,
+        } = self;
+        integrate(state, t_s, *dt_s, rhs, coriolis, integrator, forcing);
+    }
+}
+
+/// One RK4 step of the engine's scheme: the body both of [`Solver`]'s
+/// wind-taking steps run, differing only in where their stage stress comes
+/// from.
+///
+/// Order matters, and it is the same order in both: the shallow-water
+/// evaluator writes every point of the tendency, the Coriolis term adds to
+/// what it wrote, and the boundary condition has the last word over both.
+/// `state` is brought onto the boundary condition on the way in.
+///
+/// A free function taking the solver's pieces rather than a method, because
+/// the forcing may borrow one of those pieces — `step_forced_by`'s does — and
+/// the borrow checker needs to see them apart.
+fn integrate(
+    state: &mut OceanState,
+    t_s: f64,
+    dt_s: f64,
+    rhs: &mut ShallowWaterRhs,
+    coriolis: &mut CoriolisTerm,
+    integrator: &mut Rk4<OceanState>,
+    forcing: &mut impl StageForcing,
+) {
+    NoNormalFlow::apply_to_state(state);
+    integrator.step(
+        state,
+        t_s,
+        dt_s,
+        &mut |now: &OceanState, stage_t_s: f64, tendency: &mut OceanState| {
+            rhs.evaluate(now, forcing.at(stage_t_s), tendency);
+            coriolis.add_to_tendency(now, tendency);
+            NoNormalFlow::apply_to_tendency(tendency);
+        },
+    );
 }
 
 /// `state` advanced by one step of `dt_s` seconds from time zero, as a freshly

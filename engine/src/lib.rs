@@ -87,11 +87,13 @@ pub use boundary::NoNormalFlow;
 
 /// Re-exported so a scenario names one wind forcing: the [`forcing::WindStress`]
 /// trait a scenario implements, the scenarios that implement it, the
-/// [`forcing::CompositeWind`] that stacks them, and the
-/// [`forcing::WindStressField`] the solver actually reads.
+/// [`forcing::CompositeWind`] that stacks them, the
+/// [`forcing::TimeDependence`] each of them declares, and the
+/// [`forcing::WindStressField`] the solver actually reads — held across a run
+/// by the [`forcing::WindForcing`] a time loop steps with.
 pub use forcing::{
-    CompositeWind, SeasonalTradeWinds, SteadyTradeWinds, WindBurstAnomaly, WindStress,
-    WindStressError, WindStressField, TROPICAL_YEAR_S,
+    CompositeWind, SeasonalTradeWinds, SteadyTradeWinds, TimeDependence, WindBurstAnomaly,
+    WindForcing, WindStress, WindStressError, WindStressField, TROPICAL_YEAR_S,
 };
 
 /// Re-exported so the CLI, the tests and the example files name one scenario

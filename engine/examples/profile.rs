@@ -34,7 +34,7 @@ use engine::profiling::{
     clock_read_cost, StepPhase, StepProfiler, TermProfiler, CLOCK_READS_PER_STEP, RHS_TERMS,
     STEP_PHASES,
 };
-use engine::{BetaPlane, OceanState, Solver};
+use engine::{BetaPlane, OceanState, Solver, WindForcing};
 
 /// Steps each workload is profiled over.
 ///
@@ -193,7 +193,11 @@ fn spin(duration: Duration) {
     let basin = scenario.basin();
     let params = scenario.physical_params();
     let schedule = scenario.output_schedule();
-    let wind = scenario.wind();
+    // The forcing is held across the loop, exactly as `run_scenario` holds it,
+    // so the stacks a sampler sees are a run's stacks: since T-10.5 that means
+    // a steady wind is sampled once here rather than once a step
+    // (`docs/performance-notes.md`).
+    let mut forcing = WindForcing::new(basin, scenario.wind());
     let mut solver = Solver::new(
         basin.grid(),
         basin.spacing(),
@@ -216,7 +220,7 @@ fn spin(duration: Duration) {
         // loop around the step is negligible against the step even at the
         // coarser grid.
         for _ in 0..32 {
-            solver.step_forced_by(&mut state, steps as f64 * schedule.dt_s(), basin, &wind);
+            solver.step_with_forcing(&mut state, steps as f64 * schedule.dt_s(), &mut forcing);
             steps += 1;
         }
     }

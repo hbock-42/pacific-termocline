@@ -44,7 +44,7 @@ use std::path::Path;
 use termocline_format::{FormatError, GridSpec, RunHeader};
 
 use crate::coriolis::BetaPlane;
-use crate::forcing::WindStressField;
+use crate::forcing::WindForcing;
 use crate::progress::RunObserver;
 use crate::run_writer::{RunWriteError, RunWriter};
 use crate::scenario::{Scenario, ScenarioError};
@@ -228,12 +228,14 @@ pub fn run_scenario_observed(
         schedule.timing(),
     );
 
-    let wind = scenario.wind();
     let mut state = OceanState::at_rest(grid);
-    // The stress the frames record, sampled at each *saved* step. The stress
-    // the solver integrates is its own, re-sampled at every RK4 stage; this
-    // one is the field a reader plots beside the state it drove.
-    let mut stress = WindStressField::calm(grid);
+    // The run's forcing: the scenario's wind and the one field it is sampled
+    // into, held here rather than inside the solver so that it survives the
+    // whole time loop. A steady wind is therefore sampled once for the run
+    // (T-10.5, `docs/performance-notes.md`), and the field a frame records is
+    // the very field that stage of the integration read — the same instant,
+    // and now literally the same buffer.
+    let mut forcing = WindForcing::new(basin, scenario.wind());
 
     let mut writer = RunWriter::create(directory, &header)?;
     observer.run_started(description, schedule);
@@ -241,13 +243,12 @@ pub fn run_scenario_observed(
     for step in 0..=schedule.total_steps() {
         let t_s = schedule.model_time_at_step(step);
         if schedule.writes_at_step(step) {
-            stress.sample(basin, &wind, t_s);
-            writer.append(t_s, &state, &stress)?;
+            writer.append(t_s, &state, forcing.at(t_s))?;
             observer.frame_written(frames_written, t_s);
             frames_written += 1;
         }
         if step < schedule.total_steps() {
-            solver.step_forced_by(&mut state, t_s, basin, &wind);
+            solver.step_with_forcing(&mut state, t_s, &mut forcing);
             // The step just taken is `step + 1` of the run, and it reached the
             // model time of the *next* iteration — which is what the observer
             // reports, so the time on screen is the time the state is at.

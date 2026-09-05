@@ -89,8 +89,8 @@ use termocline_numerics::{check_timestep, CflError, WaveSpeed};
 use crate::basin::{Basin, BasinBounds, BasinBoundsError};
 use crate::coriolis::BetaPlane;
 use crate::forcing::{
-    CompositeWind, SeasonalTradeWinds, SteadyTradeWinds, WindBurstAnomaly, WindStress,
-    WindStressError,
+    CompositeWind, SeasonalTradeWinds, SteadyTradeWinds, TimeDependence, WindBurstAnomaly,
+    WindStress, WindStressError,
 };
 use crate::params::{
     PhysicalParams, PhysicalParamsError, EQUATORIAL_BETA_PER_M_PER_S,
@@ -561,6 +561,17 @@ impl WindStress for ScenarioWind {
             Self::Steady(wind) => wind.stress(x_m, y_m, t_s),
             Self::Seasonal(wind) => wind.stress(x_m, y_m, t_s),
             Self::Burst(wind) => wind.stress(x_m, y_m, t_s),
+        }
+    }
+
+    /// Whatever the wind the scenario named says. The enum is a dispatcher and
+    /// has no opinion of its own — least of all here, where an opinion would
+    /// be a promise about a forcing it did not write.
+    fn time_dependence(&self) -> TimeDependence {
+        match self {
+            Self::Steady(wind) => wind.time_dependence(),
+            Self::Seasonal(wind) => wind.time_dependence(),
+            Self::Burst(wind) => wind.time_dependence(),
         }
     }
 }
