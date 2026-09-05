@@ -34,11 +34,3 @@ pub const APP_NAME: &str = "Termocline visualizer";
 
 #[cfg(target_arch = "wasm32")]
 mod web;
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn workspace_links_the_format_crate() {
-        assert_eq!(crate::FORMAT_VERSION, termocline_format::FORMAT_VERSION);
-    }
-}

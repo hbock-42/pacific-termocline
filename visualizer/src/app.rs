@@ -107,7 +107,7 @@ impl VisualizerApp {
     fn absorb_finished_loads(&mut self) {
         while let Some(Loaded { source, bytes }) = self.loader.poll() {
             self.shown = match bytes.and_then(|bytes| {
-                LoadedRun::from_bytes(source.clone(), &bytes).map_err(|error| error.to_string())
+                LoadedRun::from_bytes(source.clone(), bytes).map_err(|error| error.to_string())
             }) {
                 Ok(run) => Shown::Run(Box::new(run)),
                 Err(message) => Shown::Failed { source, message },
@@ -121,8 +121,7 @@ impl VisualizerApp {
         let dropped = ctx.input(|input| input.raw.dropped_files.clone());
         for file in &dropped {
             #[cfg(not(target_arch = "wasm32"))]
-            if file.path.as_ref().is_some_and(|path| path.is_dir()) {
-                let path = file.path.as_ref().expect("just checked");
+            if let Some(path) = file.path.as_ref().filter(|path| path.is_dir()) {
                 self.load_directory(path);
                 continue;
             }
@@ -201,7 +200,7 @@ impl eframe::App for VisualizerApp {
 
         egui::TopBottomPanel::top("controls").show(ctx, |ui| {
             ui.add_space(4.0);
-            ui.heading("Termocline visualizer");
+            ui.heading(crate::APP_NAME);
             self.draw_controls(ui);
             ui.add_space(4.0);
         });

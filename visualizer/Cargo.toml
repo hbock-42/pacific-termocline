@@ -28,10 +28,12 @@ egui-wgpu = "0.33"
 ehttp = "0.7"
 log = "0.4"
 
-# A run directory only exists where there is a filesystem, so the reader's `fs`
-# feature and the folder picker are native-only (ADR-0006).
+# The folder picker and the logger only mean something where there is a
+# filesystem and a terminal (ADR-0006). `termocline-format`'s `fs` feature is
+# deliberately *not* enabled: the visualizer reads a directory into the same
+# byte buffers the web hands it, so both targets take one code path and neither
+# depends on `RunReader::open`.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-termocline-format = { workspace = true, features = ["fs"] }
 env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
 rfd = "0.17"
 

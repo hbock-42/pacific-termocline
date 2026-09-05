@@ -70,18 +70,35 @@ impl LoadedRun {
     /// so a run written by a format version this build does not read is
     /// refused here rather than mislabelled in the UI.
     ///
+    /// Every frame is decoded once here and thrown away. That costs a pass
+    /// over the run at load, and it buys the one thing the panel cannot get
+    /// from the header alone: the frame count it shows is a number the file
+    /// keeps rather than a number the header claims. A `header.json` beside
+    /// another run's `frames.bin` reads as a perfectly plausible run until the
+    /// frames are counted. The pass holds one frame at a time, so it costs
+    /// time and not memory — which is the resource a browser tab is short of
+    /// (ADR-0006).
+    ///
     /// # Errors
-    /// The errors of [`RunReader::new`]: a header that is not valid JSON for a
-    /// [`RunHeader`], or one from an unsupported [format version].
+    /// The errors of [`RunReader`]: a header that is not valid JSON for a
+    /// [`RunHeader`], one from an unsupported [format version], frames that do
+    /// not fit the basin the header describes, or a frame count the file does
+    /// not keep.
     ///
     /// [format version]: termocline_format::FORMAT_VERSION
-    pub fn from_bytes(source: impl Into<String>, bytes: &RunBytes) -> Result<Self, RunReadError> {
-        let reader = RunReader::new(bytes.header.as_slice(), bytes.frames.as_slice())?;
+    pub fn from_bytes(source: impl Into<String>, bytes: RunBytes) -> Result<Self, RunReadError> {
+        let RunBytes { header, frames } = bytes;
+        // Taken by value, and the frames moved rather than copied: a run in a
+        // browser tab has no second copy to spare (ADR-0006).
+        let mut reader = RunReader::new(header.as_slice(), frames.as_slice())?;
         let header = reader.header().clone();
+        for frame in reader.by_ref() {
+            frame?;
+        }
         Ok(Self {
             source: source.into(),
             header,
-            frames: bytes.frames.clone(),
+            frames,
         })
     }
 
@@ -141,23 +158,29 @@ impl LoadedRun {
             MetadataRow::new("Model time", format!("{:.2} days", self.model_time_days())),
             MetadataRow::new(
                 "Mean depth H",
-                format!("{} m", quantity(params.mean_depth_m)),
+                format!("{} m", format_quantity(params.mean_depth_m)),
             ),
             MetadataRow::new(
                 "Reduced gravity g'",
-                format!("{} m s^-2", quantity(params.reduced_gravity_m_per_s2)),
+                format!(
+                    "{} m s^-2",
+                    format_quantity(params.reduced_gravity_m_per_s2)
+                ),
             ),
             MetadataRow::new(
                 "Coriolis gradient β",
-                format!("{} m^-1 s^-1", quantity(params.beta_per_m_per_s)),
+                format!("{} m^-1 s^-1", format_quantity(params.beta_per_m_per_s)),
             ),
             MetadataRow::new(
                 "Rayleigh damping r",
-                format!("{} s^-1", quantity(params.rayleigh_damping_per_s)),
+                format!("{} s^-1", format_quantity(params.rayleigh_damping_per_s)),
             ),
             MetadataRow::new(
                 "Reference density ρ₀",
-                format!("{} kg m^-3", quantity(params.reference_density_kg_per_m3)),
+                format!(
+                    "{} kg m^-3",
+                    format_quantity(params.reference_density_kg_per_m3)
+                ),
             ),
             MetadataRow::new("Variables", variables.join(", ")),
             MetadataRow::new("Format version", self.header.format_version.to_string()),
@@ -184,7 +207,7 @@ impl LoadedRun {
 const SCIENTIFIC_BELOW: f64 = 1e-3;
 
 /// A physical quantity, in the notation that keeps its magnitude readable.
-fn quantity(value: f64) -> String {
+fn format_quantity(value: f64) -> String {
     if value != 0.0 && value.abs() < SCIENTIFIC_BELOW {
         format!("{value:e}")
     } else {

@@ -8,46 +8,20 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
+mod common;
+
 use std::path::PathBuf;
 
-use termocline_format::{
-    frame_encoding, BasinExtent, Frame, GridSpec, OutputTiming, PhysicalParams, RunHeader,
-    Variable, FRAME_FILE_NAME, HEADER_FILE_NAME,
-};
+use common::{encoded_frames, header_on, PACIFIC};
+use termocline_format::{GridSpec, RunHeader, FRAME_FILE_NAME, HEADER_FILE_NAME};
 use visualizer::{read_run_directory, LoadedRun};
 
-/// A one-frame run on a two-by-two basin, written to a directory of its own.
+/// A one-frame run written to a directory of its own.
 ///
-/// Small on purpose: what is under test is the directory, not the grid.
+/// Two cells by two: what is under test is the directory, not the grid.
 fn write_run(directory: &PathBuf) -> RunHeader {
-    let extent = BasinExtent::new(120.0, -80.0, -25.0, 25.0);
-    let grid = GridSpec::new(2, 2, extent).expect("2 x 2 is a valid basin");
-    let header = RunHeader::new(
-        grid,
-        PhysicalParams {
-            mean_depth_m: 150.0,
-            reduced_gravity_m_per_s2: 0.06,
-            beta_per_m_per_s: 2.3e-11,
-            rayleigh_damping_per_s: 1.0e-7,
-            reference_density_kg_per_m3: 1025.0,
-        },
-        "directory-run",
-        OutputTiming {
-            frame_count: 1,
-            interval_s: 86_400.0,
-        },
-    );
-    let field = |variable| vec![0.0; grid.field_len(variable)];
-    let frame = Frame::new(
-        0.0,
-        &grid,
-        field(Variable::ThermoclineDepthAnomaly),
-        field(Variable::ZonalCurrentAnomaly),
-        field(Variable::MeridionalCurrentAnomaly),
-        field(Variable::ZonalWindStress),
-        field(Variable::MeridionalWindStress),
-    )
-    .expect("fields sized from the grid fit it");
+    let grid = GridSpec::new(2, 2, PACIFIC).expect("2 x 2 is a valid basin");
+    let header = header_on(grid, "directory-run", 1);
 
     std::fs::create_dir_all(directory).expect("the run directory is created");
     std::fs::write(
@@ -57,7 +31,7 @@ fn write_run(directory: &PathBuf) -> RunHeader {
     .expect("the header is written");
     std::fs::write(
         directory.join(FRAME_FILE_NAME),
-        bincode::serde::encode_to_vec(&frame, frame_encoding()).expect("a frame encodes"),
+        encoded_frames(&header, header.output.frame_count),
     )
     .expect("the frames are written");
     header
@@ -76,8 +50,7 @@ fn a_run_directory_loads_into_the_same_metadata_the_web_path_produces() {
     let header = write_run(&directory);
 
     let bytes = read_run_directory(&directory).expect("the run directory is read");
-    let run =
-        LoadedRun::from_bytes(directory.display().to_string(), &bytes).expect("the run loads");
+    let run = LoadedRun::from_bytes(directory.display().to_string(), bytes).expect("the run loads");
 
     assert_eq!(run.header(), &header);
     let grid = run
