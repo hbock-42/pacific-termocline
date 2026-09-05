@@ -8,6 +8,8 @@ repository.workspace = true
 description = "Headless simulation core: runs a scenario forward in time and writes the ocean state to disk."
 
 [dependencies]
+bincode = { version = "2", features = ["serde"] }
+serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
 termocline-format.workspace = true
 termocline-grid.workspace = true
 termocline-numerics.workspace = true
