@@ -198,13 +198,15 @@ project policy in the same sense as `CFL_SAFETY_FACTOR`: it admits 350 times the
 deformation radius the model resolves — so a scenario past it is a scenario with
 a mistyped `resolution_deg` rather than an ambitious one.
 
-A scenario that carries an `[sst]` section is counted at **320 B/cell**
-instead, and admits about 6.7 × 10⁶ cells. The extra 128 bytes are the SST
-anomaly in the state and in RK4's five stage buffers, plus the eight fields the
-SST term itself holds resident — 14 more `f64` a cell, rounded up to 16 on the
-same reasoning. The two counts are kept apart on purpose: turning the coupling
-on is what costs the memory, so a run of the linear core is held to exactly the
-budget it always was.
+A scenario that carries an `[sst]` section is counted at **352 B/cell**
+instead, and admits about 6.1 × 10⁶ cells. The extra 160 bytes are the SST
+anomaly in the state and in RK4's five stage buffers, the eight fields the SST
+term itself holds resident, and the two components of the third wind-stress
+field a coupled forcing sums the prescribed winds and the atmospheric response
+into — 16 more `f64` a cell, rounded up to 20 on the same reasoning. The two
+counts are kept apart on purpose: turning the coupling on is what costs the
+memory, so a run of the linear core is held to exactly the budget it always
+was.
 
 Past the budget, the basin is refused by its cell count and never quietly
 coarsened:
@@ -471,6 +473,35 @@ heat across the equator in a direction the real ocean does not. A faithful
 meridional term needs a `T̄(y)` profile rather than a number, which is a larger
 change than this equation and is not what closes the Bjerknes loop.
 
+### Closing the loop
+
+`wind_feedback_strength_pa_per_k` is the other direction of the coupling, and
+the arrow that makes the model an *oscillator* rather than a response. The
+atmosphere answers the SST anomaly with a zonal stress anomaly
+
+```text
+τx'(x, y, t) = μ · ⟨T'⟩(t) · exp(−(y/L_a)²)          τy' = 0
+```
+
+added to whatever the `[[wind]]` entries prescribe — the superposition of
+T-03.3, applied to a wind that is diagnosed from the state rather than written
+in the file. `⟨T'⟩` is the SST anomaly projected onto that same equatorial
+Gaussian: one number for the basin, recomputed at every stage of every step, so
+the wind of a stage answers the ocean of that stage.
+
+It is the *statistical* atmosphere of
+`docs/planning/01-scientific-model.md` § *Phase 2*, with a Gill-type spatial
+pattern, and not an integration of the atmospheric equations. Two properties of
+the real thing justify it: the tropical atmosphere adjusts in days where the
+ocean adjusts in months, so the wind anomaly is diagnostic and has no memory of
+its own; and the zonal wind of Gill's (1980) heating response is trapped about
+the equator as `exp(−βy²/(2·c_a))`, which is the Gaussian above.
+
+`μ > 0` is the Bjerknes sign (`CONTEXT.md`): a **warm** anomaly adds a
+**westerly** stress, weakening the easterly alizés, which flattens the
+thermocline, which warms the east. At `μ = 0` nothing is added and the run is
+the one T-12.1 validated, bit for bit.
+
 **The section is the switch.** Omitting it entirely leaves the scenario the
 validated linear model of Epics 01–07 — three prognostic variables, three
 fields allocated, the right-hand side those epics were validated against.
@@ -491,6 +522,8 @@ visualizer reads rather than a side effect of adding a term.
 | `subsurface_temperature_sensitivity_k_per_m` | float | required | K/m | Finite and at least 0. The sensitivity `γ = ∂T_sub/∂h` of the entrained water's temperature to the thermocline depth anomaly — the coupling to `h`, and the ocean half of the Bjerknes feedback. `0` decouples entrainment from the thermocline while leaving the upwelling in place. Negative is refused: it would make a deeper thermocline colder. `0.1` is the Zebiak–Cane value. |
 | `thermal_damping_per_s` | float | required | s⁻¹ | Finite and at least 0. Thermal damping `ε_T`; its inverse is the relaxation timescale of an anomaly against the climatological surface heat flux. `0` is the undamped limit. Negative is refused, because it would amplify rather than relax. `9.26 × 10⁻⁸` is a 125-day relaxation. |
 | `surface_drag_per_s` | float | optional | s⁻¹ | Finite and strictly greater than 0. The Rayleigh drag `r_s` of the wind-driven surface layer. Omitted means `5.787e-6`, the inverse of two days (Zebiak & Cane 1987, § 2b). It is what keeps the Ekman solution finite at the equator, where `f = 0` and where all of this model's upwelling is; it sets the half-width `r_s/β ≈ 250 km` of the upwelling band, and the equatorial upwelling scales as `1/r_s²`. A zero would divide by zero on the equator. |
+| `wind_feedback_strength_pa_per_k` | float | optional | Pa/K | Finite and at least 0. The strength `μ` of the atmospheric wind response to the SST anomaly — the wind half of the Bjerknes feedback. Omitted means `0`, which is the one-way coupling T-12.1 left: the ocean responds to `T'`, the wind does not, and the run is bit for bit the prescribed-wind one. Negative is refused, because it would make a warm anomaly *strengthen* the alizés — the feedback run backwards. `0.02` relaxes the trades by 0.02 Pa per kelvin of warming — 40% of a 0.05 Pa alizé for a 1 K anomaly, which is the order of perturbation the intermediate coupled models put on the equatorial trades. It is an illustrative value, not a tuned one: which strength actually oscillates is T-12.3's question, not this table's. |
+| `wind_response_meridional_scale_m` | float | optional | m | Finite and strictly greater than 0. The e-folding latitude `L_a` of that response, `τx' ∝ exp(−(y/L_a)²)`. Omitted means `2.3e6`, the atmospheric equatorial Rossby radius `√(2·c_a/β)` with `c_a = 60 m/s` (Gill, *Q. J. R. Meteorol. Soc.* 106, 1980). It is far wider than the ocean's deformation radius, because the atmosphere's gravity waves are two orders of magnitude faster. |
 
 <!-- end fields -->
 

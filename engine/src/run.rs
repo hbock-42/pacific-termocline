@@ -25,8 +25,13 @@
 //! # The SST coupling
 //!
 //! A scenario's `[sst]` section is read here and nowhere else: it decides
-//! which solver is built and which state is allocated, and the time loop is
-//! the same either way. `T'` is *not* written to the run's frames — the
+//! which solver is built, which state is allocated, and which of the two
+//! [`RunForcing`] shapes the winds take, and the time loop is the same either
+//! way. A coupled run's forcing is a
+//! [`CoupledWind`](crate::CoupledWind): the prescribed `[[wind]]` entries plus
+//! the atmospheric response to `T'` (T-12.2), so the stress a step reads — and
+//! the stress a frame records — is the one the ocean actually felt, feedback
+//! included. `T'` is *not* written to the run's frames — the
 //! interchange format of [ADR-0004] describes the three variables of the
 //! linear core, and extending it is a change to the contract the visualizer
 //! reads, not a side effect of adding a term (T-12.3's business).
@@ -54,13 +59,15 @@ use std::path::Path;
 
 use termocline_format::{FormatError, GridSpec, RunHeader};
 
+use crate::basin::Basin;
 use crate::coriolis::BetaPlane;
-use crate::forcing::WindForcing;
+use crate::forcing::{CompositeWind, StageForcing, WindForcing, WindStressField};
 use crate::progress::RunObserver;
 use crate::run_writer::{RunWriteError, RunWriter};
 use crate::scenario::{Scenario, ScenarioError};
 use crate::solver::{Solver, SolverError};
 use crate::state::OceanState;
+use crate::wind_response::{CoupledWind, SstWindResponse};
 
 /// Why a run could not be made.
 ///
@@ -260,7 +267,14 @@ pub fn run_scenario_observed(
     // (T-10.5, `docs/performance-notes.md`), and the field a frame records is
     // the very field that stage of the integration read — the same instant,
     // and now literally the same buffer.
-    let mut forcing = WindForcing::new(basin, scenario.wind());
+    let mut forcing = match scenario.wind_response_params() {
+        Some(response) => RunForcing::Coupled(Box::new(CoupledWind::new(
+            basin,
+            scenario.wind(),
+            SstWindResponse::new(basin, response),
+        ))),
+        None => RunForcing::Prescribed(WindForcing::new(basin, scenario.wind())),
+    };
 
     let mut writer = RunWriter::create(directory, &header)?;
     observer.run_started(description, schedule);
@@ -268,7 +282,7 @@ pub fn run_scenario_observed(
     for step in 0..=schedule.total_steps() {
         let t_s = schedule.model_time_at_step(step);
         if schedule.writes_at_step(step) {
-            writer.append(t_s, &state, forcing.at(t_s))?;
+            writer.append(t_s, &state, forcing.at(t_s, &state))?;
             observer.frame_written(frames_written, t_s);
             frames_written += 1;
         }
@@ -288,4 +302,38 @@ pub fn run_scenario_observed(
     };
     observer.run_finished(&report);
     Ok(report)
+}
+
+/// The forcing of one run: the scenario's prescribed winds, and — when the
+/// `[sst]` section switched the Epic 12 coupling on — the atmospheric response
+/// added to them.
+///
+/// A closed enum rather than a `Box<dyn StageForcing>` for the same reason
+/// [`ScenarioWind`](crate::ScenarioWind) is one: a run has exactly these two
+/// shapes, and which one it has is decided once, before the first step. The
+/// coupled arm is boxed because it is much the larger of the two and only one
+/// scenario in the format has it.
+enum RunForcing {
+    /// The three-variable model of Epics 01-07: whatever the `[[wind]]`
+    /// entries prescribe, and nothing else.
+    Prescribed(WindForcing<CompositeWind>),
+    /// The coupled model of Epic 12: the same winds, plus the wind response to
+    /// the SST anomaly of the stage being evaluated.
+    Coupled(Box<CoupledWind<CompositeWind>>),
+}
+
+impl StageForcing for RunForcing {
+    fn basin(&self) -> Basin {
+        match self {
+            Self::Prescribed(forcing) => forcing.basin(),
+            Self::Coupled(forcing) => forcing.basin(),
+        }
+    }
+
+    fn at(&mut self, t_s: f64, state: &OceanState) -> &WindStressField {
+        match self {
+            Self::Prescribed(forcing) => forcing.at(t_s),
+            Self::Coupled(forcing) => forcing.at(t_s, state),
+        }
+    }
 }

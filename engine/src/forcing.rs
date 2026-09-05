@@ -55,6 +55,7 @@ use std::fmt;
 use termocline_grid::{Field2D, Grid, Staggering, U_STAGGERING, V_STAGGERING};
 
 use crate::basin::Basin;
+use crate::state::OceanState;
 
 /// Stress of a calm ocean surface, in Pa.
 const CALM: f64 = 0.0;
@@ -498,10 +499,13 @@ fn check_scale(parameter: &'static str, value_m: f64) -> Result<(), WindStressEr
     Err(WindStressError::ScaleNotPositive { parameter, value_m })
 }
 
-/// `exp(−(offset / scale)²)`, the Gaussian factor every profile in this module
-/// is built from. `scale` is checked strictly positive at construction, so the
-/// division is safe.
-fn gaussian(offset: f64, scale: f64) -> f64 {
+/// `exp(−(offset / scale)²)`, the Gaussian factor every wind profile is built
+/// from — the equatorial trapping of [`SteadyTradeWinds`] and
+/// [`WindBurstAnomaly`], and the atmospheric response of
+/// [`crate::wind_response`]. One convention in one place, so that every
+/// scenario reading a scale in metres reads it the same way. `scale` is checked
+/// strictly positive at construction, so the division is safe.
+pub(crate) fn gaussian(offset: f64, scale: f64) -> f64 {
     let scaled = offset / scale;
     (-scaled * scaled).exp()
 }
@@ -811,21 +815,88 @@ impl WindStressField {
             basin.grid(),
             self.grid
         );
-        write_component(
+        evaluate_component(
             &mut self.tau_x_pa,
             basin,
             U_STAGGERING,
             |stress| stress.0,
             wind,
             t_s,
+            overwrite,
         );
-        write_component(
+        evaluate_component(
             &mut self.tau_y_pa,
             basin,
             V_STAGGERING,
             |stress| stress.1,
             wind,
             t_s,
+            overwrite,
+        );
+    }
+
+    /// Overwrite this field with `other`, component for component.
+    ///
+    /// What a forcing that *adds* two winds needs: the sum has to start from
+    /// one of them, and the one it starts from is a buffer somebody else owns
+    /// and re-samples on its own schedule
+    /// ([`CoupledWind`](crate::CoupledWind)).
+    ///
+    /// # Panics
+    /// If `other` covers a different basin. A shape mismatch means the calling
+    /// code is wrong, which is what panics are for (CODING_STANDARDS.md
+    /// § Correctness and failure).
+    pub fn assign(&mut self, other: &Self) {
+        assert!(
+            other.grid == self.grid,
+            "that stress covers {:?}, but this one was built for {:?}",
+            other.grid,
+            self.grid
+        );
+        self.tau_x_pa
+            .as_mut_slice()
+            .copy_from_slice(other.tau_x_pa.as_slice());
+        self.tau_y_pa
+            .as_mut_slice()
+            .copy_from_slice(other.tau_y_pa.as_slice());
+    }
+
+    /// Add `wind` sampled over `basin` at `t_s` seconds to what this field
+    /// already holds.
+    ///
+    /// [`WindStressField::sample`] at the field level: the superposition of
+    /// T-03.3, performed on a field rather than inside a
+    /// [`CompositeWind`]. The two are the same sum — the equations are linear
+    /// in the stress — and which one a forcing uses is decided by whether its
+    /// components can share a cache, not by the physics.
+    ///
+    /// # Panics
+    /// If `basin` covers a different grid from the one this field was built
+    /// for.
+    pub fn add_sampled<W: WindStress + ?Sized>(&mut self, basin: Basin, wind: &W, t_s: f64) {
+        assert!(
+            basin.grid() == self.grid,
+            "basin covers {:?}, but this wind stress field was built for {:?}",
+            basin.grid(),
+            self.grid
+        );
+        evaluate_component(
+            &mut self.tau_x_pa,
+            basin,
+            U_STAGGERING,
+            |stress| stress.0,
+            wind,
+            t_s,
+            accumulate,
+        );
+        evaluate_component(
+            &mut self.tau_y_pa,
+            basin,
+            V_STAGGERING,
+            |stress| stress.1,
+            wind,
+            t_s,
+            accumulate,
         );
     }
 
@@ -924,9 +995,17 @@ impl HeldInstant {
 /// [`BorrowedForcing`] borrows a wind and the solver's buffer for one step.
 /// The solver integrates against this, so it has one stage body rather than
 /// one per way of holding a forcing.
-pub(crate) trait StageForcing {
-    /// The stress field at `t_s` seconds.
-    fn at(&mut self, t_s: f64) -> &WindStressField;
+/// [`CoupledWind`](crate::CoupledWind) is the third, and it is why `at` is
+/// handed the state as well as the instant: the atmospheric response of Epic 12
+/// answers the SST anomaly of the stage being evaluated, not the clock. The
+/// two prescribed forcings ignore it, which is exactly what makes them
+/// prescribed.
+pub trait StageForcing {
+    /// The basin this forcing samples its wind over.
+    fn basin(&self) -> Basin;
+
+    /// The stress field at `t_s` seconds, for `state`.
+    fn at(&mut self, t_s: f64, state: &OceanState) -> &WindStressField;
 }
 
 /// A wind and a field the caller already owns, for the length of one step.
@@ -961,7 +1040,13 @@ impl<'a, W: WindStress + ?Sized> BorrowedForcing<'a, W> {
 }
 
 impl<W: WindStress + ?Sized> StageForcing for BorrowedForcing<'_, W> {
-    fn at(&mut self, t_s: f64) -> &WindStressField {
+    fn basin(&self) -> Basin {
+        self.basin
+    }
+
+    /// A prescribed wind is a pure function of `(x, y, t)`, so the state the
+    /// stage carries is none of its business.
+    fn at(&mut self, t_s: f64, _state: &OceanState) -> &WindStressField {
         self.held.ensure(self.field, self.basin, self.wind, t_s)
     }
 }
@@ -1001,7 +1086,13 @@ pub struct WindForcing<W: WindStress> {
 }
 
 impl<W: WindStress> StageForcing for WindForcing<W> {
-    fn at(&mut self, t_s: f64) -> &WindStressField {
+    fn basin(&self) -> Basin {
+        Self::basin(self)
+    }
+
+    /// A prescribed wind is a pure function of `(x, y, t)`, so the state the
+    /// stage carries is none of its business.
+    fn at(&mut self, t_s: f64, _state: &OceanState) -> &WindStressField {
         Self::at(self, t_s)
     }
 }
@@ -1040,17 +1131,22 @@ impl<W: WindStress> WindForcing<W> {
     }
 }
 
-/// Write one component of `wind` into `component`, at every face it has.
+/// Evaluate one component of `wind` at every face `component` has, and land it
+/// there through `combine`.
 ///
-/// Shared by the two halves of [`WindStressField::sample`], which differ only
-/// in where their points sit and which half of the returned pair they keep.
-fn write_component<W, Pick>(
+/// Shared by the four halves of [`WindStressField::sample`] and
+/// [`WindStressField::add_sampled`], which differ only in where their points
+/// sit, which half of the returned pair they keep, and whether they overwrite
+/// what is there or add to it — [`overwrite`] and [`accumulate`] being the two
+/// answers to the last.
+fn evaluate_component<W, Pick>(
     component: &mut Field2D<f64>,
     basin: Basin,
     staggering: Staggering,
     pick: Pick,
     wind: &W,
     t_s: f64,
+    combine: fn(&mut f64, f64),
 ) where
     W: WindStress + ?Sized,
     Pick: Fn((f64, f64)) -> f64,
@@ -1059,9 +1155,36 @@ fn write_component<W, Pick>(
         let y_m = basin.y_of_row_m(staggering, j);
         for i in 0..component.nx() {
             let value = pick(wind.stress(basin.x_of_column_m(staggering, i), y_m, t_s));
-            *component
-                .get_mut(i, j)
-                .expect("the loop bounds are the field's own extents") = value;
+            combine(
+                component
+                    .get_mut(i, j)
+                    .expect("the loop bounds are the field's own extents"),
+                value,
+            );
         }
+    }
+}
+
+/// Replace what a face holds with the stress just evaluated there: what
+/// sampling a field means.
+fn overwrite(target: &mut f64, value: f64) {
+    *target = value;
+}
+
+/// Add the stress just evaluated to what a face already holds: the
+/// superposition of T-03.3, one face at a time.
+///
+/// A wind that is *calm* at this face superimposes nothing, and must leave the
+/// face exactly as it found it — which IEEE addition does not do: `-0.0 + 0.0`
+/// is `+0.0`, so a prescribed stress that reached zero from below would have
+/// its sign bit flipped by a wind that added nothing at all. A `τx` of `-0.0`
+/// is reachable: a meridional decay underflows to exactly zero far enough from
+/// the equator, and an easterly stress times that is negative zero. Skipping
+/// the addition instead makes superimposing calm the exact identity, which is
+/// what lets a coupled run at zero feedback strength be the prescribed run
+/// *bit for bit* rather than nearly (T-12.2).
+fn accumulate(target: &mut f64, value: f64) {
+    if value != 0.0 {
+        *target += value;
     }
 }

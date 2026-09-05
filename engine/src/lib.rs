@@ -44,6 +44,7 @@ pub mod shallow_water;
 pub mod solver;
 pub mod sst;
 pub mod state;
+pub mod wind_response;
 
 pub use coriolis::{BetaPlane, BetaPlaneError, CoriolisTerm};
 pub use integrator::{Rk4, StateVector};
@@ -100,8 +101,18 @@ pub use boundary::NoNormalFlow;
 /// [`forcing::WindStressField`] the solver actually reads — held across a run
 /// by the [`forcing::WindForcing`] a time loop steps with.
 pub use forcing::{
-    CompositeWind, SeasonalTradeWinds, SteadyTradeWinds, TimeDependence, WindBurstAnomaly,
-    WindForcing, WindStress, WindStressError, WindStressField, TROPICAL_YEAR_S,
+    CompositeWind, SeasonalTradeWinds, StageForcing, SteadyTradeWinds, TimeDependence,
+    WindBurstAnomaly, WindForcing, WindStress, WindStressError, WindStressField, TROPICAL_YEAR_S,
+};
+
+/// Re-exported so a coupled scenario names the wind half of the Bjerknes
+/// feedback in one place: the [`wind_response::SstWindResponse`] the atmosphere
+/// answers with, the [`wind_response::WindResponseParams`] a scenario tunes it
+/// by, and the [`wind_response::CoupledWind`] that adds it to the prescribed
+/// winds of a run.
+pub use wind_response::{
+    CoupledWind, SstWindResponse, WindResponseError, WindResponseParams,
+    ATMOSPHERIC_GRAVITY_WAVE_SPEED_M_PER_S, DEFAULT_WIND_RESPONSE_MERIDIONAL_SCALE_M,
 };
 
 /// Re-exported so the CLI, the tests and the example files name one scenario

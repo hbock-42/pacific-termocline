@@ -16,7 +16,10 @@
 //! A scenario that asks for the Epic 12 coupling gets a fourth term on top:
 //! [`Solver::coupled_to_sst`] adds the mixed-layer SST anomaly equation of
 //! [`crate::sst`], which writes only `∂T'/∂t` and leaves the three equations
-//! above bit-for-bit as they were.
+//! above bit-for-bit as they were. The other half of that coupling — the wind
+//! answering `T'` — is not a term at all: it arrives through the forcing, as
+//! the [`StageForcing`] a step is given, which is why the stage state is
+//! handed to it along with the instant (see [`crate::wind_response`]).
 //!
 //! Two ways in exist, and they differ only in how the forcing arrives.
 //! [`Solver::step`] takes a [`WindStressField`] already sampled onto the
@@ -90,7 +93,7 @@ use crate::basin::Basin;
 
 use crate::boundary::NoNormalFlow;
 use crate::coriolis::{BetaPlane, CoriolisTerm};
-use crate::forcing::{BorrowedForcing, StageForcing, WindForcing, WindStress, WindStressField};
+use crate::forcing::{BorrowedForcing, StageForcing, WindStress, WindStressField};
 use crate::integrator::Rk4;
 use crate::params::PhysicalParams;
 use crate::shallow_water::ShallowWaterRhs;
@@ -484,6 +487,14 @@ impl Solver {
     /// stress at *that* time, which is why a seasonal or burst forcing steps
     /// exactly as it did before.
     ///
+    /// It takes any [`StageForcing`], which is what lets a coupled run step
+    /// through the same method: a
+    /// [`CoupledWind`](crate::CoupledWind) adds the Epic 12 atmospheric
+    /// response to the prescribed winds, and the stage sees the sum. The stage
+    /// state is handed to the forcing along with the instant, because that
+    /// response answers the SST anomaly of the stage rather than the clock;
+    /// a prescribed forcing ignores it.
+    ///
     /// `state` is brought onto the boundary condition on the way in, exactly
     /// as in [`Solver::step`].
     ///
@@ -492,11 +503,11 @@ impl Solver {
     /// for — asserted here — or if `state` does, which the evaluators refuse
     /// in their turn. A shape mismatch means the calling code is wrong, which
     /// is what panics are for (CODING_STANDARDS.md § Correctness and failure).
-    pub fn step_with_forcing<W: WindStress>(
+    pub fn step_with_forcing<F: StageForcing + ?Sized>(
         &mut self,
         state: &mut OceanState,
         t_s: f64,
-        forcing: &mut WindForcing<W>,
+        forcing: &mut F,
     ) {
         // The solver's grid, which its own stage buffer is the shape of.
         let grid = self.stage_stress.grid();
@@ -551,7 +562,7 @@ fn integrate(
     coriolis: &mut CoriolisTerm,
     mut sst: Option<&mut SstTerm>,
     integrator: &mut Rk4<OceanState>,
-    forcing: &mut impl StageForcing,
+    forcing: &mut (impl StageForcing + ?Sized),
 ) {
     NoNormalFlow::apply_to_state(state);
     integrator.step(
@@ -559,7 +570,7 @@ fn integrate(
         t_s,
         dt_s,
         &mut |now: &OceanState, stage_t_s: f64, tendency: &mut OceanState| {
-            let stress = forcing.at(stage_t_s);
+            let stress = forcing.at(stage_t_s, now);
             rhs.evaluate(now, stress, tendency);
             coriolis.add_to_tendency(now, tendency);
             if let Some(sst) = sst.as_deref_mut() {
