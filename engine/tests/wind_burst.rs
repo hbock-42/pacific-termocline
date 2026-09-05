@@ -542,10 +542,9 @@ fn a_composite_wind_stacks_a_burst_on_the_seasonal_alizes() {
 
 #[test]
 fn sampling_a_composite_is_sampling_the_components_and_adding_them() {
-    // The trait composes; the discretisation must too. Interior faces carry
-    // the sum, and the basin's walls stay at exactly zero — the sampling rule
-    // of the `forcing` module header applies to a composite like any other
-    // scenario.
+    // The trait composes; the discretisation must too. Every face carries the
+    // sum of the two components sampled on their own, the basin's wall lines
+    // included.
     let basin = equatorial_basin(20, 4);
     let trades = pacific_trade_winds();
     let burst = pacific_burst();
@@ -566,12 +565,6 @@ fn sampling_a_composite_is_sampling_the_components_and_adding_them() {
                 (sampled_pa - expected_pa).abs() <= ROUNDING_TOLERANCE * expected_pa.abs().max(1.0),
                 "τx at face ({i}, {j}) is {sampled_pa} Pa, expected {expected_pa} Pa"
             );
-            if i == 0 || i == nx {
-                assert_eq!(
-                    sampled_pa, 0.0,
-                    "the wall face ({i}, {j}) must carry no stress"
-                );
-            }
         }
     }
     for j in 0..field.tau_y_pa().ny() {

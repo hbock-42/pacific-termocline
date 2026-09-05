@@ -29,33 +29,23 @@
 //! module, is what turns a `(staggering, i, j)` into the `(x, y)` in metres
 //! the trait is asked about.
 //!
-//! # Why the basin's walls carry no stress
+//! # The wind blows over the coast too
 //!
-//! [`WindStressField::sample`] leaves the four wall faces at exactly zero: the
-//! `τx` columns `i = 0` and `i = nx`, and the `τy` rows `j = 0` and `j = ny`.
-//! This is the same rule the C-grid derivative operators of T-01.1 already
-//! apply to the pressure gradient, and for the same reason — a wall face has
-//! water on one side only, so a stress there would accelerate a velocity that
-//! is not a degree of freedom of a closed basin.
+//! A sampled field carries the wind's stress at every face it has, the
+//! basin's four wall lines included. That is what the trait says the stress
+//! there is, and this module's job is to report it, not to edit it.
 //!
-//! It matters more than it looks. Nothing in the engine yet holds the wall
-//! velocities to zero: no-normal-flow is T-04.2's, and until it lands the only
-//! thing keeping `u` at the coast at rest is that no term forces it there. The
-//! pressure gradient does not (the operators write zero), the Coriolis term
-//! does not (it interpolates a velocity that is itself zero at the wall), and
-//! damping cannot start a flow. A stress applied at the wall would, and a
-//! basin whose coasts pass water does not tilt at all — the wind simply
+//! It was not always so. T-03.1 found that a stress at the wall opens the
+//! closed basin — the coasts pass water, and instead of tilting, the wind
 //! accelerates the whole layer westward until damping balances it, which is
-//! the open-channel solution and not the equatorial Pacific's. Zeroing the
-//! wall stress is what makes the closed-basin steady state of
-//! `tests/wind_forcing.rs` the one the physics predicts.
-//!
-//! It is a *sampling* rule, deliberately, and not a boundary condition: it
-//! lives in this module because it says where a prescribed field is defined,
-//! and it is one line for T-04.2 to subsume once the boundary owns the wall
-//! velocities outright. [`WindStressField::uniform`] deliberately does *not*
-//! apply it — the Epic 02 term tests use it to probe what the right-hand side
-//! does with a stress at the wall, and that question stays askable.
+//! the open-channel solution and not the equatorial Pacific's — and, with no
+//! boundary condition in the engine yet, worked around it by zeroing the wall
+//! faces here as a deliberately interim *sampling* rule. T-04.2 replaced that
+//! with the thing it stood in for: [`NoNormalFlow`](crate::NoNormalFlow) holds
+//! the wall velocities at rest at every RK4 stage, so the `τ/(ρ₀·H)` a wall
+//! face receives is discarded where the integration happens. One invariant,
+//! one owner; a forcing field is no longer part of what keeps the basin
+//! closed.
 //!
 //! [ADR-0003]: ../../docs/planning/adr/0003-numerical-scheme.md
 
@@ -678,20 +668,18 @@ impl WindStressField {
     /// The unforced limit the wave tests of Epic 07 run in.
     #[must_use]
     pub fn calm(grid: Grid) -> Self {
-        Self::uniform_including_walls(grid, CALM, CALM)
+        Self::uniform(grid, CALM, CALM)
     }
 
-    /// A stress of `tau_x_pa` by `tau_y_pa` pascals at *every* face of `grid`,
+    /// A stress of `tau_x_pa` by `tau_y_pa` pascals at every face of `grid`,
     /// the basin's walls included.
     ///
-    ///
     /// The raw constructor, and the one the Epic 02 right-hand-side tests use
-    /// to ask what the momentum equations do with a stress at a wall. A field
-    /// sampled from a [`WindStress`] leaves the walls at zero instead — see
-    /// [`WindStressField::sample`] and this module's header for why the
-    /// difference matters.
+    /// to ask what the momentum equations do with a stress at a wall — a
+    /// question the boundary condition of T-04.2 answers at the solver rather
+    /// than by leaving the stress unstated.
     #[must_use]
-    pub fn uniform_including_walls(grid: Grid, tau_x_pa: f64, tau_y_pa: f64) -> Self {
+    pub fn uniform(grid: Grid, tau_x_pa: f64, tau_y_pa: f64) -> Self {
         Self {
             grid,
             tau_x_pa: grid.allocate(U_STAGGERING, tau_x_pa),
@@ -716,13 +704,10 @@ impl WindStressField {
 
     /// Overwrite this field with `wind` sampled over `basin` at `t_s` seconds.
     ///
-    /// Every interior face is written, so the same buffer can be re-sampled at
-    /// each RK4 stage without carrying a stage's values into the next. The
-    /// basin's wall faces — the `τx` columns `i = 0` and `i = nx`, and the
-    /// `τy` rows `j = 0` and `j = ny` — are set to exactly zero rather than to
-    /// `wind`'s value there: a wall face has water on one side only, and this
-    /// module's header explains at length why forcing it would open the
-    /// closed basin.
+    /// Every face is written, the basin's wall lines included, so the same
+    /// buffer can be re-sampled at each RK4 stage without carrying a stage's
+    /// values into the next. What the solver does with a stress at a wall is
+    /// the boundary condition's business, not this module's — see the header.
     ///
     /// # Panics
     /// If `basin` covers a different grid from the one this field was built
@@ -735,13 +720,10 @@ impl WindStressField {
             basin.grid(),
             self.grid
         );
-        let nx = self.grid.nx();
-        let ny = self.grid.ny();
         write_component(
             &mut self.tau_x_pa,
             basin,
             U_STAGGERING,
-            |i, _j| i == 0 || i == nx,
             |stress| stress.0,
             wind,
             t_s,
@@ -750,7 +732,6 @@ impl WindStressField {
             &mut self.tau_y_pa,
             basin,
             V_STAGGERING,
-            |_i, j| j == 0 || j == ny,
             |stress| stress.1,
             wind,
             t_s,
@@ -776,33 +757,25 @@ impl WindStressField {
     }
 }
 
-/// Write one component of `wind` into `component`, zeroing the faces
-/// `is_wall` names.
+/// Write one component of `wind` into `component`, at every face it has.
 ///
 /// Shared by the two halves of [`WindStressField::sample`], which differ only
-/// in where their points sit, which wall faces they have, and which half of
-/// the returned pair they keep.
-fn write_component<W, Wall, Pick>(
+/// in where their points sit and which half of the returned pair they keep.
+fn write_component<W, Pick>(
     component: &mut Field2D<f64>,
     basin: Basin,
     staggering: Staggering,
-    is_wall: Wall,
     pick: Pick,
     wind: &W,
     t_s: f64,
 ) where
     W: WindStress + ?Sized,
-    Wall: Fn(usize, usize) -> bool,
     Pick: Fn((f64, f64)) -> f64,
 {
     for j in 0..component.ny() {
         let y_m = basin.y_of_row_m(staggering, j);
         for i in 0..component.nx() {
-            let value = if is_wall(i, j) {
-                CALM
-            } else {
-                pick(wind.stress(basin.x_of_column_m(staggering, i), y_m, t_s))
-            };
+            let value = pick(wind.stress(basin.x_of_column_m(staggering, i), y_m, t_s));
             *component
                 .get_mut(i, j)
                 .expect("the loop bounds are the field's own extents") = value;

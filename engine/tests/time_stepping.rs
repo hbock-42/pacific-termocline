@@ -352,10 +352,21 @@ fn a_step_rotates_a_meridional_current_into_a_zonal_one() {
         // (CODING_STANDARDS.md § Scope guards).
         let (_, y_from_corner_m) = position_m(spacing, U_STAGGERING, 0, j);
         let y_m = y_from_corner_m - 0.5 * BASIN_LY_M;
-        let expected_m_per_s = BETA_PER_M_PER_S * y_m * V_AMPLITUDE_M_PER_S * CORIOLIS_STEP_S;
+        // The four-point average that carries `v` onto a `u` face takes the
+        // two `v` rows flanking it. On the outermost `u` rows one of those two
+        // is the coast, which the no-normal-flow condition of T-04.2 holds at
+        // rest, so `v̄` there is half the uniform current — an exact factor,
+        // not an approximation, and one worth pinning rather than skipping.
+        let on_the_coast = j == 0 || j == state.u().ny() - 1;
+        let interpolated_v_m_per_s = if on_the_coast {
+            0.5 * V_AMPLITUDE_M_PER_S
+        } else {
+            V_AMPLITUDE_M_PER_S
+        };
+        let expected_m_per_s = BETA_PER_M_PER_S * y_m * interpolated_v_m_per_s * CORIOLIS_STEP_S;
         // The two wall faces have a cell on one side only, so they carry no
-        // interpolated `v` and stay at rest (T-01.1); the interior is what
-        // this check is about.
+        // interpolated `v` and stay at rest (T-01.1, and now T-04.2); the
+        // interior is what this check is about.
         for i in 1..state.u().nx() - 1 {
             let value = *state.u().get(i, j).expect("in-bounds point");
             assert!(
@@ -391,30 +402,55 @@ fn a_constant_wind_stress_accelerates_a_basin_at_rest() {
     let mut state = OceanState::at_rest(grid);
 
     let mut solver = solver_for(grid, spacing, params, WIND_STEP_S);
-    let trade_winds = WindStressField::uniform_including_walls(
-        grid,
-        TRADE_WIND_STRESS_X_PA,
-        TRADE_WIND_STRESS_Y_PA,
-    );
+    let trade_winds =
+        WindStressField::uniform(grid, TRADE_WIND_STRESS_X_PA, TRADE_WIND_STRESS_Y_PA);
     solver.step(&mut state, 0.0, |_t_s| &trade_winds);
 
+    // Away from the coast, that is. The stress is applied at every face
+    // including the walls, and the no-normal-flow condition of T-04.2 discards
+    // the wall faces' share of it: the normal velocity at a coast is not a
+    // degree of freedom, so it stays at exactly rest however hard the wind
+    // blows there. Both halves are checked.
     let layer_mass_kg_per_m2 = REFERENCE_DENSITY_KG_PER_M3 * PACIFIC_MEAN_DEPTH_M;
-    for (name, stress_pa, field) in [
-        ("u", TRADE_WIND_STRESS_X_PA, state.u()),
-        ("v", TRADE_WIND_STRESS_Y_PA, state.v()),
+    for (name, stress_pa, field, walls_are_columns) in [
+        ("u", TRADE_WIND_STRESS_X_PA, state.u(), true),
+        ("v", TRADE_WIND_STRESS_Y_PA, state.v(), false),
     ] {
         let expected_m_per_s = stress_pa / layer_mass_kg_per_m2 * WIND_STEP_S;
-        for value in field.as_slice() {
-            assert!(
-                (value - expected_m_per_s).abs() <= WIND_TOLERANCE * expected_m_per_s.abs(),
-                "{name}: expected {expected_m_per_s} m/s after one step, got {value} m/s"
-            );
+        for j in 0..field.ny() {
+            for i in 0..field.nx() {
+                let value = *field.get(i, j).expect("an in-bounds face");
+                // `u`'s walls are its first and last columns, `v`'s its first
+                // and last rows: each field's coast is the line it is
+                // staggered across.
+                let on_the_coast = if walls_are_columns {
+                    i == 0 || i == field.nx() - 1
+                } else {
+                    j == 0 || j == field.ny() - 1
+                };
+                if on_the_coast {
+                    assert_eq!(
+                        value, 0.0,
+                        "{name} at the wall face ({i}, {j}) must stay at rest"
+                    );
+                } else {
+                    assert!(
+                        (value - expected_m_per_s).abs() <= WIND_TOLERANCE * expected_m_per_s.abs(),
+                        "{name}: expected {expected_m_per_s} m/s after one step at ({i}, {j}), \
+                         got {value} m/s"
+                    );
+                }
+            }
         }
     }
     // Easterly trade winds push the water westward, so `u < 0` — the sign
     // convention of `CONTEXT.md`, which a stress applied with the wrong sign
     // would invert.
-    assert!(state.u().as_slice().iter().all(|value| *value < 0.0));
+    for j in 0..state.u().ny() {
+        for i in 1..state.u().nx() - 1 {
+            assert!(*state.u().get(i, j).expect("an interior face") < 0.0);
+        }
+    }
 }
 
 #[test]
@@ -641,11 +677,8 @@ fn a_multi_step_run_at_the_cfl_safe_timestep_stays_finite() {
     let dt_s = cfl_safe_dt_s(spacing, damped);
     let mut state = OceanState::at_rest(grid);
     let mut solver = solver_for(grid, spacing, damped, dt_s);
-    let trade_winds = WindStressField::uniform_including_walls(
-        grid,
-        TRADE_WIND_STRESS_X_PA,
-        TRADE_WIND_STRESS_Y_PA,
-    );
+    let trade_winds =
+        WindStressField::uniform(grid, TRADE_WIND_STRESS_X_PA, TRADE_WIND_STRESS_Y_PA);
     for n in 0..STABILITY_RUN_STEPS {
         solver.step(&mut state, n as f64 * dt_s, |_t_s| &trade_winds);
         assert_finite(&state, n);
@@ -761,11 +794,8 @@ fn two_identical_runs_produce_identical_states() {
     let (grid, spacing) = basin(STABILITY_BASIN_CELLS, STABILITY_BASIN_CELLS);
     let params = pacific_params(STRONG_DAMPING_PER_S);
     let dt_s = cfl_safe_dt_s(spacing, params);
-    let trade_winds = WindStressField::uniform_including_walls(
-        grid,
-        TRADE_WIND_STRESS_X_PA,
-        TRADE_WIND_STRESS_Y_PA,
-    );
+    let trade_winds =
+        WindStressField::uniform(grid, TRADE_WIND_STRESS_X_PA, TRADE_WIND_STRESS_Y_PA);
 
     let run = || {
         let mut state = gravest_zonal_mode(grid, spacing);
@@ -795,11 +825,8 @@ fn the_convenience_step_is_the_same_computation_as_the_reusable_solver() {
     let params = pacific_params(STRONG_DAMPING_PER_S);
     let dt_s = cfl_safe_dt_s(spacing, params);
     let plane = equatorial_plane(params, spacing, grid);
-    let trade_winds = WindStressField::uniform_including_walls(
-        grid,
-        TRADE_WIND_STRESS_X_PA,
-        TRADE_WIND_STRESS_Y_PA,
-    );
+    let trade_winds =
+        WindStressField::uniform(grid, TRADE_WIND_STRESS_X_PA, TRADE_WIND_STRESS_Y_PA);
     let initial = gravest_zonal_mode(grid, spacing);
 
     let wrapped = step(&initial, dt_s, params, spacing, plane, |_t_s| &trade_winds)
