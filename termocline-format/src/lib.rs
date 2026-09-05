@@ -26,17 +26,28 @@
 //! place the format is defined; this crate is it, and that has to include the
 //! choices the `serde` types alone do not express.
 //!
+//! # Reading a run without a filesystem
+//!
+//! [`RunReader`] is defined over byte sources rather than paths, per
+//! [ADR-0006]: the visualizer runs in a browser, where a run arrives by file
+//! selection, drag-and-drop or HTTP fetch and there is nothing to open. The
+//! path-taking `RunReader::open` is a native convenience behind this crate's
+//! default `fs` feature; turn default features off for `wasm32`.
+//!
 //! [ADR-0001]: ../../docs/planning/adr/0001-engine-visualizer-split.md
 //! [ADR-0004]: ../../docs/planning/adr/0004-data-interchange-format.md
+//! [ADR-0006]: ../../docs/planning/adr/0006-web-visualizer.md
 
 mod error;
 mod frame;
 mod header;
+mod reader;
 mod variable;
 
 pub use error::FormatError;
 pub use frame::Frame;
 pub use header::{BasinExtent, GridSpec, OutputTiming, PhysicalParams, RunHeader};
+pub use reader::{RunReadError, RunReader};
 pub use variable::{Variable, VariableSpec};
 
 /// Version of the on-disk format, written into every run's header so a reader
