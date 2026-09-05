@@ -145,7 +145,7 @@ const NORTHERN_LATITUDE_DEG: f64 = 25.0;
 
 /// Cell size, in degrees.
 ///
-/// Two degrees is 222.6 km, which puts 1.55 cells in the 345 km deformation
+/// Two degrees is 222.4 km, which puts 1.55 cells in the 345 km deformation
 /// radius of `docs/validation-report.md`. That is coarse beside the Epic 07
 /// wave suites, which resolve `Le` seven to fourteen times over — and
 /// deliberately so: what is measured here is a basin-crossing *time*, an
@@ -158,9 +158,11 @@ const RESOLUTION_DEG: f64 = 2.0;
 ///
 /// Bounded by rotation rather than by the gravity waves: `|f| = β·y` reaches
 /// 6.4 × 10⁻⁵ s⁻¹ at 25°, whose inertial oscillation RK4 follows up to 35 400 s
-/// (ADR-0007), where the CFL bound of a 222.6 km cell at `c = 2.74 m/s` is
-/// 65 000 s. Halving it to 12 000 s moves the measured period by less than one
-/// part in 10⁴, so nothing below is timestep-limited.
+/// (ADR-0007), where the CFL bound of a 222.4 km cell at `c = 2.74 m/s` is
+/// 65 000 s. Cutting it to 12 000 s moves the measured period by two parts in
+/// 10⁵, so nothing below is timestep-limited;
+/// `docs/enso-oscillation-report.md` § *The basin and the numerics* carries
+/// that measurement and the one for the cell size.
 const DT_S: f64 = 30_000.0;
 
 /// Years the basin is held under steady alizés before it is perturbed.
@@ -191,8 +193,23 @@ const WINDOW_YEARS: f64 = 32.0;
 /// Samples of the index taken across [`WINDOW_YEARS`].
 ///
 /// Two thousand, so the shortest period this file resolves is 0.03 years and
-/// the ones it measures are sampled fifty times per cycle.
+/// the one it measures — near a year — is sampled about seventy times per
+/// cycle.
 const SAMPLES: usize = 2_000;
+
+/// Years the written run of
+/// [`the_written_run_carries_the_oscillating_sst_index`] integrates for.
+///
+/// Longer than the in-memory experiments' spin-up plus record, because that
+/// one is not perturbed: the mode has to grow out of the switch-on transient
+/// on its own.
+const WRITTEN_RUN_YEARS: f64 = 45.0;
+/// Steps between the frames that run saves.
+///
+/// About 0.19 years, which samples the near-annual oscillation five times a
+/// cycle — enough to count its crossings — while keeping the run directory
+/// under a hundred megabytes.
+const WRITTEN_RUN_FRAME_EVERY_N_STEPS: u64 = 200;
 
 /// Amplitude of the warm anomaly the mixed layer is perturbed with, in kelvin.
 ///
@@ -643,13 +660,13 @@ fn an_open_loop_run_returns_to_the_state_the_trades_hold_it_at() {
     let record = Experiment::pacific(OPEN_LOOP_STRENGTH_PA_PER_K).record();
 
     // Nothing in the open loop relaxes more slowly than the ocean's Rayleigh
-    // damping at 2.5 years, so by the time the window opens —
-    // [`SETTLING_YEARS`] after the perturbation, five `e`-foldings of it — at
-    // most `e^{−4.8} = 8×10⁻³` of the 1 K anomaly is left, and it goes on
-    // decaying through the window. The bound is that factor, loosened to
-    // 10⁻² so that it states "the perturbation is gone" and not a decay rate
-    // the equation does not promise.
-    let decayed_bound_k = PERTURBATION_K * 1.0e-2;
+    // damping at 2.5 years, so by the time the settled window opens —
+    // [`SETTLING_YEARS`] after the perturbation, 4.8 `e`-foldings of it — at
+    // most `e^{−4.8}` of the 1 K anomaly is left, and it goes on decaying
+    // through the window. The bound is that factor, written from the two
+    // constants rather than rounded to a literal: it is the slowest decay the
+    // equation allows, not a threshold chosen to pass.
+    let decayed_bound_k = PERTURBATION_K * (-SETTLING_YEARS / OCEAN_DAMPING_TIMESCALE_YEARS).exp();
     assert!(
         record.amplitude_k() < decayed_bound_k,
         "the open loop still carries {} K of the {PERTURBATION_K} K perturbation \
@@ -833,6 +850,12 @@ fn the_period_falls_short_of_the_observed_enso_band() {
     // `docs/enso-oscillation-report.md` § *Why the period is short*, which
     // gives the diagnosis and what would be needed to close the gap.
     //
+    // **A green suite is not a met criterion here.** The miss is escalated on
+    // issue #52, labelled `needs-human`: whether to accept the negative result
+    // or to revisit ADR-0010's zonally uniform wind response is a human's
+    // decision, and AGENTS.md § *Never move the goalposts* is why this file
+    // records the discrepancy instead of quietly widening the band.
+    //
     // Both bounds come from observation, not from this model: two years is the
     // fast edge of the observed ENSO band, and the basin crossing time `L/c`
     // is the shortest timescale the delayed oscillator can build a period out
@@ -909,8 +932,8 @@ fn the_written_run_carries_the_oscillating_sst_index() {
     // rest, and the mode grows out of the switch-on of the alizés. That is the
     // scenario a user would write.
     let directory = ScratchDir::new(TICKET, "written-oscillation");
-    let total_steps = (RUN_YEARS * TROPICAL_YEAR_S / DT_S) as u64;
-    let source = coupled_scenario_toml(total_steps, FRAME_EVERY_N_STEPS);
+    let total_steps = (WRITTEN_RUN_YEARS * TROPICAL_YEAR_S / DT_S) as u64;
+    let source = coupled_scenario_toml(total_steps, WRITTEN_RUN_FRAME_EVERY_N_STEPS);
     let config = ScenarioConfig::from_toml(&source).expect("the coupled scenario parses");
     let scenario = config.build().expect("the coupled scenario is runnable");
     let run_directory = directory.path().join("run");
@@ -950,16 +973,3 @@ fn the_written_run_carries_the_oscillating_sst_index() {
          of the run, which is not an oscillation"
     );
 }
-
-/// Years the written run integrates for.
-///
-/// Longer than the in-memory experiments' spin-up plus window, because this
-/// one is not perturbed: the mode has to grow out of the switch-on transient
-/// on its own.
-const RUN_YEARS: f64 = 45.0;
-/// Steps between the frames the written run saves.
-///
-/// About 0.19 years, which samples the near-annual oscillation five times a
-/// cycle — enough to count its crossings — while keeping the run directory
-/// under a hundred megabytes.
-const FRAME_EVERY_N_STEPS: u64 = 200;

@@ -17,9 +17,16 @@ missed**:
 | Prediction | Result |
 |---|---|
 | There is a critical feedback strength: below it a perturbation decays, above it a coupled mode grows | **Confirmed.** `0.06 < μ_c ≤ 0.08 Pa/K` |
-| The growth rate rises with the feedback strength | **Confirmed.** −0.193, −0.034, +0.000 yr⁻¹ at μ = 0.04, 0.06, 0.08 Pa/K |
+| The growth rate rises with the feedback strength | **Confirmed.** −0.236, −0.193, −0.034 yr⁻¹ at μ = 0.02, 0.04, 0.06 Pa/K |
 | The period is set by the basin wave-crossing time `L/c`, not by a thermal or damping timescale | **Confirmed.** Across a factor of 2 in `c` and 1.33 in `L`, `P·c/L` stays within 5% of 4.8 |
 | The period falls in the observed ENSO band of roughly 2–7 years (the ticket's acceptance criterion) | **Not met.** `P = 1.03 years = 5.0·L/c` |
+
+The missed criterion is escalated on
+[issue #52](https://github.com/hbock-42/pacific-termocline/issues/52), labelled
+`needs-human`: a green test suite is not a met acceptance criterion, and
+whether to accept the negative result or to revisit the design decision
+[Why the period is short](#why-the-period-is-short) points at is a human's
+call rather than this ticket's.
 
 The suite that produced every number below is
 [`engine/tests/enso_oscillation.rs`](../engine/tests/enso_oscillation.rs).
@@ -37,6 +44,7 @@ larger boundary than Epic 07's.
 - [The oscillation](#the-oscillation)
 - [The period follows the basin crossing time](#the-period-follows-the-basin-crossing-time)
 - [The period is short of the ENSO band](#the-period-is-short-of-the-enso-band)
+- [The same claim, from what a run wrote to disk](#the-same-claim-from-what-a-run-wrote-to-disk)
 - [Why the period is short](#why-the-period-is-short)
 - [What this does not establish](#what-this-does-not-establish)
 - [How these figures were produced](#how-these-figures-were-produced)
@@ -146,7 +154,7 @@ run at; nothing here re-tuned them.
 | | |
 |---|---|
 | Basin | 120°E–80°W by 25°S–25°N (`CONTEXT.md`, *Basin*), `L = 17 791 km` |
-| Resolution | 2°, so 80 × 25 cells and `Δy = 222.4 km` |
+| Resolution | 2°, so 80 × 25 cells and `Δx = Δy = 222.4 km` |
 | Timestep | 30 000 s |
 | `L/c` | 0.20586 tropical years (75.2 days) |
 | `3L/c` | 0.61759 tropical years (226 days) |
@@ -161,9 +169,9 @@ is built from what that costs.
 The timestep is bounded by rotation and not by the gravity waves: `|f| = β·y`
 reaches 6.4×10⁻⁵ s⁻¹ at 25°, whose inertial oscillation RK4 can follow up to
 35 400 s ([ADR-0007](planning/adr/0007-rotation-timestep-bound.md)), where the
-CFL bound of a 222 km cell at `c = 2.74 m/s` is 65 000 s. Halving the timestep
-to 12 000 s moved the measured period from 1.031339 to 1.031315 years — two
-parts in 10⁵ — so nothing below is timestep-limited.
+CFL bound of a 222.4 km cell at `c = 2.74 m/s` is 65 000 s. Cutting the
+timestep to 12 000 s moved the measured period from 1.031339 to 1.031315
+years — two parts in 10⁵ — so nothing below is timestep-limited.
 
 ## How a measurement is made
 
@@ -248,9 +256,10 @@ of the `μ = 0.08 Pa/K` run:
 
 | | |
 |---|---|
-| peak departure, first half | 11.2765 K |
-| peak departure, second half | 11.2627 K |
+| largest departure, first half | 11.2765 K |
+| largest departure, second half | 11.2627 K |
 | ratio | 0.9988 |
+| peak-to-trough swing | 11.5747 K (half-range 5.7873 K) |
 
 That is a **limit cycle**, not a runaway: an unsaturated mode at this strength
 would have grown by orders of magnitude across the same window. The waveform is
@@ -327,6 +336,30 @@ assertion come from observation and not from this model: two years is the fast
 edge of the observed band, and `L/c` is the shortest timescale a delayed
 oscillator can build a period out of at all.
 
+## The same claim, from what a run wrote to disk
+
+*`the_written_run_carries_the_oscillating_sst_index`*
+
+The six results above are read off states a test holds in memory. T-05.4 put
+`T'` in the frame format so that an SST index could be read back off *disk*
+instead, and one test does exactly that: a coupled scenario in the config
+format of [`docs/scenario-config-reference.md`](scenario-config-reference.md)
+with `wind_feedback_strength_pa_per_k = 0.08`, driven through `run_scenario`
+into a run directory, then reopened with `RunReader` and reduced to the same
+eastern index frame by frame.
+
+It differs from the experiments above in one way, deliberately: **nothing
+perturbs it.** It starts at rest and runs for 45 years, so the coupled mode has
+to grow out of the switch-on of the alizés — which is the scenario a user would
+actually write. Over the last third of that run the index crosses its own mean
+at least the four times the test asks for, which is two whole cycles.
+
+The assertion is a crossing count rather than a period, because the frames are
+saved every 200 steps (0.19 years) to keep the run directory small, and five
+samples a cycle counts crossings honestly but does not locate a spectral peak.
+What this test establishes is that the oscillation is in the *file*, not only
+in the solver.
+
 ## Why the period is short
 
 The measurement bounds the model's effective delay. `P ≥ 4δ`, so
@@ -386,12 +419,16 @@ revisit.
 
 Stating the boundary is part of the claim, and here it is a wide one.
 
-- **The amplitude is not a result.** The reference cycle swings ±11 K in the
-  eastern index. That is three to five times the largest observed El Niño, and
-  it is bounded by the `w⁺` clamp — a *kinematic* switch on the sign of the
+- **The amplitude is not a result.** The reference cycle swings 11.57 K peak to
+  trough — a half-range of 5.79 K, which is the "amplitude" column of the
+  tables above — and reaches 11.28 K *below* the value the spin-up settled the
+  eastern index at. Set against the 2–4 K a strong observed El Niño reaches in
+  Niño-3, that is several times too large, and it
+  is bounded by the `w⁺` clamp — a *kinematic* switch on the sign of the
   upwelling — rather than by any heat budget. The model has no climatological
   mean state for an anomaly to be small against, so nothing in it limits `T'`
-  physically. Read the period, the threshold and the scaling; do not read the
+  physically, and the spun-up state it swings about is itself a multi-kelvin
+  departure. Read the period, the threshold and the scaling; do not read the
   amplitude.
 - **The runs are far outside the linear core's validated range.** Epic 07
   validated the linear equations, and `CODING_STANDARDS.md` § *Scope guards*
@@ -428,7 +465,10 @@ the file, which recomputes nothing — it calls the same `Experiment::record`,
 `dominant_period_years`, `amplitude_k` and `growth_rate_per_year` the
 assertions call, on the same experiments — and prints them. That
 instrumentation was reverted before this document was committed; it changed no
-assertion, no tolerance and no run.
+assertion, no tolerance and no run. What is committed is therefore the *suite*,
+not the tables: re-deriving a figure below means adding that reporting test
+back, which is the same convention
+[`docs/validation-report.md`](validation-report.md) records for Epic 07.
 
 The runs are deterministic (`CODING_STANDARDS.md` § *Correctness and failure*):
 no randomness, no iteration-order dependence. As in
