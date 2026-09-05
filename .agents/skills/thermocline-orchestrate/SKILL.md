@@ -115,7 +115,20 @@ One PR at a time, start to finish, before the next enters:
 
 1. Rebase the PR branch onto current `main` and push.
 2. Wait for CI: `gh pr checks <pr> --watch`.
-3. Green ⇒ `gh pr merge <pr> --squash --delete-branch`.
+3. Green ⇒ merge with an **explicit message**, never the default:
+
+```
+gh pr merge <pr> --squash --delete-branch \
+  --subject "T-<epic>.<n> — <ticket title> (#<pr>)" \
+  --body "<what changed, and why; closes #<issue>>"
+```
+
+   GitHub's default squash message concatenates every commit on the branch and
+   **collects their `Co-authored-by` trailers**, so a single stale commit puts
+   an agent back on the repository's contributor list however clean the
+   branch's later commits are (AGENTS.md § *Commit messages carry no agent
+   attribution*). Writing the message explicitly is the only reliable guard.
+   Check afterwards: `git log -1 --format='%(trailers)'` on the new `main`.
 4. Red after the rebase ⇒ the ticket's own gate passed but it conflicts with
    what landed since. Hand it back: re-dispatch that ticket once with the
    failure as context. That is a rebase failure, not one of the worker's two
