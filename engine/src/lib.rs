@@ -6,8 +6,9 @@
 //! [`termocline_format`].
 //!
 //! The physics lands in Epics 01–04; so far the crate carries the time
-//! integrator, the prognostic [`OceanState`] and the [`PhysicalParams`] the
-//! equations are written in terms of.
+//! integrator, the prognostic [`OceanState`], the [`PhysicalParams`] the
+//! equations are written in terms of, and the [`Solver`] that puts them
+//! together into one time step of the linear shallow-water core.
 
 // The acceptance criterion of T-02.1 is that every field states its unit; the
 // lint is what keeps that true as the crate grows.
@@ -17,6 +18,7 @@ pub mod coriolis;
 pub mod integrator;
 pub mod params;
 pub mod shallow_water;
+pub mod solver;
 pub mod state;
 pub mod wind;
 
@@ -30,6 +32,7 @@ pub use params::{
     SEAWATER_REFERENCE_DENSITY_KG_PER_M3,
 };
 pub use shallow_water::{shallow_water_rhs, ShallowWaterRhs};
+pub use solver::{step, Solver, SolverError};
 pub use state::OceanState;
 pub use wind::WindStress;
 

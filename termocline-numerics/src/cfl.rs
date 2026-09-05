@@ -51,11 +51,18 @@ pub const RK4_IMAGINARY_AXIS_LIMIT: f64 = 2.0 * std::f64::consts::SQRT_2;
 /// Dimensionless margin held back from the raw stability bound.
 ///
 /// The bound above is derived for the gravity-wave terms alone. A run also
-/// carries the Coriolis term, Rayleigh damping and the wind forcing, which
-/// move the eigenvalues off the pure imaginary axis, and any of them can nudge
-/// a marginally-stable step over the boundary. `0.8` keeps the timestep a
-/// fifth clear of the boundary — the customary margin in ocean models, and
-/// small enough that a run is bounded by physics rather than by the margin.
+/// carries Rayleigh damping and the wind forcing, which move the eigenvalues
+/// off the pure imaginary axis and can nudge a marginally-stable step over the
+/// boundary. `0.8` keeps the timestep a fifth clear of it — the customary
+/// margin in ocean models, and small enough that a run is bounded by physics
+/// rather than by the margin.
+///
+/// The margin does **not** absorb the Coriolis term. Rotation is a second
+/// oscillation with a frequency of its own, `|f| = β·|y|`, and its stability
+/// limit involves neither the wave speed nor the cell spacing, so no fixed
+/// factor on this bound can cover it. It is a separate bound, enforced by the
+/// engine's solver where both terms are visible at once; see
+/// [ADR-0007](../../docs/planning/adr/0007-rotation-timestep-bound.md).
 ///
 /// It is a project policy number chosen in T-01.3, not a measured physical
 /// constant and not a value taken from the literature — there is nothing to
