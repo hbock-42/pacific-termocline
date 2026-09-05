@@ -81,8 +81,8 @@ negative southern boundary.
 | `western_longitude_deg` | float | optional | degrees east | Any finite longitude. Omitted means `120.0` — the Maritime Continent edge of the Pacific. |
 | `eastern_longitude_deg` | float | optional | degrees east | Any finite longitude, counted eastward from the western one. Omitted means `-80.0`, the South American coast; `280.0` is the same meridian written the other way. |
 | `southern_latitude_deg` | float | optional | degrees north | Finite and on the planet, `−90 ≤ φ ≤ 90`. Omitted means `-25.0`. |
-| `northern_latitude_deg` | float | optional | degrees north | Finite, on the planet, and strictly north of `southern_latitude_deg`. Omitted means `25.0`. Equal or inverted latitudes are refused with *"northern_latitude_deg is …, which is not north of southern_latitude_deg …"*. |
-| `resolution_deg` | float | optional | degrees | Finite, strictly greater than 0, and dividing *both* spans into a whole number of cells. Omitted means `0.5`. |
+| `northern_latitude_deg` | float | optional | degrees north | Finite, on the planet, and strictly north of `southern_latitude_deg`. Omitted means `25.0`. Equal or inverted latitudes are refused with *"northern_latitude_deg is …, which is not north of southern_latitude_deg …; swap the two, or move northern_latitude_deg north of …"*. |
+| `resolution_deg` | float | optional | degrees | Finite, strictly greater than 0, dividing *both* spans into a whole number of cells, and coarse enough that the run fits the memory budget below. Omitted means `0.5`. |
 
 <!-- end fields -->
 
@@ -158,7 +158,8 @@ A span that is not a whole number of cells is **refused, never rounded** —
 rounding it would silently run a basin nobody asked for:
 
 *"the basin spans 160.3 degrees of longitude, which is not a whole number of
-cells of resolution_deg 0.5"*.
+cells of resolution_deg 0.5; set a resolution_deg that divides 160.3, or move a
+boundary so that this one does"*.
 
 Whole is judged to a relative tolerance of `1e-9` of the cell count, which is
 seven orders of magnitude looser than the binary rounding of decimal degrees
@@ -170,6 +171,36 @@ The other refusals name their value the same way: a non-finite boundary or
 resolution (*"…it must be a finite number of degrees"*), a latitude off the
 planet, a non-positive `resolution_deg`, an axis shorter than a single cell,
 and a resolution so fine that the cell count does not fit in a machine index.
+Each says how to fix itself as well as what is wrong — coarsen `resolution_deg`,
+widen the basin, swap the two latitudes — because the person reading the message
+is holding the file that has to change.
+
+### How large a basin the engine will start
+
+A well-formed basin can still ask for more cells than the machine has memory
+for, and discovering that from the allocator, an hour into a run, is exactly the
+failure a pre-flight check exists to prevent. So the grid is also held to a
+memory budget, before anything is allocated:
+
+```text
+resident bytes = nx · ny · 192           192 B/cell, see below
+budget         = 2 GiB                   ≈ 11.2 × 10⁶ cells
+```
+
+The 192 bytes are the eight `OceanState`-sized buffers a run holds resident from
+before its first step to after its last — the state, RK4's five stage buffers,
+and the two wind-stress fields, 22 `f64` a cell rounded up to 24. The 2 GiB is
+project policy in the same sense as `CFL_SAFETY_FACTOR`: it admits 350 times the
+320 × 100 of the default basin — the Pacific at 0.03°, far finer than the
+deformation radius the model resolves — so a scenario past it is a scenario with
+a mistyped `resolution_deg` rather than an ambitious one.
+
+Past the budget, the basin is refused by its cell count and never quietly
+coarsened:
+
+*"the basin is 16000 × 5000 cells, whose solver state alone would be 14.3 GiB —
+more than the 2.0 GiB this build will start a run with; coarsen resolution_deg,
+or bring the basin's boundaries closer together"*.
 
 ## `[physics]`
 
@@ -218,7 +249,7 @@ steps rather than in seconds, because that is what makes the frame count exact.
 | --- | --- | --- | --- | --- |
 | `dt_s` | float | required | s | Finite, strictly greater than 0, and no longer than *both* the CFL-stable maximum and the rotation limit below. Length of one solver step. |
 | `total_steps` | integer | required | steps | Any non-negative integer (`u64`). Steps the run takes from its initial state. `0` is a run of the initial state alone. |
-| `output_every_n_steps` | integer | required | steps | At least 1. Steps between saved frames; `0` is refused with *"every_n_steps is 0; a run writes a frame every N steps, and N must be at least 1"*. |
+| `output_every_n_steps` | integer | required | steps | At least 1, and — for a run that takes any steps at all — at most `total_steps`. Steps between saved frames; `0` is refused with *"every_n_steps is 0; a run writes a frame every N steps, and N must be at least 1"*, and a cadence longer than the run with *"every_n_steps is 480 but the run is only 240 steps long, so the run would save its initial state and none of the steps it took; set every_n_steps to at most 240, or lengthen the run"*. |
 
 <!-- end fields -->
 
@@ -236,6 +267,14 @@ A run whose length is not a whole number of intervals simply stops at the last
 interval that fits; the schedule never rounds the run up and never moves a
 sample. The example writes `17520 / 24 + 1 = 731` frames — one a day over two
 years, plus the initial state.
+
+The cadence has to leave at least one interval inside the run. A run of 240
+steps saving every 480 would take every step it was asked for and write none of
+them, keeping only the initial state it started from, so it is refused rather
+than run: that is the *output interval sane relative to run length* the
+pre-flight check owes a scenario author. A `total_steps` of `0` is not that
+case — it is the initial state alone, which is what it asked for — so any
+cadence is allowed there.
 
 ### The two bounds on `dt_s`
 
@@ -267,9 +306,10 @@ it.
 
 #### The rotation bound
 
-Checked when the solver is built rather than when the file is parsed, so a
-scenario can satisfy everything above and still be refused here. The rotation
-pair `u̇ = +f·v`, `v̇ = −f·u` has eigenvalues `±i·f`, so the step has to resolve
+Checked by the scenario loader too, immediately after the CFL bound, so that a
+file the engine accepts is a file it can run; `Solver::new` checks it again,
+because it is a public constructor and validates its own input whoever calls
+it. The rotation pair `u̇ = +f·v`, `v̇ = −f·u` has eigenvalues `±i·f`, so the step has to resolve
 the fastest inertial oscillation in the basin — the one at whichever meridional
 wall lies further from the equator (see
 [ADR-0007](planning/adr/0007-rotation-timestep-bound.md)):
@@ -451,19 +491,23 @@ reported:
 
 1. `[basin]` — boundaries finite and on the planet, then `resolution_deg`
    positive, then the latitudes ordered, then each span a whole number of
-   cells.
+   cells, then the grid inside the memory budget.
 2. `[physics]` — each parameter in the order of the table above.
-3. `[run]` — timestep positive, then output cadence non-zero.
+3. `[run]` — timestep positive, then output cadence non-zero, then the cadence
+   no longer than the run.
 4. `[[wind]]` — each entry in file order.
-5. The gravity-wave CFL bound on `dt_s`, last, because it needs the wave speed
+5. The gravity-wave CFL bound on `dt_s`, because it needs the wave speed
    `[physics]` implies and the spacing `[basin]` implies.
+6. The rotation bound on `dt_s`, last, because it needs `β` from `[physics]`
+   and how far from the equator `[basin]` reaches.
 
 A file that is not valid TOML, is missing a section, names a forcing that does
 not exist, or carries an unknown key fails before any of that, at parse time.
 
-The rotation bound on `dt_s` is checked later still — when the run builds its
-solver, not when it reads its scenario — so it is the one refusal that arrives
-after a file has otherwise been accepted.
+Every one of these is checked when the scenario is *read* — before the run
+directory is opened, and before a single step is taken. So a scenario the
+loader accepts is one nothing downstream will object to, and a scenario it
+refuses leaves no half-written run behind to clean up.
 
 ## See also
 

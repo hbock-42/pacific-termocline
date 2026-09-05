@@ -11,11 +11,23 @@
 //! Keeping the two apart is what makes the error messages good. Every
 //! constructor in the engine already refuses its own bad input by name
 //! ([`PhysicalParamsError`], [`WindStressError`], [`CflError`], …), so
-//! [`ScenarioConfig::build`] does not re-implement a single bound: it wires
-//! the file's numbers into those constructors and wraps whichever one
-//! objected. A malformed file, an unknown forcing type or an unstable
-//! timestep is therefore a [`ScenarioError`] naming the offending value —
-//! never a panic (CODING_STANDARDS.md § *Correctness and failure*).
+//! [`ScenarioConfig::build`] re-implements almost nothing: it wires the file's
+//! numbers into those constructors and wraps whichever one objected. A
+//! malformed file, an unknown forcing type or an unstable timestep is
+//! therefore a [`ScenarioError`] naming the offending value — never a panic
+//! (CODING_STANDARDS.md § *Correctness and failure*).
+//!
+//! # Everything is checked before anything runs
+//!
+//! [`ScenarioConfig::build`] is the pre-flight check of T-06.3, and its
+//! contract is that an accepted scenario is a scenario the run will not stop
+//! on: no bound is left for the solver, the writer or the allocator to
+//! discover partway through a long run. Two of them are here for that reason
+//! rather than because this is where they are computed — the rotation bound on
+//! `dt_s`, which [`Solver::new`](crate::Solver::new) also enforces, and the
+//! memory budget on the grid, which is the one bound this module owns
+//! outright because no single constructor can see both the cell count and what
+//! a run does with it.
 //!
 //! # Why this is not in `termocline-format`
 //!
@@ -75,6 +87,7 @@ use serde::{Deserialize, Serialize};
 use termocline_numerics::{check_timestep, CflError, WaveSpeed};
 
 use crate::basin::{Basin, BasinBounds, BasinBoundsError};
+use crate::coriolis::BetaPlane;
 use crate::forcing::{
     CompositeWind, SeasonalTradeWinds, SteadyTradeWinds, WindBurstAnomaly, WindStress,
     WindStressError,
@@ -84,6 +97,7 @@ use crate::params::{
     SEAWATER_REFERENCE_DENSITY_KG_PER_M3,
 };
 use crate::run_writer::{OutputSchedule, OutputScheduleError};
+use crate::solver::{check_rotation_timestep, RotationLimitError};
 
 /// Why a scenario could not be read.
 ///
@@ -111,6 +125,20 @@ pub enum ScenarioError {
     /// `[basin]` described something that is not a basin: a boundary that is
     /// not a position on the planet, or a resolution that does not divide it.
     Basin(BasinBoundsError),
+    /// `[basin]` described a grid too fine for the engine to hold a run on.
+    ///
+    /// A perfectly well-formed basin can still ask for more cells than the
+    /// machine has memory for, and the engine says so before it starts
+    /// allocating rather than letting the allocator end the run partway
+    /// through it.
+    BasinTooLarge {
+        /// Cells east–west.
+        nx: usize,
+        /// Cells north–south.
+        ny: usize,
+        /// Bytes of solver state a run over this grid would hold resident.
+        resident_bytes: u64,
+    },
     /// `[physics]` asked for an unphysical ocean.
     PhysicalParams(PhysicalParamsError),
     /// A `[[wind]]` entry described a forcing that cannot exist.
@@ -120,6 +148,9 @@ pub enum ScenarioError {
     Schedule(OutputScheduleError),
     /// `[run]` asked for a timestep the grid cannot carry stably.
     Cfl(CflError),
+    /// `[run]` asked for a timestep longer than the basin's rotation allows
+    /// (ADR-0007).
+    Rotation(RotationLimitError),
 }
 
 impl fmt::Display for ScenarioError {
@@ -135,13 +166,64 @@ impl fmt::Display for ScenarioError {
             Self::Malformed(source) => write!(f, "this is not a scenario: {source}"),
             Self::Unwritable(source) => write!(f, "could not write the scenario: {source}"),
             Self::Basin(source) => write!(f, "[basin]: {source}"),
+            Self::BasinTooLarge {
+                nx,
+                ny,
+                resident_bytes,
+            } => write!(
+                f,
+                "[basin]: the basin is {nx} × {ny} cells, whose solver state alone would be \
+                 {} — more than the {} this build will start a run with; coarsen \
+                 resolution_deg, or bring the basin's boundaries closer together",
+                gibibytes(*resident_bytes),
+                gibibytes(MAX_RESIDENT_STATE_BYTES)
+            ),
             Self::PhysicalParams(source) => write!(f, "[physics]: {source}"),
             Self::Wind(source) => write!(f, "[[wind]]: {source}"),
             Self::Schedule(source) => write!(f, "[run]: {source}"),
             Self::Cfl(source) => write!(f, "[run]: {source}"),
+            Self::Rotation(source) => write!(f, "[run]: {source}"),
         }
     }
 }
+
+/// `bytes` as a number of gibibytes, to a tenth: the unit the memory budget is
+/// stated in, and the one a reader compares against the machine in front of
+/// them.
+fn gibibytes(bytes: u64) -> String {
+    format!("{:.1} GiB", bytes as f64 / BYTES_PER_GIB as f64)
+}
+
+/// Bytes in a gibibyte.
+const BYTES_PER_GIB: u64 = 1 << 30;
+
+/// Bytes of solver state a run holds resident per grid cell.
+///
+/// A run keeps eight `OceanState`-sized buffers alive from before its first
+/// step to after its last (`run.rs` § *What is allocated, and when*): the
+/// state, RK4's five stage buffers, and the two wind-stress fields — 22 `f64`
+/// per cell, rounded up to 24 for the one-row-and-column margin the staggered
+/// `u` and `v` fields carry. At 8 bytes a `f64` that is 192 bytes per cell.
+///
+/// It is an estimate of the resident set, not a measurement of it: what the
+/// budget below is protecting is the difference between a basin that fits in
+/// memory and one that is three orders of magnitude past it, and no plausible
+/// error in the buffer count moves that line.
+const RESIDENT_BYTES_PER_CELL: u64 = 24 * 8;
+
+/// The largest resident solver state this build will start a run with.
+///
+/// A project policy rather than a measured constant, in the same sense as
+/// `CFL_SAFETY_FACTOR`: 2 GiB is comfortably inside any machine this project
+/// is developed or run on, and it admits 11.2 million cells — 350 times the
+/// 320 × 100 of the default Pacific, or that basin at 0.03°, which is far
+/// finer than the deformation radius the model resolves. A scenario past it is
+/// not a scenario with an ambitious grid, it is a scenario with a mistyped
+/// `resolution_deg`.
+///
+/// The limit is refused, never silently coarsened
+/// (CODING_STANDARDS.md § *No silent clamping*).
+const MAX_RESIDENT_STATE_BYTES: u64 = 2 * BYTES_PER_GIB;
 
 impl std::error::Error for ScenarioError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
@@ -154,6 +236,8 @@ impl std::error::Error for ScenarioError {
             Self::Wind(source) => Some(source),
             Self::Schedule(source) => Some(source),
             Self::Cfl(source) => Some(source),
+            Self::Rotation(source) => Some(source),
+            Self::BasinTooLarge { .. } => None,
         }
     }
 }
@@ -191,6 +275,12 @@ impl From<OutputScheduleError> for ScenarioError {
 impl From<CflError> for ScenarioError {
     fn from(source: CflError) -> Self {
         Self::Cfl(source)
+    }
+}
+
+impl From<RotationLimitError> for ScenarioError {
+    fn from(source: RotationLimitError) -> Self {
+        Self::Rotation(source)
     }
 }
 
@@ -519,16 +609,30 @@ impl ScenarioConfig {
 
     /// Validate every section and produce the runnable [`Scenario`].
     ///
-    /// The CFL check comes last, because it needs the wave speed the physics
-    /// section implies and the spacing the basin section implies; it refuses
-    /// an unstable timestep rather than shortening it
-    /// (CODING_STANDARDS.md § *No silent clamping*).
+    /// This is the whole pre-flight check of T-06.3: when it returns `Ok`,
+    /// every bound the engine holds a scenario to has been cleared, so a file
+    /// the loader accepts is a file the run will not stop on. That is why the
+    /// two timestep bounds are here rather than left to the solver, and why
+    /// the grid-size budget is checked before anything allocates: the point of
+    /// validating up front is that nothing downstream gets to discover a new
+    /// objection partway through a long run.
+    ///
+    /// The order is the one `docs/scenario-config-reference.md` § *Errors*
+    /// documents, and the first failure is the one reported. The two bounds on
+    /// `dt_s` come last because each needs more than `[run]`: the gravity-wave
+    /// CFL bound needs the wave speed `[physics]` implies and the spacing
+    /// `[basin]` implies, and the rotation bound of [ADR-0007] needs `β` and
+    /// how far from the equator `[basin]` reaches. Neither ever shortens the
+    /// timestep (CODING_STANDARDS.md § *No silent clamping*).
     ///
     /// # Errors
     /// A [`ScenarioError`] naming the section that was wrong and, through the
     /// error it wraps, the value and the bound.
+    ///
+    /// [ADR-0007]: ../../docs/planning/adr/0007-rotation-timestep-bound.md
     pub fn build(&self) -> Result<Scenario, ScenarioError> {
         let bounds = self.basin.bounds()?;
+        check_grid_fits_in_memory(bounds.nx(), bounds.ny())?;
         let basin = bounds.basin();
         let physical_params = self.physics.build()?;
         let schedule = self.run.build()?;
@@ -540,6 +644,9 @@ impl ScenarioConfig {
 
         let wave_speed = WaveSpeed::new(physical_params.kelvin_wave_speed_m_per_s())?;
         check_timestep(schedule.dt_s(), basin.spacing(), wave_speed)?;
+        let plane = BetaPlane::new(physical_params, basin.spacing(), basin.southern_edge_y_m())
+            .expect("validated bounds place the basin at a finite position");
+        check_rotation_timestep(schedule.dt_s(), basin.grid(), plane)?;
 
         Ok(Scenario {
             bounds,
@@ -549,6 +656,29 @@ impl ScenarioConfig {
             output_schedule: schedule,
         })
     }
+}
+
+/// Refuse an `nx` × `ny` grid whose run would not fit in
+/// [`MAX_RESIDENT_STATE_BYTES`].
+///
+/// The count is done in `u64` and saturates rather than wrapping, so a grid
+/// far past the budget is refused for being past it rather than accepted for
+/// having overflowed — on a 32-bit target `nx · ny · 192` does not fit in a
+/// `usize`.
+///
+/// # Errors
+/// [`ScenarioError::BasinTooLarge`], naming the grid and what it would cost.
+fn check_grid_fits_in_memory(nx: usize, ny: usize) -> Result<(), ScenarioError> {
+    let cells = (nx as u64).saturating_mul(ny as u64);
+    let resident_bytes = cells.saturating_mul(RESIDENT_BYTES_PER_CELL);
+    if resident_bytes > MAX_RESIDENT_STATE_BYTES {
+        return Err(ScenarioError::BasinTooLarge {
+            nx,
+            ny,
+            resident_bytes,
+        });
+    }
+    Ok(())
 }
 
 /// A scenario the engine can run: every value already through the constructor

@@ -59,8 +59,9 @@
 use std::cell::RefCell;
 
 use engine::{
-    max_stable_dt, step, BetaPlane, CflError, Field2D, Grid, OceanState, PhysicalParams, Solver,
-    SolverError, Spacing, Staggering, WaveSpeed, WindStressField, H_STAGGERING, U_STAGGERING,
+    max_stable_dt, step, BetaPlane, CflError, Field2D, Grid, OceanState, PhysicalParams,
+    RotationLimitError, Solver, SolverError, Spacing, Staggering, WaveSpeed, WindStressField,
+    H_STAGGERING, U_STAGGERING,
 };
 
 /// Reduced gravity `g'` of the equatorial Pacific's first baroclinic mode, in
@@ -768,11 +769,11 @@ fn a_timestep_that_cannot_resolve_the_basins_rotation_is_refused() {
         .expect_err("a step longer than the rotation allows must be refused");
     assert_eq!(
         error,
-        SolverError::TimestepExceedsRotationLimit {
+        SolverError::TimestepExceedsRotationLimit(RotationLimitError {
             requested_s: cfl_bound_s,
             max_stable_s: rotation_bound_s,
             largest_coriolis_per_s,
-        }
+        })
     );
     // Actionable, per CODING_STANDARDS.md § Correctness and failure: the
     // message names the value it rejected and the bound it violated.
