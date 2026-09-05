@@ -32,10 +32,13 @@
 //! velocity. This module cannot promise that: it zeroes the *pressure
 //! gradient* on a wall, which leaves a wall velocity to decay at `−r` rather
 //! than forcing it to zero, and until Epic 04 gives the boundary a condition
-//! of its own the wind stress can put one there. A basin whose walls start and
-//! stay at rest — the unforced perturbation the criterion is about — is inside
-//! the guarantee; a wind-driven one is not, and its energy budget is Epic 04's
-//! to close.
+//! of its own nothing here stops a stress applied at the wall from starting
+//! one. A basin whose walls start and stay at rest — the unforced perturbation
+//! the criterion is about — is inside the guarantee. So, in practice, is a
+//! wind-driven one: a [`WindStressField`] sampled from a
+//! [`WindStress`](crate::WindStress) leaves the wall faces at exactly zero for
+//! this reason (see the `forcing` module's header). Closing the budget for a
+//! wall velocity that arrives some other way is still Epic 04's.
 //!
 //! The spatial derivatives come from `termocline-numerics`, which is where the
 //! C-grid neighbour arithmetic lives. Two consequences are worth stating,
@@ -51,9 +54,9 @@
 use termocline_grid::{Field2D, Grid, H_STAGGERING};
 use termocline_numerics::{CGridOperators, Spacing};
 
+use crate::forcing::WindStressField;
 use crate::params::PhysicalParams;
 use crate::state::OceanState;
-use crate::wind::WindStress;
 
 /// The right-hand side of the shallow-water equations for one basin, one cell
 /// spacing and one parameter set, holding the scratch space it needs.
@@ -102,7 +105,7 @@ impl ShallowWaterRhs {
     pub fn evaluate(
         &mut self,
         state: &OceanState,
-        wind_stress: &WindStress,
+        wind_stress: &WindStressField,
         tendency: &mut OceanState,
     ) {
         self.check_grid("state", state.grid());
@@ -221,7 +224,7 @@ pub fn shallow_water_rhs(
     state: &OceanState,
     params: PhysicalParams,
     spacing: Spacing,
-    wind_stress: &WindStress,
+    wind_stress: &WindStressField,
 ) -> OceanState {
     let mut evaluator = ShallowWaterRhs::new(state.grid(), spacing, params);
     let mut tendency = OceanState::at_rest(state.grid());

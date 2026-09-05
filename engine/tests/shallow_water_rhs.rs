@@ -26,7 +26,7 @@ use std::f64::consts::PI;
 
 use engine::{
     shallow_water_rhs, Field2D, Grid, OceanState, PhysicalParams, ShallowWaterRhs, Spacing,
-    Staggering, WindStress, H_STAGGERING, U_STAGGERING, V_STAGGERING,
+    Staggering, WindStressField, H_STAGGERING, U_STAGGERING, V_STAGGERING,
 };
 
 /// Reduced gravity `g'` of the equatorial Pacific's first baroclinic mode, in
@@ -228,7 +228,12 @@ fn a_gaussian_bump_accelerates_the_current_outward() {
         gaussian_bump_m(spacing, crest, x_m, y_m)
     });
 
-    let tendency = shallow_water_rhs(&state, pacific_params(), spacing, &WindStress::calm(grid));
+    let tendency = shallow_water_rhs(
+        &state,
+        pacific_params(),
+        spacing,
+        &WindStressField::calm(grid),
+    );
 
     for j in 0..tendency.u().ny() {
         for i in 1..tendency.u().nx() - 1 {
@@ -307,7 +312,7 @@ fn the_zonal_pressure_gradient_converges_on_minus_g_prime_dhdx() {
             -params.reduced_gravity_m_per_s2() * H_AMPLITUDE_M * dsdx(x_m, y_m)
         });
 
-        let tendency = shallow_water_rhs(&state, params, spacing, &WindStress::calm(grid));
+        let tendency = shallow_water_rhs(&state, params, spacing, &WindStressField::calm(grid));
         max_error(tendency.u(), &expected, interior_x_faces(n))
     });
 }
@@ -325,7 +330,7 @@ fn the_meridional_pressure_gradient_converges_on_minus_g_prime_dhdy() {
             -params.reduced_gravity_m_per_s2() * H_AMPLITUDE_M * dsdy(x_m, y_m)
         });
 
-        let tendency = shallow_water_rhs(&state, params, spacing, &WindStress::calm(grid));
+        let tendency = shallow_water_rhs(&state, params, spacing, &WindStressField::calm(grid));
         max_error(tendency.v(), &expected, interior_y_faces(n))
     });
 }
@@ -350,7 +355,7 @@ fn the_continuity_term_converges_on_minus_big_h_times_the_divergence() {
                 * (U_AMPLITUDE_M_PER_S * dsdx(x_m, y_m) + V_AMPLITUDE_M_PER_S * dsdy(x_m, y_m))
         });
 
-        let tendency = shallow_water_rhs(&state, params, spacing, &WindStress::calm(grid));
+        let tendency = shallow_water_rhs(&state, params, spacing, &WindStressField::calm(grid));
         max_error(tendency.h(), &expected, everywhere)
     });
 }
@@ -376,7 +381,11 @@ fn a_uniform_wind_stress_accelerates_the_current_by_tau_over_rho_h() {
     let (grid, spacing) = basin(SMALL_BASIN_CELLS);
     let params = pacific_params();
     let state = OceanState::at_rest(grid);
-    let wind = WindStress::uniform(grid, TRADE_WIND_STRESS_X_PA, TRADE_WIND_STRESS_Y_PA);
+    let wind = WindStressField::uniform_including_walls(
+        grid,
+        TRADE_WIND_STRESS_X_PA,
+        TRADE_WIND_STRESS_Y_PA,
+    );
 
     let tendency = shallow_water_rhs(&state, params, spacing, &wind);
 
@@ -408,7 +417,12 @@ fn a_calm_ocean_at_rest_stays_at_rest() {
     let (grid, spacing) = basin(SMALL_BASIN_CELLS);
     let state = OceanState::at_rest(grid);
 
-    let tendency = shallow_water_rhs(&state, pacific_params(), spacing, &WindStress::calm(grid));
+    let tendency = shallow_water_rhs(
+        &state,
+        pacific_params(),
+        spacing,
+        &WindStressField::calm(grid),
+    );
 
     assert_eq!(tendency, OceanState::at_rest(grid));
 }
@@ -421,7 +435,12 @@ fn the_tendency_carries_the_staggering_of_the_state_it_came_from() {
     let (grid, spacing) = basin(SMALL_BASIN_CELLS);
     let state = OceanState::at_rest(grid);
 
-    let tendency = shallow_water_rhs(&state, pacific_params(), spacing, &WindStress::calm(grid));
+    let tendency = shallow_water_rhs(
+        &state,
+        pacific_params(),
+        spacing,
+        &WindStressField::calm(grid),
+    );
 
     assert_eq!(tendency.grid(), grid);
     assert_eq!(
@@ -458,7 +477,11 @@ fn a_reused_evaluator_writes_every_point_of_its_output() {
     *state.h_mut() = sample(grid, spacing, H_STAGGERING, |x_m, y_m| {
         gaussian_bump_m(spacing, crest, x_m, y_m)
     });
-    let wind = WindStress::uniform(grid, TRADE_WIND_STRESS_X_PA, TRADE_WIND_STRESS_Y_PA);
+    let wind = WindStressField::uniform_including_walls(
+        grid,
+        TRADE_WIND_STRESS_X_PA,
+        TRADE_WIND_STRESS_Y_PA,
+    );
     let expected = shallow_water_rhs(&state, params, spacing, &wind);
 
     let mut evaluator = ShallowWaterRhs::new(grid, spacing, params);
@@ -497,7 +520,11 @@ fn the_basin_walls_carry_the_wind_stress_alone() {
     *state.h_mut() = sample(grid, spacing, H_STAGGERING, |x_m, y_m| {
         gaussian_bump_m(spacing, crest, x_m, y_m)
     });
-    let wind = WindStress::uniform(grid, TRADE_WIND_STRESS_X_PA, TRADE_WIND_STRESS_Y_PA);
+    let wind = WindStressField::uniform_including_walls(
+        grid,
+        TRADE_WIND_STRESS_X_PA,
+        TRADE_WIND_STRESS_Y_PA,
+    );
 
     let tendency = shallow_water_rhs(&state, params, spacing, &wind);
 

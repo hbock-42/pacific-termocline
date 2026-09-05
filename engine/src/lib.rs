@@ -8,21 +8,23 @@
 //! The physics lands in Epics 01–04; so far the crate carries the time
 //! integrator, the prognostic [`OceanState`], the [`PhysicalParams`] the
 //! equations are written in terms of, the [`Solver`] that puts them together
-//! into one time step of the linear shallow-water core, and the [`RunWriter`]
-//! that saves the result at a configurable output cadence.
+//! into one time step of the linear shallow-water core, the [`WindStress`]
+//! forcing that drives it, and the [`RunWriter`] that saves the result at a
+//! configurable output cadence.
 
 // The acceptance criterion of T-02.1 is that every field states its unit; the
 // lint is what keeps that true as the crate grows.
 #![warn(missing_docs)]
 
+pub mod basin;
 pub mod coriolis;
+pub mod forcing;
 pub mod integrator;
 pub mod params;
 pub mod run_writer;
 pub mod shallow_water;
 pub mod solver;
 pub mod state;
-pub mod wind;
 
 pub use coriolis::{BetaPlane, BetaPlaneError, CoriolisTerm};
 pub use integrator::{Rk4, StateVector};
@@ -38,7 +40,15 @@ pub use params::{
 pub use shallow_water::{shallow_water_rhs, ShallowWaterRhs};
 pub use solver::{step, Solver, SolverError};
 pub use state::OceanState;
-pub use wind::WindStress;
+
+/// Re-exported so a scenario, the forcing and the rotation all name one
+/// basin geometry.
+pub use basin::{Basin, BasinError};
+
+/// Re-exported so a scenario names one wind forcing: the [`forcing::WindStress`]
+/// trait a scenario implements and the [`forcing::WindStressField`] the solver
+/// actually reads.
+pub use forcing::{SteadyTradeWinds, WindStress, WindStressError, WindStressField};
 
 /// Re-exported so binaries and the visualizer agree on one format version, and
 /// on where a run's two files live (ADR-0004: the format crate is the one
