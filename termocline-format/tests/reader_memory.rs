@@ -19,6 +19,10 @@
 //!   heap, which is the criterion itself — a thousandfold longer run must not
 //!   cost more memory.
 //!
+//! The counting allocator is the workspace's only `unsafe`, and
+//! [ADR-0008](../../docs/planning/adr/0008-memory-bound-test-allocator.md) is
+//! the record of why a test binary is allowed one.
+//!
 //! Neither byte source is a buffer holding the whole run: [`RepeatingFrames`]
 //! synthesizes the frame stream one block at a time, exactly as an HTTP body
 //! arriving in a browser would (ADR-0006). A fixture that materialized 8192
@@ -40,10 +44,14 @@ static PEAK_BYTES: AtomicUsize = AtomicUsize::new(0);
 /// The system allocator, keeping a running total of live bytes.
 struct Counting;
 
-// SAFETY-free by construction: every method forwards to `System` unchanged and
-// only adds two atomic counters, so the allocator's contract is `System`'s.
+// SAFETY: every method forwards its arguments unchanged to the corresponding
+// method of `System`, which is a correct `GlobalAlloc`, and returns what it
+// returned. The only additions are two atomic counters, which touch no memory
+// the allocator manages. So this implementation upholds exactly the contract
+// `System` upholds. See ADR-0008 for why the measurement is worth an `unsafe`.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: `layout` is the caller's, forwarded untouched.
         let pointer = unsafe { System.alloc(layout) };
         if !pointer.is_null() {
             record_allocation(layout.size());
@@ -53,10 +61,13 @@ unsafe impl GlobalAlloc for Counting {
 
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
         LIVE_BYTES.fetch_sub(layout.size(), Ordering::Relaxed);
+        // SAFETY: `pointer` and `layout` are the caller's, forwarded untouched
+        // to the allocator that produced the pointer.
         unsafe { System.dealloc(pointer, layout) };
     }
 
     unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: as `dealloc`, with `new_size` forwarded untouched too.
         let new_pointer = unsafe { System.realloc(pointer, layout, new_size) };
         if !new_pointer.is_null() {
             LIVE_BYTES.fetch_sub(layout.size(), Ordering::Relaxed);
@@ -85,14 +96,35 @@ const SHORT_FRAMES: u64 = 8;
 /// megabytes of frames — more than the peak this test allows by three orders
 /// of magnitude, so a reader that buffered the run could not pass.
 const LONG_FRAMES: u64 = 8_192;
-/// Frames' worth of heap the two peaks may differ by. The reader holds one
-/// decoded frame at a time and grows the next frame's buffers beside it, so a
-/// couple of frames of headroom covers the transient without covering any
-/// growth that scales with run length.
-const SLACK_FRAMES: usize = 3;
+/// Frames' worth of heap the two peaks may differ by, derived rather than
+/// measured: the reader may hold the frame it last yielded while the buffers
+/// of the next one are being grown beside it, which is two, and no term in
+/// that count involves the length of the run. A reader whose footprint scaled
+/// with run length would exceed it by three orders of magnitude at
+/// [`LONG_FRAMES`].
+const SLACK_FRAMES: usize = 2;
 
 /// Model time between frames, in seconds: one day of output cadence.
 const INTERVAL_S: f64 = 86_400.0;
+
+/// Reduced gravity `g'` of the equatorial Pacific's first baroclinic mode, in
+/// m/s². Standard value for the 1.5-layer model (Gill, *Atmosphere-Ocean
+/// Dynamics*, ch. 11; Cane & Sarachik 1981).
+const PACIFIC_REDUCED_GRAVITY_M_PER_S2: f64 = 0.05;
+/// Mean thermocline depth `H` of the equatorial Pacific, in metres — the
+/// canonical 150 m upper layer of the same 1.5-layer configuration.
+const PACIFIC_MEAN_DEPTH_M: f64 = 150.0;
+/// Meridional gradient of the Coriolis parameter at the equator, in m⁻¹ s⁻¹:
+/// `β = 2Ω·cos(φ)/R` at `φ = 0`, the value quoted in `CONTEXT.md` and in
+/// `docs/planning/01-scientific-model.md`.
+const EQUATORIAL_BETA_PER_M_PER_S: f64 = 2.3e-11;
+/// Reference seawater density `ρ₀`, in kg m⁻³: the standard Boussinesq
+/// reference for the upper tropical ocean, as `docs/planning/01-scientific-model.md`
+/// quotes it.
+const SEAWATER_REFERENCE_DENSITY_KG_PER_M3: f64 = 1025.0;
+/// Rayleigh damping `r`, in s⁻¹: an `e`-folding time of about 11.6 days, the
+/// value the Epic 02 tests damp at.
+const DAMPING_PER_S: f64 = 1.0e-6;
 
 fn grid() -> GridSpec {
     // The equatorial Pacific basin of CONTEXT.md: 120°E-80°W, 25°S-25°N.
@@ -101,13 +133,12 @@ fn grid() -> GridSpec {
 }
 
 fn header(frame_count: u64) -> RunHeader {
-    // Scenario values, not physical constants: nothing here is integrated.
     let params = PhysicalParams {
-        mean_depth_m: 150.0,
-        reduced_gravity_m_per_s2: 0.05,
-        beta_per_m_per_s: 2.28e-11,
-        rayleigh_damping_per_s: 1.0e-6,
-        reference_density_kg_per_m3: 1025.0,
+        mean_depth_m: PACIFIC_MEAN_DEPTH_M,
+        reduced_gravity_m_per_s2: PACIFIC_REDUCED_GRAVITY_M_PER_S2,
+        beta_per_m_per_s: EQUATORIAL_BETA_PER_M_PER_S,
+        rayleigh_damping_per_s: DAMPING_PER_S,
+        reference_density_kg_per_m3: SEAWATER_REFERENCE_DENSITY_KG_PER_M3,
     };
     RunHeader::new(
         grid(),

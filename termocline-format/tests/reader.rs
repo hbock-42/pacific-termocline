@@ -34,6 +34,25 @@ const FRAME_COUNT: u64 = 5;
 /// Model time between frames, in seconds: one day of output cadence.
 const INTERVAL_S: f64 = 86_400.0;
 
+/// Reduced gravity `g'` of the equatorial Pacific's first baroclinic mode, in
+/// m/s². Standard value for the 1.5-layer model (Gill, *Atmosphere-Ocean
+/// Dynamics*, ch. 11; Cane & Sarachik 1981).
+const PACIFIC_REDUCED_GRAVITY_M_PER_S2: f64 = 0.05;
+/// Mean thermocline depth `H` of the equatorial Pacific, in metres — the
+/// canonical 150 m upper layer of the same 1.5-layer configuration.
+const PACIFIC_MEAN_DEPTH_M: f64 = 150.0;
+/// Meridional gradient of the Coriolis parameter at the equator, in m⁻¹ s⁻¹:
+/// `β = 2Ω·cos(φ)/R` at `φ = 0`, the value quoted in `CONTEXT.md` and in
+/// `docs/planning/01-scientific-model.md`.
+const EQUATORIAL_BETA_PER_M_PER_S: f64 = 2.3e-11;
+/// Reference seawater density `ρ₀`, in kg m⁻³: the standard Boussinesq
+/// reference for the upper tropical ocean, as `docs/planning/01-scientific-model.md`
+/// quotes it.
+const SEAWATER_REFERENCE_DENSITY_KG_PER_M3: f64 = 1025.0;
+/// Rayleigh damping `r`, in s⁻¹: an `e`-folding time of about 11.6 days, the
+/// value the Epic 02 tests damp at.
+const DAMPING_PER_S: f64 = 1.0e-6;
+
 fn grid() -> GridSpec {
     // The equatorial Pacific basin of CONTEXT.md: 120°E-80°W, 25°S-25°N.
     GridSpec::new(NX, NY, BasinExtent::new(120.0, -80.0, -25.0, 25.0))
@@ -41,13 +60,12 @@ fn grid() -> GridSpec {
 }
 
 fn header(frame_count: u64) -> RunHeader {
-    // Scenario values, not physical constants: they exist to be read back.
     let params = PhysicalParams {
-        mean_depth_m: 150.0,
-        reduced_gravity_m_per_s2: 0.05,
-        beta_per_m_per_s: 2.28e-11,
-        rayleigh_damping_per_s: 1.0e-6,
-        reference_density_kg_per_m3: 1025.0,
+        mean_depth_m: PACIFIC_MEAN_DEPTH_M,
+        reduced_gravity_m_per_s2: PACIFIC_REDUCED_GRAVITY_M_PER_S2,
+        beta_per_m_per_s: EQUATORIAL_BETA_PER_M_PER_S,
+        rayleigh_damping_per_s: DAMPING_PER_S,
+        reference_density_kg_per_m3: SEAWATER_REFERENCE_DENSITY_KG_PER_M3,
     };
     RunHeader::new(
         grid(),
@@ -327,4 +345,45 @@ fn a_header_that_is_not_json_is_refused() {
     )
     .expect_err("a run needs a header");
     assert!(matches!(error, RunReadError::Header(_)), "{error:?}");
+}
+
+#[test]
+fn a_header_promising_frames_that_are_not_there_reserves_nothing_for_them() {
+    // `collect` reserves an iterator's lower size hint before it decodes
+    // anything, and the header is a claim about a file that may not keep it. A
+    // header naming a billion frames beside a one-frame file must therefore
+    // hint at nothing: a reader whose memory is decided by a number in an
+    // untrusted file does not have the bounded footprint the ticket asks for.
+    const OVERPROMISED: u64 = 1_000_000_000;
+    let header_bytes = serde_json::to_vec(&header(OVERPROMISED)).expect("the header serializes");
+    let (_, frame_bytes) = run_bytes(1);
+
+    let mut reader = reader(header_bytes, frame_bytes);
+    assert_eq!(reader.size_hint(), (0, None));
+    assert_eq!(
+        reader.remaining_frames(),
+        OVERPROMISED,
+        "the header's claim is still reportable; it is just not a guarantee"
+    );
+
+    reader
+        .next()
+        .expect("the one frame that is there")
+        .expect("it decodes");
+    assert_eq!(reader.size_hint().0, 0);
+
+    let error = reader
+        .next()
+        .expect("the missing frames are noticed")
+        .expect_err("a run cut short is refused");
+    assert!(
+        matches!(
+            error,
+            RunReadError::Truncated {
+                promised: OVERPROMISED,
+                read: 1
+            }
+        ),
+        "{error:?}"
+    );
 }

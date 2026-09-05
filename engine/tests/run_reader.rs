@@ -338,5 +338,28 @@ fn a_run_whose_frame_file_was_lost_is_refused_by_name() {
     fs::remove_file(scratch.path().join(engine::FRAME_FILE_NAME)).expect("the frame file exists");
 
     let error = RunReader::open(scratch.path()).expect_err("a run without frames is not a run");
-    assert!(matches!(error, RunReadError::Io(_)), "{error:?}");
+    let message = error.to_string();
+    assert!(matches!(error, RunReadError::Open { .. }), "{error:?}");
+    assert!(
+        message.contains(engine::FRAME_FILE_NAME),
+        "the error names the file it could not open: {message}"
+    );
+}
+
+#[test]
+fn a_run_whose_header_was_lost_is_refused_by_name() {
+    // The other half of the same mistake, and it must not be reported as a
+    // frame failure: the two files are opened by name, so the error says which
+    // one is missing.
+    let scratch = ScratchDir::new("lost-header");
+    write_run_to_files(scratch.path());
+    fs::remove_file(scratch.path().join(engine::HEADER_FILE_NAME)).expect("the header exists");
+
+    let error = RunReader::open(scratch.path()).expect_err("a run without a header is not a run");
+    let message = error.to_string();
+    assert!(matches!(error, RunReadError::Open { .. }), "{error:?}");
+    assert!(
+        message.contains(engine::HEADER_FILE_NAME),
+        "the error names the file it could not open: {message}"
+    );
 }

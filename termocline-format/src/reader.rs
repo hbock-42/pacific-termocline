@@ -85,6 +85,15 @@ pub enum RunReadError {
     },
     /// The frame source could not be read past the last complete frame.
     Io(std::io::Error),
+    /// One of the run's two files could not be opened. Only
+    /// [`RunReader::open`] produces this: a byte source handed in by a caller
+    /// is already open.
+    Open {
+        /// The file that could not be opened.
+        path: std::path::PathBuf,
+        /// Why the filesystem refused it.
+        error: std::io::Error,
+    },
 }
 
 impl fmt::Display for RunReadError {
@@ -108,6 +117,9 @@ impl fmt::Display for RunReadError {
                  the run is longer than its header describes"
             ),
             Self::Io(error) => write!(f, "the run's frames could not be read: {error}"),
+            Self::Open { path, error } => {
+                write!(f, "{} could not be opened: {error}", path.display())
+            }
         }
     }
 }
@@ -118,7 +130,7 @@ impl std::error::Error for RunReadError {
             Self::Header(error) => Some(error),
             Self::Decode(error) => Some(error),
             Self::Frame(error) => Some(error),
-            Self::Io(error) => Some(error),
+            Self::Io(error) | Self::Open { error, .. } => Some(error),
             Self::UnsupportedVersion { .. }
             | Self::Truncated { .. }
             | Self::TrailingBytes { .. } => None,
@@ -208,7 +220,10 @@ impl<R: Read> RunReader<R> {
 
     /// Frames the header promises that have not been read yet.
     ///
-    /// Zero once the run is exhausted, and zero after an error, which ends the
+    /// A promise, not a guarantee: it is the header's frame count less what
+    /// has been read, and a run cut short holds fewer (which is
+    /// [`RunReadError::Truncated`] when the iteration reaches the gap). Zero
+    /// once the run is exhausted, and zero after an error, which ends the
     /// iteration.
     #[must_use]
     pub const fn remaining_frames(&self) -> u64 {
@@ -236,23 +251,20 @@ impl<R: Read> RunReader<R> {
         Ok(frame)
     }
 
-    /// Look for bytes past the last frame the header promised, once.
-    fn check_tail(&mut self) -> Option<Result<Frame, RunReadError>> {
+    /// Look for bytes past the last frame the header promised, once. Returns
+    /// what is wrong with them, if there are any.
+    fn tail_error(&mut self) -> Option<RunReadError> {
         self.tail_checked = true;
         let mut byte = [0_u8; 1];
-        match self.frames.read(&mut byte) {
-            Ok(0) => None,
-            Ok(_) => {
-                self.failed = true;
-                Some(Err(RunReadError::TrailingBytes {
-                    promised: self.header.output.frame_count,
-                }))
-            }
-            Err(error) => {
-                self.failed = true;
-                Some(Err(RunReadError::Io(error)))
-            }
-        }
+        let error = match self.frames.read(&mut byte) {
+            Ok(0) => return None,
+            Ok(_) => RunReadError::TrailingBytes {
+                promised: self.header.output.frame_count,
+            },
+            Err(error) => RunReadError::Io(error),
+        };
+        self.failed = true;
+        Some(error)
     }
 }
 
@@ -267,7 +279,7 @@ impl<R: Read> Iterator for RunReader<R> {
             return if self.tail_checked {
                 None
             } else {
-                self.check_tail()
+                self.tail_error().map(Err)
             };
         }
         match self.decode_frame() {
@@ -283,19 +295,25 @@ impl<R: Read> Iterator for RunReader<R> {
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let Ok(remaining) = usize::try_from(self.remaining_frames()) else {
-            // More frames than this target can count; the honest hint is that
-            // there are at least some and no known bound.
-            return (0, None);
-        };
-        // One more may follow: the trailing-byte check yields an error rather
-        // than a frame, and it has not run yet.
-        let upper = if self.tail_checked || self.failed {
-            Some(remaining)
+        // The lower bound stays zero however many frames the header promises.
+        // `collect` reserves the lower bound up front, and the header is a
+        // claim about a file that may not keep it: a truncated run yields
+        // fewer frames than it promises, and a header claiming a billion
+        // frames beside a two-kilobyte file would otherwise reserve gigabytes
+        // before the first frame was decoded. The count a caller can act on is
+        // `remaining_frames`, which says where it came from.
+        //
+        // The upper bound is honest in the other direction, and only once the
+        // run is over: until the trailing-byte check has run, one more item —
+        // an error rather than a frame — may still follow.
+        let upper = if self.failed {
+            Some(0)
+        } else if self.tail_checked {
+            usize::try_from(self.remaining_frames()).ok()
         } else {
             None
         };
-        (remaining, upper)
+        (0, upper)
     }
 }
 
@@ -330,12 +348,23 @@ mod fs {
         /// supply.
         ///
         /// # Errors
-        /// [`RunReadError::Io`] if either file could not be opened, and the
-        /// errors of [`RunReader::new`].
+        /// [`RunReadError::Open`], naming the file, if either could not be
+        /// opened, and the errors of [`RunReader::new`].
         pub fn open(directory: &Path) -> Result<Self, RunReadError> {
-            let header = BufReader::new(File::open(directory.join(HEADER_FILE_NAME))?);
-            let frames = BufReader::new(File::open(directory.join(FRAME_FILE_NAME))?);
+            let header = open_file(&directory.join(HEADER_FILE_NAME))?;
+            let frames = open_file(&directory.join(FRAME_FILE_NAME))?;
             Self::new(header, frames)
         }
+    }
+
+    /// One of the run's two files, opened by name so a half-copied run
+    /// directory says which half is missing.
+    fn open_file(path: &Path) -> Result<BufReader<File>, RunReadError> {
+        File::open(path)
+            .map(BufReader::new)
+            .map_err(|error| RunReadError::Open {
+                path: path.to_owned(),
+                error,
+            })
     }
 }
