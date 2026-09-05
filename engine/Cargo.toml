@@ -17,10 +17,32 @@ termocline-grid.workspace = true
 termocline-numerics.workspace = true
 toml = { version = "0.9", default-features = false, features = ["parse", "display", "serde"] }
 
+[dev-dependencies]
+criterion = "0.8"
+
+# `bench = false` on both: neither carries a `#[bench]`, and leaving them in
+# makes `cargo bench` run two empty libtest harnesses that reject criterion's
+# own arguments before the benchmarks are reached.
 [[bin]]
 name = "termocline"
 path = "src/main.rs"
+bench = false
 
 [lib]
 name = "engine"
 path = "src/lib.rs"
+bench = false
+
+# Epic 10's measurements. `harness = false` because criterion brings its own
+# `main`, and `test = false` because a criterion benchmark run under
+# `cargo test` measures nothing while costing a full short scenario run;
+# `tests/benchmark_workloads.rs` is what the gate checks about them.
+[[bench]]
+name = "rhs_evaluation"
+harness = false
+test = false
+
+[[bench]]
+name = "scenario_run"
+harness = false
+test = false
