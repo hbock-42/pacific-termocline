@@ -396,6 +396,10 @@ impl Solver {
             stage_stress: _,
         } = self;
         NoNormalFlow::apply_to_state(state);
+        // As in `integrate`: a state that arrives from outside the time loop
+        // has not been through a store yet, so this is where T-10.4's probe
+        // narrows it. A shipped build has nothing here.
+        crate::precision::narrow_stored_state(state);
         integrator.step(
             state,
             t_s,
@@ -412,6 +416,10 @@ impl Solver {
                     sst.add_to_tendency(now, stress, tendency);
                 }
                 NoNormalFlow::apply_to_tendency(tendency);
+                // A tendency is a stored field too: RK4 keeps four of them
+                // across a step. T-10.4's probe narrows it here; a shipped
+                // build has nothing here at all (`crate::precision`).
+                crate::precision::narrow_stored_state(tendency);
             },
         );
     }
@@ -565,6 +573,10 @@ fn integrate(
     forcing: &mut (impl StageForcing + ?Sized),
 ) {
     NoNormalFlow::apply_to_state(state);
+    // A state that arrives from outside the time loop — an initial condition
+    // built in closed form — has not been through a store yet, so this is
+    // where T-10.4's probe narrows it. A shipped build has nothing here.
+    crate::precision::narrow_stored_state(state);
     integrator.step(
         state,
         t_s,
@@ -577,6 +589,9 @@ fn integrate(
                 sst.add_to_tendency(now, stress, tendency);
             }
             NoNormalFlow::apply_to_tendency(tendency);
+            // A tendency is a stored field too: RK4 keeps four of them across
+            // a step. The probe narrows it here (`crate::precision`).
+            crate::precision::narrow_stored_state(tendency);
         },
     );
 }
