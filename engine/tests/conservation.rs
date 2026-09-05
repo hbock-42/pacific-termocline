@@ -55,8 +55,9 @@
 //! alone would allow an enormous drift. It does not, because the defect is
 //! **oscillatory rather than one-signed**: `u` and `∂v/∂y` are two components
 //! of the same wave field, and their product changes sign every quarter period
-//! of it. A rate of that size, integrated over one period of the waveguide's
-//! own frequency `ω = c/Le = √(β·c)`, gives an excursion
+//! of it. Integrating a rate `a·cos(ω·t)` gives `(a/ω)·sin(ω·t)`, an excursion
+//! of `a/ω` and not one that grows — so at the waveguide's own frequency
+//! `ω = c/Le = √(β·c)` the `√(β·c)` cancels and what is left is
 //!
 //! ```text
 //! |ΔE/E|  ≤  (1/4)·(Δy/Le)²
@@ -64,8 +65,9 @@
 //!
 //! that does **not** grow with the length of the run. This is the term the
 //! long run exists to expose: a defect that accumulated instead of oscillating
-//! would multiply this by the number of wave periods in the run, of which
-//! there are some ten thousand here.
+//! would multiply this by the number of wave periods in the run — some 150 of
+//! them here, `2π/√(β·c) ≈ 7.9×10⁵ s` apiece — and so would break the bound by
+//! more than two orders of magnitude.
 //!
 //! ## 2. RK4's numerical dissipation — `O(dt⁶)`, and linear in the step count
 //!
@@ -78,40 +80,58 @@
 //! |R(i·θ)|² = 1 − θ⁶/72 + θ⁸/576.
 //! ```
 //!
-//! So a step removes at most `θ⁶/72` of a mode's energy — and only ever
-//! removes it, since `|R(i·θ)| ≤ 1` everywhere inside the CFL bound the solver
-//! enforces. Over `N` steps the loss is at most `N·θ⁶/72`.
+//! Two things follow, and they are of very different strengths.
 //!
-//! The `ω` that belongs in `θ` is the fastest frequency the solution actually
-//! carries, and that is `√(β·c)` — the equatorial inertia-gravity frequency,
-//! the frequency of the trapped motion the beta-plane makes out of the gravest
-//! zonal mode. Nothing takes energy to the grid scale, where `θ` would be
-//! `O(1)`: **the v1 core is linear** (CODING_STANDARDS.md § Scope guards),
-//! there is no cascade, and the only coupling between modes is `C`, whose
-//! meridional scale is `Le` and not `Δy`.
+//! The **sign** is rigorous. `|R(i·θ)| ≤ 1` for every `θ` inside the CFL bound
+//! the solver enforces, so RK4 can only ever *remove* energy from this system,
+//! whatever frequencies it happens to contain. The energy therefore cannot be
+//! pushed *up* past the skewness excursion of §1 by anything in the time
+//! discretisation, and
+//! [`an_undamped_unforced_run_never_gains_energy_past_the_skewness_bound`]
+//! asserts exactly that, against the `(1/4)·(Δy/Le)²` of §1 alone.
 //!
-//! ## The bound, and what it is not
+//! The **size** of the loss is an estimate, and is labelled as one. Over `N`
+//! steps it is `N·θ⁶/72` with `θ = ω·dt`, and the `ω` that belongs there is
+//! the energy-weighted frequency of the modes the run actually excites.
+//! [`rk4_dissipation_bound`] uses `√(β·c)`, the equatorial inertia-gravity
+//! frequency of the trapped motion the beta-plane makes out of the gravest
+//! zonal mode. That is the scale of the motion the run is *about*; what it is
+//! not is a supremum over the discrete spectrum, whose grid-scale end sits at
+//! `θ = O(1)` where this expression is meaningless. The linearity of the v1
+//! core (CODING_STANDARDS.md § Scope guards) is what makes the substitution
+//! reasonable — there is no cascade to carry energy to the grid scale, and the
+//! only coupling between modes is `C`, whose meridional scale is `Le` — but
+//! "reasonable" is the honest word for it, not "proved".
 //!
-//! [`derived_drift_bound`] is the sum of the two. Both terms come from the
-//! scheme: the first from the C-grid's `f` placement and the equatorial
-//! deformation radius, the second from the RK4 amplification polynomial. No
-//! coefficient in either was chosen by looking at a run — the check is the
-//! other way round, and the remaining margin is the `O(1)` shape factors the
-//! two inequalities above gave away.
+//! ## What each assertion is worth
 //!
-//! A bound alone could still be satisfied for the wrong reason, so it is not
-//! the only assertion here. The first term scales as `Δy²`, and
-//! [`the_long_run_energy_drift_falls_at_the_schemes_second_order_under_refinement`]
-//! holds the *measured* drift to that rate across three resolutions
-//! (CODING_STANDARDS.md § Tests). Refining in `y` alone is the right study
-//! because `W` is exactly skew at every `Δx`: the whole energy error is
-//! meridional, and a zonal refinement would only make the runs more expensive.
+//! [`derived_drift_bound`] is the sum of the two terms, and
+//! [`energy_drift_over_a_long_undamped_unforced_run_stays_within_the_derived_bound`]
+//! holds the run to it. No coefficient in either term was chosen by looking at
+//! a run — the check runs the other way, and the margin that remains is the
+//! `O(1)` shape factors the inequalities above gave away.
+//!
+//! But a sum whose second term rests on an estimate is not the strongest thing
+//! here, and the file does not lean on it alone:
+//!
+//! - [`an_undamped_unforced_run_never_gains_energy_past_the_skewness_bound`]
+//!   uses only §1 and the sign of §2, both rigorous.
+//! - [`the_long_run_energy_drift_falls_at_the_schemes_second_order_under_refinement`]
+//!   holds the *measured* drift to the `Δy²` rate of §1 across three
+//!   resolutions (CODING_STANDARDS.md § Tests), which no bound can fake:
+//!   §2 falls as `dt⁵` at a fixed run length, faster still.
+//! - [`the_conservation_run_exchanges_energy_between_potential_and_kinetic_form`]
+//!   rules out the vacuous pass of a run in which nothing moves.
+//!
+//! Refining in `y` alone is the right study for all of them, because `W` is
+//! exactly skew at every `Δx`: the whole energy error is meridional, and a
+//! zonal refinement would only make the runs more expensive.
 
 use std::sync::OnceLock;
 
 use engine::{
     max_stable_dt, BetaPlane, Field2D, Grid, OceanState, PhysicalParams, Solver, Spacing,
-    Staggering, WaveSpeed, WindStress, H_STAGGERING,
+    Staggering, WaveSpeed, WindStressField, H_STAGGERING,
 };
 
 /// Reduced gravity `g'` of the equatorial Pacific's first baroclinic mode, in
@@ -163,10 +183,11 @@ const H_AMPLITUDE_M: f64 = 20.0;
 ///
 /// Eight times the four crossings of the T-02.5 check this ticket formalizes:
 /// about 3.7 years of simulated time, between 4.5×10³ and 1.8×10⁴ steps
-/// depending on resolution, and some ten thousand periods of the equatorial
+/// depending on resolution, and some 150 periods of the equatorial
 /// inertia-gravity motion whose skewness defect the bound is written around.
-/// Long enough that a defect accumulating at even a ten-thousandth of the rate
-/// derived in the module comment would show.
+/// That last number is the one that matters: the bound of the module comment
+/// is one period's excursion, so a defect that accumulated rather than
+/// oscillated would overshoot it by two orders of magnitude here.
 const LONG_RUN_CROSSINGS: f64 = 32.0;
 
 /// Coefficient of the Coriolis skewness excursion `(Δy/Le)²`.
@@ -189,18 +210,20 @@ const RK4_ENERGY_LOSS_DENOMINATOR: f64 = 72.0;
 /// How far below second order the measured convergence of the energy drift may
 /// sit.
 ///
-/// The drift is the `O(Δy²)` skewness defect of the C-grid Coriolis pair; RK4's
-/// share falls faster still, since the CFL bound ties `dt` to `Δy`. The check
-/// is one-sided: falling faster is not a defect, falling slower is.
+/// The same 0.2 T-02.5 arrived at for the same quantity, and for the same
+/// reason: the slack is the sub-leading `O(Δy⁴)` correction, which is what
+/// keeps a measurement at finite resolution off the asymptote. Writing the
+/// drift as `A·Δy²·(1 + c·Δy²)`, a halving of `Δy` moves the measured order by
+/// about `(3/4)·ε/ln 2` for a correction worth a fraction `ε` of the leading
+/// term, so 0.2 admits a sub-leading term up to about 18% of the leading one.
+/// It is reproduced here rather than shared because the two files pin
+/// different runs: `time_stepping.rs` refines both axes over four crossings,
+/// this one refines `Δy` alone over thirty-two, and a single constant would
+/// tie the two studies' slack together for no reason.
 ///
-/// The slack is for the sub-leading `O(Δy⁴)` correction, which is what keeps a
-/// measurement at finite resolution off the asymptote. Writing the drift as
-/// `A·Δy²·(1 + c·Δy²)`, a halving of `Δy` gives a ratio `4·(1 + (3/4)·c·Δy²)`,
-/// so a correction worth a fraction `ε` of the leading term at the coarser of
-/// the two resolutions moves the measured order by about `(3/4)·ε/ln 2`. A
-/// tolerance of 0.2 therefore admits a sub-leading term up to about 18% of the
-/// leading one, and is still far from the first-order or
-/// resolution-independent behaviour a mis-wired step would show.
+/// The check is one-sided: falling faster than second order is not a defect,
+/// falling slower is — and first-order or resolution-independent behaviour,
+/// which is what a mis-wired step shows, is far outside it.
 const DRIFT_ORDER_TOLERANCE: f64 = 0.2;
 
 /// Fraction of the initial energy that must reach kinetic form at some point
@@ -324,12 +347,6 @@ fn wave_energy(state: &OceanState, params: PhysicalParams) -> f64 {
         + kinetic_energy(state, params)
 }
 
-/// The upper layer's volume anomaly `Σh`, in metres — a volume per unit cell
-/// area, the constant factor again dropping out of the ratio taken on it.
-fn volume_anomaly_m(state: &OceanState) -> f64 {
-    state.h().as_slice().iter().sum()
-}
-
 /// The largest relative energy drift the Coriolis pair's skewness defect can
 /// produce on a grid of meridional spacing `dy_m`.
 ///
@@ -358,18 +375,6 @@ fn derived_drift_bound(dy_m: f64, dt_s: f64, steps: usize) -> f64 {
     coriolis_skewness_bound(dy_m) + rk4_dissipation_bound(dt_s, steps)
 }
 
-/// The largest relative drift of `Σh` a run of `steps` steps may show.
-///
-/// `Σh` is a *linear* invariant of the semi-discrete system — the discrete
-/// divergence telescopes to the wall fluxes, which a quiescent-walled basin
-/// keeps at zero — and RK4 preserves linear invariants exactly, since every
-/// stage weight it applies to the state is applied to the invariant too. So
-/// nothing but floating-point rounding can move it: at worst one ulp of the
-/// running sum per step, which over `steps` steps is `steps·ε`.
-fn volume_drift_bound(steps: usize) -> f64 {
-    steps as f64 * f64::EPSILON
-}
-
 /// What one resolution of the conservation study measured.
 #[derive(Debug, Clone, Copy)]
 struct ConservationRun {
@@ -381,18 +386,18 @@ struct ConservationRun {
     dt_s: f64,
     /// Steps taken, covering [`LONG_RUN_CROSSINGS`] basin crossings.
     steps: usize,
-    /// Largest `|E(t)/E(0) − 1|` over the run.
+    /// Largest `|E(t)/E(0) − 1|` over the run, in either direction.
     worst_energy_drift: f64,
-    /// Largest `|Σh(t) − Σh(0)|`, as a fraction of the largest volume anomaly
-    /// the initial condition could hold, `A·(number of cells)`.
-    worst_volume_drift: f64,
+    /// Largest `E(t)/E(0) − 1` over the run, counting only the excursions in
+    /// which the energy *rose*. Zero for a run that never gained any.
+    worst_energy_gain: f64,
     /// Largest kinetic fraction `KE(t)/E(0)` the run reached.
     peak_kinetic_fraction: f64,
 }
 
 /// One undamped, unforced run of [`LONG_RUN_CROSSINGS`] basin crossings at
 /// `cells_y` meridional cells, at the CFL-safe timestep.
-fn measure(cells_y: usize) -> ConservationRun {
+fn measure_conservation_run(cells_y: usize) -> ConservationRun {
     let (grid, spacing) = basin(cells_y);
     let params = undamped_pacific_params();
     let wave_speed =
@@ -412,22 +417,16 @@ fn measure(cells_y: usize) -> ConservationRun {
 
     let mut state = gravest_zonal_mode(grid, spacing);
     let initial_energy = wave_energy(&state, params);
-    let initial_volume_m = volume_anomaly_m(&state);
-    // The largest `|Σh|` this initial condition could hold, and so the scale a
-    // drift in it is small or large compared with. The cosine's own `Σh` is
-    // zero by symmetry, which is why the ratio is not taken against it.
-    let volume_scale_m = H_AMPLITUDE_M * (grid.nx() * grid.ny()) as f64;
-    let calm = WindStress::calm(grid);
+    let calm = WindStressField::calm(grid);
 
     let mut worst_energy_drift = 0.0_f64;
-    let mut worst_volume_drift = 0.0_f64;
+    let mut worst_energy_gain = 0.0_f64;
     let mut peak_kinetic_fraction = 0.0_f64;
     for n in 0..steps {
         solver.step(&mut state, n as f64 * dt_s, |_t_s| &calm);
-        worst_energy_drift =
-            worst_energy_drift.max((wave_energy(&state, params) / initial_energy - 1.0).abs());
-        worst_volume_drift = worst_volume_drift
-            .max(((volume_anomaly_m(&state) - initial_volume_m) / volume_scale_m).abs());
+        let relative_drift = wave_energy(&state, params) / initial_energy - 1.0;
+        worst_energy_drift = worst_energy_drift.max(relative_drift.abs());
+        worst_energy_gain = worst_energy_gain.max(relative_drift);
         peak_kinetic_fraction =
             peak_kinetic_fraction.max(kinetic_energy(&state, params) / initial_energy);
     }
@@ -438,7 +437,7 @@ fn measure(cells_y: usize) -> ConservationRun {
         dt_s,
         steps,
         worst_energy_drift,
-        worst_volume_drift,
+        worst_energy_gain,
         peak_kinetic_fraction,
     }
 }
@@ -458,7 +457,7 @@ fn conservation_study() -> &'static [ConservationRun] {
         std::thread::scope(|scope| {
             let runs: Vec<_> = MERIDIONAL_RESOLUTIONS
                 .iter()
-                .map(|&cells_y| scope.spawn(move || measure(cells_y)))
+                .map(|&cells_y| scope.spawn(move || measure_conservation_run(cells_y)))
                 .collect();
             runs.into_iter()
                 .map(|run| run.join().expect("a conservation run must not panic"))
@@ -531,20 +530,24 @@ fn the_conservation_run_exchanges_energy_between_potential_and_kinetic_form() {
 }
 
 #[test]
-fn the_upper_layers_volume_anomaly_is_conserved_to_rounding_over_the_long_run() {
-    // The other conserved quantity of the undamped, unforced limit, and the
-    // one the scheme conserves *exactly*: `Σh` is a linear invariant, so
-    // nothing but floating-point rounding may move it. A drift larger than
-    // that is mass appearing or disappearing inside the basin.
+fn an_undamped_unforced_run_never_gains_energy_past_the_skewness_bound() {
+    // The half of the acceptance criterion that rests on nothing estimated.
+    // RK4 has `|R(i·θ)| ≤ 1` everywhere inside the CFL bound the solver
+    // enforces, so the time discretisation can only *remove* energy from this
+    // system; every joule the basin gains has to come from the Coriolis pair's
+    // skewness defect, whose excursion is the `(1/4)·(Δy/Le)²` of §1 alone.
+    // No frequency estimate enters, so this bound holds whatever the run's
+    // spectrum turns out to be.
     for run in conservation_study() {
-        let bound = volume_drift_bound(run.steps);
+        let bound = coriolis_skewness_bound(run.dy_m);
         assert!(
-            run.worst_volume_drift <= bound,
-            "at {}x{} cells the upper layer's volume anomaly drifted by a relative {} \
-             over {} steps, past the rounding bound {bound}",
+            run.worst_energy_gain <= bound,
+            "at {}x{} cells the energy rose by a relative {} over {} steps \
+             ({LONG_RUN_CROSSINGS} basin crossings), past the skewness bound {bound}; \
+             RK4 cannot add energy, so nothing else could have put it there",
             BASIN_CELLS_X,
             run.cells_y,
-            run.worst_volume_drift,
+            run.worst_energy_gain,
             run.steps,
         );
     }
