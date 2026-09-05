@@ -4,12 +4,25 @@ disable-model-invocation: true
 description: "Run a wave of parallel ticket workers via orca and own the serial merge lane."
 ---
 
-Drive the Pacific Thermocline backlog: dispatch up to **4** workers into orca
+Drive the Pacific Thermocline backlog: dispatch up to **3** workers into orca
 worktrees, supervise them, and merge their pull requests one at a time.
 
 Two jobs, and the second is the one that keeps `main` honest:
 
-- **Dispatch** — keep the ready frontier busy, never exceeding 4 in flight.
+- **Dispatch** — keep the ready frontier busy, never exceeding 3 in flight.
+  **Memory is the binding constraint, not build time.** Each worktree is a full
+  checkout with its own `cargo` target directory (no cache shared between them)
+  plus a Claude process; four at once drove a 32 GB machine to under 2 GB free
+  and the OS started killing background commands. Check before dispatching a
+  full wave:
+
+  ```
+  vm_stat | awk '/page size/{ps=$8} /Pages free/{f=$3} /Pages inactive/{i=$3} \
+    END{printf "free+inactive: %.1f GB\n", (f+i)*4096/1073741824}'
+  ```
+
+  Remove finished worktrees promptly — a stale `target/` is a gigabyte doing
+  nothing.
 - **The merge lane** — merge exactly one PR at a time. GitHub's merge queue is
   unavailable on this repo (it needs an organization owner), so concurrent
   green PRs can each pass alone and still break `main` together. The lane is
@@ -57,7 +70,7 @@ tickets.
 1. `orca orchestration task-list --ready --json` — the frontier. This is
    external memory: it survives your context being compacted, so trust it over
    your own recollection of what is in flight.
-2. Dispatch up to 4 concurrent, preferring tickets whose files do not overlap:
+2. Dispatch up to 3 concurrent, preferring tickets whose files do not overlap:
 
 ```
 orca orchestration worker-start --task <t> --worktree new-top-level \
@@ -88,7 +101,7 @@ orca orchestration check --wait --types worker_done,escalation,question \
    yourself or surface it to the user; an escalation is a decision a worker
    correctly refused to make alone.
 5. On `worker_done`, take the merge lane below, then
-   `orca orchestration worker-release --dispatch <d>` and refill to 4.
+   `orca orchestration worker-release --dispatch <d>` and refill to 3.
 
 **Order matters in cleanup.** Wait for `worker_done`, then release, then remove
 the worktree. Removing a worktree while its agent is still live kills the
