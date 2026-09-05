@@ -1,7 +1,11 @@
 # ADR-0002: Visualizer language — Rust (not Flutter/Dart) for v1
 
 ## Status
-Accepted, revisitable
+Accepted, revisitable. **Extended by
+[ADR-0006](0006-web-visualizer.md)**: the visualizer must also run in a
+browser. The language choice below stands — `eframe` compiles to
+`wasm32` — but the "desktop scientific tool" framing and the `plotters`
+suggestion are superseded there.
 
 ## Context
 The engine must be Rust (hard requirement, performance-critical numerical
