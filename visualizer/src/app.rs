@@ -14,7 +14,9 @@ use egui::{Color32, RichText};
 
 use crate::loading::Loaded;
 use crate::run::SECONDS_PER_DAY;
-use crate::{DivergingScale, Heatmap, LoadedRun, Loader, PendingRun, Scrubber, WindOverlay};
+use crate::{
+    DivergingScale, Heatmap, LoadedRun, Loader, PendingRun, Playback, Scrubber, WindOverlay,
+};
 
 /// What the central panel is showing.
 enum Shown {
@@ -345,12 +347,18 @@ const ARROW_CASING_WIDTH_PT: f32 = 3.0;
 /// What is left is one frame decoded, colour-mapped and uploaded per frame the
 /// reader actually asks for, which is the work the drag is for.
 ///
+/// Playback (T-09.2) adds nothing to that: it writes the scrubber's index and
+/// nothing else, so a played frame and a dragged one cost the same, and a
+/// paused run — which is how a run loads — asks for no repaint at all.
+///
 /// The wind overlay rides on that same [`Attempt`]: it is built with the frame
 /// and drawn from geometry, so neither showing it nor hiding it is a reason to
 /// rebuild anything, and it adds nothing per frame a drag passes through.
 struct BasinMap {
     /// The frame the reader has chosen, and the ways they choose another.
     scrubber: Scrubber,
+    /// The clock that chooses frames on the reader's behalf.
+    playback: Playback,
     /// Whether the wind-stress overlay is drawn over the map.
     show_wind: bool,
     /// The last attempt at drawing a frame, if there has been one.
@@ -363,6 +371,11 @@ impl Default for BasinMap {
     fn default() -> Self {
         Self {
             scrubber: Scrubber::default(),
+            // Paused, as `crate::playback` says: a run that started moving on
+            // load would be off its first frame before the header had been
+            // read, and it is also what leaves an idle repaint with nothing to
+            // rebuild.
+            playback: Playback::new(),
             // On by default: the forcing is why the map looks the way it does,
             // and a reader who does not know the overlay exists cannot ask for
             // it.
@@ -420,6 +433,9 @@ impl BasinMap {
     /// choice rather than the run's, so it survives.
     fn forget(&mut self) {
         self.scrubber = Scrubber::new();
+        // The clock was playing the run that has just gone; the speed it was
+        // playing at is the reader's choice, so that stays.
+        self.playback.pause();
         self.attempt = None;
         self.bar = None;
     }
@@ -432,7 +448,13 @@ impl BasinMap {
             ui.label("This run holds no frames to draw.");
             return;
         }
+        // The clock before the controls: the frame this repaint draws is the
+        // one whatever time has passed since the last one has bought, and
+        // every affordance below writes the same index it does.
+        self.playback
+            .advance(&mut self.scrubber, f64::from(ui.input(|i| i.stable_dt)));
         self.scrubber.draw(ui, keyboard_free);
+        self.playback.draw(ui, &mut self.scrubber, keyboard_free);
         // The overlay is drawn over the map, never into it: nothing the map is
         // built from depends on this.
         ui.checkbox(&mut self.show_wind, "Wind stress τ");
@@ -709,6 +731,32 @@ mod tests {
         let mut map = BasinMap::default();
         let first = repaint(&ctx, &mut map, &run);
         assert_eq!(repaint(&ctx, &mut map, &run), first);
+    }
+
+    #[test]
+    fn playing_carries_the_panel_to_the_end_of_the_run_and_stops_there() {
+        let (ctx, run) = (egui::Context::default(), run());
+        let mut map = BasinMap::default();
+        let (first_map, first_bar) = repaint(&ctx, &mut map, &run);
+        map.playback.set_frames_per_second(60.0);
+        map.playback.play(&mut map.scrubber);
+        // Sixty frames a second and a repaint loop that runs at rather less
+        // than sixty hertz: ten repaints is far more than the three frames of
+        // this run, so what is asserted is where it stopped, not how fast.
+        let mut last = first_map;
+        for _ in 0..10 {
+            let (drawn, bar) = repaint(&ctx, &mut map, &run);
+            last = drawn;
+            // The scale is the run's, so playing through it rebuilds no bar.
+            assert_eq!(bar, first_bar);
+        }
+        assert_eq!(
+            map.scrubber.index(),
+            map.scrubber.last().expect("this run has frames"),
+            "playback stops at the last frame"
+        );
+        assert!(!map.playback.is_playing());
+        assert_ne!(last, first_map, "and the panel is drawing it");
     }
 
     #[test]

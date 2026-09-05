@@ -7,8 +7,8 @@ engine's simulation code ([ADR-0001](../docs/planning/adr/0001-engine-visualizer
 Binary: `termocline-viz`. It loads a run — dropped files, a `?run=` URL, or a
 directory natively — and draws the thermocline depth anomaly `h` of one chosen
 frame as a colour map over the basin, with the wind stress `τ` that forced it
-drawn over the top as arrows. Time series, cross-sections and playback land in
-Epic 09.
+drawn over the top as arrows — or plays the run through. Time series and
+cross-sections land in Epic 09.
 
 The frame on screen is chosen with the scrubber above the map: drag it, step a
 frame at a time with the arrow keys or the buttons beside it, a page of ten
@@ -16,6 +16,15 @@ with Page Up and Page Down, or jump to either end of the run with Home and End.
 Any frame costs one decode wherever it sits in the run — the offset of each is
 noted when the run is loaded (`src/run.rs`) — so dragging across a 731-frame
 run does not get slower the further right it goes.
+
+Playback is that same chooser driven by the clock instead of by a hand. ▶ Play
+(or the space bar) starts it, the speed menu beside it picks how many frames a
+second of real time it spends — a frame is a day under `steady-trades.toml`, so
+thirty frames a second is a month a second — and it stops on the last frame
+rather than looping. Pausing holds the frame it stopped on; on the last frame
+the button reads ↻ Replay and starts the run over. A run opens paused, and a paused run asks for no
+repaint, so nothing here costs anything until it is used. `src/playback.rs` has
+the rest.
 
 The colour scale is ColorBrewer's 11-class `RdBu`, reversed, diverging about
 zero: `h` is a signed anomaly, so zero is pinned to the neutral middle class
