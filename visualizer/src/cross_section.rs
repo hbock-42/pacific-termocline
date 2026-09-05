@@ -36,7 +36,7 @@
 //!
 //! [ADR-0006]: ../../docs/planning/adr/0006-web-visualizer.md
 
-use termocline_format::{FormatError, Frame, GridSpec, Variable};
+use termocline_format::{BasinExtent, FormatError, Frame, GridSpec, Variable};
 
 use crate::DivergingScale;
 
@@ -140,11 +140,14 @@ impl CrossSection {
         scale: DivergingScale,
     ) -> Result<Self, FormatError> {
         frame.validate(&grid)?;
-        let (width, _height) = grid
+        // Both extents come from the staggering `h` declares, rather than from
+        // the cell counts: the two agree for a cell-centred field, and taking
+        // them from one place is what keeps them agreeing.
+        let (width, height) = grid
             .grid()
             .field_shape(Variable::ThermoclineDepthAnomaly.staggering());
-        let extent = grid.extent();
-        let rows = equatorial_rows(grid);
+        let axis = MeridionalAxis::of(height, grid.extent());
+        let rows = axis.rows_nearest_the_equator();
         let h_m = frame.h();
         #[allow(clippy::cast_precision_loss)]
         let rows_per_point = rows.len() as f64;
@@ -156,15 +159,15 @@ impl CrossSection {
             points.push(CrossSectionPoint {
                 x_fraction,
                 longitude_deg_east: longitude_at(
-                    extent.west_deg_east,
-                    extent.east_deg_east,
+                    grid.extent().west_deg_east,
+                    grid.extent().east_deg_east,
                     x_fraction,
                 ),
                 h_m: sum_m / rows_per_point,
             });
         }
         Ok(Self {
-            latitude_deg_north: mean_latitude_deg_north(grid, &rows),
+            latitude_deg_north: axis.mean_latitude_deg_north(&rows),
             rows_averaged: rows.len(),
             points,
             scale,
@@ -230,51 +233,69 @@ impl CrossSection {
     }
 }
 
-/// The rows of a cell-centred field nearest the equator: one, or the two that
-/// straddle it.
-fn equatorial_rows(grid: GridSpec) -> Vec<usize> {
-    let mut nearest = Vec::new();
-    let mut smallest_deg = f64::INFINITY;
-    let same_deg = row_spacing_deg(grid).abs() * SAME_DISTANCE_FRACTION;
-    for j in 0..grid.ny() {
-        let distance_deg = latitude_of_row_deg_north(grid, j).abs();
-        if distance_deg < smallest_deg - same_deg {
-            smallest_deg = distance_deg;
-            nearest.clear();
-        }
-        if distance_deg <= smallest_deg + same_deg {
-            smallest_deg = smallest_deg.min(distance_deg);
-            nearest.push(j);
+/// The basin's meridional axis, as a cell-centred field sees it: how many rows
+/// it has, and where each one sits.
+///
+/// One type rather than four functions each re-deriving the row spacing from a
+/// [`GridSpec`]. The rows are the field's own, not the grid's cell count, so
+/// nothing here has to assume the two agree.
+#[derive(Debug, Clone, Copy)]
+struct MeridionalAxis {
+    /// Rows of cell centres on the axis.
+    rows: usize,
+    /// The basin's southern boundary, in degrees north.
+    south_deg_north: f64,
+    /// The meridional size of one cell, in degrees.
+    spacing_deg: f64,
+}
+
+impl MeridionalAxis {
+    /// The axis of a field `rows` rows tall over `extent`.
+    fn of(rows: usize, extent: BasinExtent) -> Self {
+        #[allow(clippy::cast_precision_loss)]
+        let spacing_deg = (extent.north_deg_north - extent.south_deg_north) / rows as f64;
+        Self {
+            rows,
+            south_deg_north: extent.south_deg_north,
+            spacing_deg,
         }
     }
-    nearest
-}
 
-/// The mean latitude of `rows`, in degrees north: the latitude the section was
-/// read at.
-fn mean_latitude_deg_north(grid: GridSpec, rows: &[usize]) -> f64 {
-    let sum_deg: f64 = rows
-        .iter()
-        .map(|&j| latitude_of_row_deg_north(grid, j))
-        .sum();
-    #[allow(clippy::cast_precision_loss)]
-    let count = rows.len() as f64;
-    sum_deg / count
-}
+    /// The latitude of the centres of row `j`, in degrees north.
+    fn latitude_deg_north(self, j: usize) -> f64 {
+        #[allow(clippy::cast_precision_loss)]
+        let offset = j as f64 + 0.5;
+        offset.mul_add(self.spacing_deg, self.south_deg_north)
+    }
 
-/// The latitude of the centres of row `j`, in degrees north.
-fn latitude_of_row_deg_north(grid: GridSpec, j: usize) -> f64 {
-    #[allow(clippy::cast_precision_loss)]
-    let offset = j as f64 + 0.5;
-    offset.mul_add(row_spacing_deg(grid), grid.extent().south_deg_north)
-}
+    /// The rows nearest the equator: one where a row sits on it, or the two
+    /// that straddle it.
+    fn rows_nearest_the_equator(self) -> Vec<usize> {
+        let mut nearest = Vec::new();
+        let mut smallest_deg = f64::INFINITY;
+        let same_deg = self.spacing_deg.abs() * SAME_DISTANCE_FRACTION;
+        for j in 0..self.rows {
+            let distance_deg = self.latitude_deg_north(j).abs();
+            if distance_deg < smallest_deg - same_deg {
+                smallest_deg = distance_deg;
+                nearest.clear();
+            }
+            if distance_deg <= smallest_deg + same_deg {
+                smallest_deg = smallest_deg.min(distance_deg);
+                nearest.push(j);
+            }
+        }
+        nearest
+    }
 
-/// The meridional size of one cell, in degrees.
-fn row_spacing_deg(grid: GridSpec) -> f64 {
-    let extent = grid.extent();
-    #[allow(clippy::cast_precision_loss)]
-    let rows = grid.ny() as f64;
-    (extent.north_deg_north - extent.south_deg_north) / rows
+    /// The mean latitude of `rows`, in degrees north: the latitude a section
+    /// averaged over them was read at.
+    fn mean_latitude_deg_north(self, rows: &[usize]) -> f64 {
+        let sum_deg: f64 = rows.iter().map(|&j| self.latitude_deg_north(j)).sum();
+        #[allow(clippy::cast_precision_loss)]
+        let count = rows.len() as f64;
+        sum_deg / count
+    }
 }
 
 /// The longitude `fraction` of the way east across a basin running from

@@ -634,10 +634,7 @@ fn arrow_line(extent: usize) -> impl Iterator<Item = usize> {
 /// the east, linear between. T-07.4's equilibrium of this scenario, as in
 /// `tests/heatmap.rs`.
 fn tilt_field(nx: usize, ny: usize) -> Vec<f64> {
-    /// T-07.4's equilibrium `h` at the western wall, in metres.
-    const WESTERN_WALL_H_M: f64 = 38.2;
-    /// T-07.4's equilibrium `h` at the eastern wall, in metres.
-    const EASTERN_WALL_H_M: f64 = -28.2;
+    use common::{EASTERN_WALL_H_M, WESTERN_WALL_H_M};
     let mut field = Vec::with_capacity(nx * ny);
     for _ in 0..ny {
         for i in 0..nx {

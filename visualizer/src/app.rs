@@ -552,10 +552,13 @@ impl BasinMap {
         if self.show_wind {
             draw_wind_arrows(ui, map, drawn);
         }
-        draw_color_bar(ui, self.bar.as_ref().expect("a colour bar was just built"));
+        // Directly under the map and across exactly its width, so a longitude
+        // on the chart sits under the column of the map it came from. The
+        // colour bar goes below both: the scale is the same one.
         if self.show_section {
-            draw_cross_section(ui, &drawn.section);
+            draw_cross_section(ui, &drawn.section, map);
         }
+        draw_color_bar(ui, self.bar.as_ref().expect("a colour bar was just built"));
         if self.show_wind {
             ui.label(format!(
                 "Wind stress τ: the longest arrow is {:.3} N m^-2, the strongest in the run",
@@ -642,17 +645,27 @@ fn draw_color_bar(ui: &mut egui::Ui, bar: &ColorBar) {
 /// drawn, and the module that knows what `h` is never learns what a panel is
 /// ([`crate::cross_section`]).
 ///
+/// It is drawn across `map`, the rectangle the basin map landed in, rather
+/// than across the panel: the map is fitted to its own shape and so is
+/// narrower than the panel on a short window, and a chart wider than the map
+/// would put a longitude under the wrong column of it. The two views are only
+/// worth having together if a place on one is the same place on the other.
+///
 /// The line breaks where a point has no position: a `NaN` in `h` means the
 /// integration diverged there, and a segment drawn across the gap would claim
 /// a value the run never produced.
-fn draw_cross_section(ui: &mut egui::Ui, section: &CrossSection) {
+fn draw_cross_section(ui: &mut egui::Ui, section: &CrossSection, map: egui::Rect) {
     ui.label(format!(
         "Thermocline depth anomaly h {}",
         section_latitude(section)
     ));
-    let (chart, _response) = ui.allocate_exact_size(
+    let (row, _response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), CROSS_SECTION_HEIGHT_PT),
         egui::Sense::hover(),
+    );
+    let chart = egui::Rect::from_min_max(
+        egui::pos2(map.left(), row.top()),
+        egui::pos2(map.right(), row.bottom()),
     );
     let painter = ui.painter().with_clip_rect(chart);
     let axis = egui::Stroke::new(1.0, CROSS_SECTION_AXIS_COLOR);
@@ -718,7 +731,7 @@ fn draw_cross_section(ui: &mut egui::Ui, section: &CrossSection) {
 /// having its off-equator line labelled as the equator.
 fn section_latitude(section: &CrossSection) -> String {
     let latitude_deg_north = section.latitude_deg_north();
-    let where_ = if latitude_deg_north == 0.0 {
+    let read_at = if latitude_deg_north == 0.0 {
         "along the equator".to_owned()
     } else {
         format!(
@@ -728,8 +741,8 @@ fn section_latitude(section: &CrossSection) -> String {
         )
     };
     match section.rows_averaged() {
-        1 => format!("{where_}, on the row of cells there"),
-        rows => format!("{where_}, the mean of the {rows} rows nearest it"),
+        1 => format!("{read_at}, on the row of cells there"),
+        rows => format!("{read_at}, the mean of the {rows} rows nearest it"),
     }
 }
 
