@@ -37,7 +37,7 @@ const SECTION_ITEMS: &[(&str, &str)] = &[
 
 #[test]
 fn every_field_of_the_format_is_documented() {
-    for (marker, body) in documented_items() {
+    for (marker, body, _) in documented_items() {
         let in_source = fields_of(&body);
         let in_reference: BTreeSet<String> = documented_rows(&marker)
             .into_iter()
@@ -55,12 +55,15 @@ fn every_field_of_the_format_is_documented() {
 
 #[test]
 fn every_field_is_documented_as_required_or_optional_to_match_the_source() {
-    for (marker, body) in documented_items() {
+    for (marker, body, item_default) in documented_items() {
         for (name, row) in documented_rows(&marker) {
-            // What makes a field omittable is `#[serde(default)]` on its
-            // declaration, not its type: an `Option<f64>` without one is still
-            // a key the file has to carry.
-            let optional_in_source = is_optional(&body, &name);
+            // What makes a field omittable is `#[serde(default)]`, not its
+            // type: an `Option<f64>` without one is still a key the file has
+            // to carry. The attribute counts whether it sits on the field or
+            // on the item — `#[serde(default)]` on a struct makes every one of
+            // its fields omittable at once, which is how `[basin]` states a
+            // default basin.
+            let optional_in_source = item_default || is_optional(&body, &name);
             let documented_optional = row.to_lowercase().contains("optional");
             let documented_required = row.to_lowercase().contains("required");
 
@@ -127,17 +130,41 @@ fn every_worked_example_in_the_reference_is_a_scenario_the_engine_accepts() {
 /// The variants are discovered rather than listed, so that adding a forcing to
 /// the enum and forgetting to document it fails here — which is exactly the
 /// staleness this guard exists to catch.
-fn documented_items() -> Vec<(String, String)> {
-    let mut items: Vec<(String, String)> = SECTION_ITEMS
+fn documented_items() -> Vec<(String, String, bool)> {
+    let mut items: Vec<(String, String, bool)> = SECTION_ITEMS
         .iter()
-        .map(|(header, marker)| ((*marker).to_string(), item_body(SOURCE, header)))
+        .map(|(header, marker)| {
+            (
+                (*marker).to_string(),
+                item_body(SOURCE, header),
+                item_carries_default(SOURCE, header),
+            )
+        })
         .collect();
     let wind = item_body(SOURCE, "pub enum WindSection {");
+    let wind_default = item_carries_default(SOURCE, "pub enum WindSection {");
     for variant in wind_variants() {
         let body = item_body(&wind, &format!("{variant} {{"));
-        items.push((format!("WindSection::{variant}"), body));
+        items.push((format!("WindSection::{variant}"), body, wind_default));
     }
     items
+}
+
+/// Whether the item `header` opens carries `#[serde(default)]` on itself,
+/// which makes every one of its fields omittable without any of them saying
+/// so.
+///
+/// The attributes are the `#[…]` lines immediately above the declaration, so
+/// this reads back from the header to the first line that is not one.
+fn item_carries_default(source: &str, header: &str) -> bool {
+    let start = source
+        .find(header)
+        .unwrap_or_else(|| panic!("engine/src/scenario.rs no longer declares `{header}`"));
+    source[..start]
+        .lines()
+        .rev()
+        .take_while(|line| line.trim_start().starts_with("#["))
+        .any(|line| line.contains("serde(") && line.contains("default"))
 }
 
 /// The variants of `WindSection`, in declaration order: the `[[wind]]` types
