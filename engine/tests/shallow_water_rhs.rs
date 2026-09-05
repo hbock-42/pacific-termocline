@@ -11,6 +11,10 @@
 //! ∂h/∂t = −H·(∂u/∂x + ∂v/∂y)
 //! ```
 //!
+//! The Rayleigh damping T-02.4 later folded into the same evaluation is
+//! `engine/tests/rayleigh_damping.rs`' business, not this file's; it shows up
+//! here only where a test's state makes it non-zero.
+//!
 //! Every expected value below is calculus done on paper — the derivatives of
 //! `sin(kx·x)·sin(ky·y)` and of a Gaussian bump — never the output of running
 //! this code. The spatial operators are the centred C-grid differences of
@@ -32,9 +36,10 @@ const PACIFIC_REDUCED_GRAVITY_M_PER_S2: f64 = 0.05;
 /// Mean thermocline depth `H` of the equatorial Pacific, in metres — the
 /// canonical 150 m upper layer of the same 1.5-layer configuration.
 const PACIFIC_MEAN_DEPTH_M: f64 = 150.0;
-/// Rayleigh damping `r`, in s⁻¹: a damping timescale of about two years. This
-/// ticket's terms do not read it — T-02.4 owns the damping — but a parameter
-/// set has to carry one.
+/// Rayleigh damping `r`, in s⁻¹: a damping timescale of about two years, the
+/// order quoted for the equatorial Pacific. Only the tests whose state is
+/// non-zero in the variable being checked see it; `engine/tests/
+/// rayleigh_damping.rs` is where the damping term itself is pinned down.
 const PACIFIC_DAMPING_PER_S: f64 = 1.0 / (2.0 * 365.0 * 86_400.0);
 
 /// Zonal extent of the test basin, in metres — the order of the equatorial
@@ -250,12 +255,22 @@ fn a_gaussian_bump_accelerates_the_current_outward() {
     }
 
     // The bump has not started moving yet: with `u = v = 0` the divergence is
-    // identically zero, so `∂h/∂t = −H·∇·(u, v)` is exactly zero — a sum of
-    // zeros, with no rounding to absorb.
-    assert!(
-        tendency.h().as_slice().iter().all(|rate| *rate == 0.0),
-        "a motionless ocean has no thickness tendency"
-    );
+    // identically zero — a sum of zeros, with no rounding to absorb — so the
+    // whole of `∂h/∂t` is the Rayleigh damping T-02.4 folded in, `−r·h`,
+    // exact to the one multiplication it costs.
+    let params = pacific_params();
+    for j in 0..tendency.h().ny() {
+        for i in 0..tendency.h().nx() {
+            let (x_m, y_m) = position_m(spacing, H_STAGGERING, i, j);
+            let expected =
+                -params.rayleigh_damping_per_s() * gaussian_bump_m(spacing, crest, x_m, y_m);
+            let rate = *tendency.h().get(i, j).expect("in-bounds");
+            assert!(
+                (rate - expected).abs() <= ROUNDING_TOLERANCE * expected.abs(),
+                "cell ({i}, {j}): a motionless ocean's thickness tendency is the damping alone, {expected} m/s, but it is {rate} m/s"
+            );
+        }
+    }
 }
 
 /// Crest of the test bump: the center of the middle cell of the basin.
