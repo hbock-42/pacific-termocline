@@ -16,7 +16,9 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/hbock-42/pacific-termocline"
 
 [workspace.dependencies]
-termocline-format = { path = "termocline-format" }
+# `fs` is opted into per crate: the visualizer's browser build has no
+# filesystem to give `RunReader::open` (ADR-0006).
+termocline-format = { path = "termocline-format", default-features = false }
 termocline-grid = { path = "termocline-grid" }
 termocline-numerics = { path = "termocline-numerics" }
 

@@ -6,6 +6,9 @@
 /runs/
 *.termocline
 
+# Trunk's browser build of the visualizer.
+/visualizer/dist/
+
 # OS / editor cruft
 .DS_Store
 .idea/

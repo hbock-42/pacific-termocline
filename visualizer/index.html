@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+    <title>Termocline visualizer</title>
+
+    <!-- Trunk compiles the crate to wasm and injects the loader here. The app
+         is started by `#[wasm_bindgen(start)]` in src/web.rs, so this page
+         needs no JavaScript of its own. -->
+    <link data-trunk rel="rust" data-target-name="visualizer" data-wasm-opt="2" />
+
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #1b1b1b;
+      }
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="termocline_canvas"></canvas>
+  </body>
+</html>

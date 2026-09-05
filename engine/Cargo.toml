@@ -12,7 +12,7 @@ bincode = { version = "2", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
-termocline-format.workspace = true
+termocline-format = { workspace = true, features = ["fs"] }
 termocline-grid.workspace = true
 termocline-numerics.workspace = true
 toml = { version = "0.9", default-features = false, features = ["parse", "display", "serde"] }
