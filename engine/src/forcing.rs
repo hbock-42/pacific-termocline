@@ -14,6 +14,10 @@
 //! two answer different questions — what the alizés look like in space, and
 //! how strong they are this month — and keeping them apart is what lets the
 //! composable burst of T-03.3 stack on either.
+//! Scenarios stack rather than exclude one another. A westerly wind burst is
+//! an anomaly *superimposed on* the trades (`CONTEXT.md`), and the equations
+//! are linear in the stress, so [`WindBurstAnomaly`] is a scenario in its own
+//! right and [`CompositeWind`] is the combinator that adds it to a base one.
 //!
 //! The solver cannot integrate a function, though. It needs the stress at the
 //! points its momentum equations live on, which on the Arakawa C-grid of
@@ -135,6 +139,29 @@ pub enum WindStressError {
         /// The value supplied, in seconds.
         peak_time_s: f64,
     },
+    /// The zonal stress of a burst was not westerly. A westerly wind burst is
+    /// an anomaly *against* the alizés (`CONTEXT.md`), which is `τx > 0`; a
+    /// negative or zero value describes a strengthening of the trades or no
+    /// burst at all, and either is a different scenario.
+    NotWesterly {
+        /// The zonal stress supplied, in Pa.
+        value_pa: f64,
+    },
+    /// A burst's duration was not a finite, strictly positive time.
+    DurationNotPositive {
+        /// The value supplied, in seconds.
+        value_s: f64,
+    },
+    /// A burst's zonal centre was not a finite position.
+    CenterNotAPosition {
+        /// The value supplied, in metres.
+        value_m: f64,
+    },
+    /// A burst's peak time was not a finite instant.
+    PeakTimeNotFinite {
+        /// The value supplied, in seconds.
+        value_s: f64,
+    },
 }
 
 impl fmt::Display for WindStressError {
@@ -158,6 +185,21 @@ impl fmt::Display for WindStressError {
                 f,
                 "peak_time_s is {peak_time_s} s; it must be a finite instant"
             ),
+            Self::NotWesterly { value_pa } => write!(
+                f,
+                "the peak zonal stress of the burst is {value_pa} Pa; a westerly wind burst \
+                 blows against the alizés, so it must be strictly positive"
+            ),
+            Self::DurationNotPositive { value_s } => write!(
+                f,
+                "duration_s is {value_s} s; it must be a finite, strictly positive time"
+            ),
+            Self::CenterNotAPosition { value_m } => {
+                write!(f, "center_x_m is {value_m} m; it must be a finite position")
+            }
+            Self::PeakTimeNotFinite { value_s } => {
+                write!(f, "peak_time_s is {value_s} s; it must be a finite instant")
+            }
         }
     }
 }
@@ -231,12 +273,7 @@ impl SteadyTradeWinds {
         meridional_decay_scale_m: f64,
     ) -> Result<Self, WindStressError> {
         check_easterly(equatorial_zonal_stress_pa)?;
-        if !meridional_decay_scale_m.is_finite() || meridional_decay_scale_m <= 0.0 {
-            return Err(WindStressError::ScaleNotPositive {
-                parameter: "meridional_decay_scale_m",
-                value_m: meridional_decay_scale_m,
-            });
-        }
+        check_scale("meridional_decay_scale_m", meridional_decay_scale_m)?;
         Ok(Self {
             equatorial_zonal_stress_pa,
             meridional_decay_scale_m: Some(meridional_decay_scale_m),
@@ -261,10 +298,7 @@ impl WindStress for SteadyTradeWinds {
     fn stress(&self, _x_m: f64, y_m: f64, _t_s: f64) -> (f64, f64) {
         let decay = match self.meridional_decay_scale_m {
             None => 1.0,
-            Some(scale_m) => {
-                let scaled = y_m / scale_m;
-                (-scaled * scaled).exp()
-            }
+            Some(scale_m) => gaussian(y_m, scale_m),
         };
         (self.equatorial_zonal_stress_pa * decay, CALM)
     }
@@ -376,6 +410,246 @@ fn check_easterly(value_pa: f64) -> Result<(), WindStressError> {
         return Ok(());
     }
     Err(WindStressError::NotEasterly { value_pa })
+}
+
+fn check_westerly(value_pa: f64) -> Result<(), WindStressError> {
+    if value_pa.is_finite() && value_pa > 0.0 {
+        return Ok(());
+    }
+    Err(WindStressError::NotWesterly { value_pa })
+}
+
+/// A length scale is a finite, strictly positive distance, whatever it scales.
+fn check_scale(parameter: &'static str, value_m: f64) -> Result<(), WindStressError> {
+    if value_m.is_finite() && value_m > 0.0 {
+        return Ok(());
+    }
+    Err(WindStressError::ScaleNotPositive { parameter, value_m })
+}
+
+/// `exp(−(offset / scale)²)`, the Gaussian factor every profile in this module
+/// is built from. `scale` is checked strictly positive at construction, so the
+/// division is safe.
+fn gaussian(offset: f64, scale: f64) -> f64 {
+    let scaled = offset / scale;
+    (-scaled * scaled).exp()
+}
+
+/// An idealized westerly wind burst: a positive-`τx` anomaly, Gaussian in `x`,
+/// in `y` about the equator, and in `t` (`CONTEXT.md`, *Westerly wind burst*).
+///
+/// ```text
+///                       ⎛   ⎛x − x₀⎞²⎞     ⎛   ⎛ y⎞²⎞     ⎛   ⎛t − t₀⎞²⎞
+/// τx(x, y, t) = τ_burst·exp⎜− ⎜──────⎟ ⎟·exp⎜− ⎜──⎟ ⎟·exp⎜− ⎜──────⎟ ⎟
+///                       ⎝   ⎝  Lx  ⎠ ⎠     ⎝   ⎝Ly⎠ ⎠     ⎝   ⎝  Lt  ⎠ ⎠
+/// ```
+///
+/// with `τ_burst > 0`, the opposite sign to the alizés: the burst blows
+/// *against* the trades, which is the perturbation known to trigger El Niño
+/// onset. It is meant to be added to a base scenario rather than to replace
+/// one — a burst on its own is not a state of the equatorial Pacific — and
+/// [`CompositeWind`] is what performs that addition.
+///
+/// The meridional Gaussian is centred on the equator, like
+/// [`SteadyTradeWinds`]'s: the bursts this models are equatorial, and the
+/// waveguide they are meant to excite is centred there too. The three factors
+/// multiply rather than combining into one distance, so each scale is
+/// independent — a burst can be broad and brief, or narrow and long-lived.
+///
+/// There is no meridional stress, for [`SteadyTradeWinds`]'s reason: a `τy`
+/// would drive an Ekman response the linear core has nothing to say about yet.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WindBurstAnomaly {
+    /// Peak zonal stress `τ_burst`, in Pa, at the centre of all three
+    /// Gaussians. Strictly positive — westerly.
+    peak_zonal_stress_pa: f64,
+    /// Zonal centre `x₀` of the burst, in metres.
+    center_x_m: f64,
+    /// Zonal `e`-folding scale `Lx`, in metres.
+    zonal_scale_m: f64,
+    /// Meridional `e`-folding scale `Ly`, in metres, about the equator.
+    meridional_scale_m: f64,
+    /// Instant `t₀` of the burst's peak, in seconds since the start of the run.
+    peak_time_s: f64,
+    /// Temporal `e`-folding scale `Lt`, in seconds — how long the burst lasts.
+    duration_s: f64,
+}
+
+impl WindBurstAnomaly {
+    /// A burst peaking at `peak_zonal_stress_pa` at `center_x_m` on the
+    /// equator, `peak_time_s` seconds into the run, and falling to `1/e` of
+    /// that at `zonal_scale_m` east or west of its centre, at
+    /// `meridional_scale_m` either side of the equator, and `duration_s`
+    /// before or after its peak.
+    ///
+    /// The realistic choice of `meridional_scale_m` is the equatorial
+    /// deformation radius `Le = √(c/β)` (`CONTEXT.md`) — the width of the
+    /// waveguide the burst is meant to excite — but every scale here is
+    /// scenario input, because they are exactly the knobs the forcing
+    /// sensitivity of Epic 07 varies.
+    ///
+    /// # Errors
+    /// [`WindStressError::NotWesterly`] unless the peak stress is strictly
+    /// positive, [`WindStressError::ScaleNotPositive`] unless both length
+    /// scales are finite, strictly positive distances,
+    /// [`WindStressError::DurationNotPositive`] unless the duration is a
+    /// finite, strictly positive time,
+    /// [`WindStressError::CenterNotAPosition`] unless the zonal centre is a
+    /// finite position, and [`WindStressError::PeakTimeNotFinite`] unless the
+    /// peak time is a finite instant.
+    pub fn new(
+        peak_zonal_stress_pa: f64,
+        center_x_m: f64,
+        zonal_scale_m: f64,
+        meridional_scale_m: f64,
+        peak_time_s: f64,
+        duration_s: f64,
+    ) -> Result<Self, WindStressError> {
+        check_westerly(peak_zonal_stress_pa)?;
+        check_scale("zonal_scale_m", zonal_scale_m)?;
+        check_scale("meridional_scale_m", meridional_scale_m)?;
+        if !duration_s.is_finite() || duration_s <= 0.0 {
+            return Err(WindStressError::DurationNotPositive {
+                value_s: duration_s,
+            });
+        }
+        if !center_x_m.is_finite() {
+            return Err(WindStressError::CenterNotAPosition {
+                value_m: center_x_m,
+            });
+        }
+        if !peak_time_s.is_finite() {
+            return Err(WindStressError::PeakTimeNotFinite {
+                value_s: peak_time_s,
+            });
+        }
+        Ok(Self {
+            peak_zonal_stress_pa,
+            center_x_m,
+            zonal_scale_m,
+            meridional_scale_m,
+            peak_time_s,
+            duration_s,
+        })
+    }
+
+    /// Peak zonal stress `τ_burst`, in Pa.
+    #[must_use]
+    pub const fn peak_zonal_stress_pa(self) -> f64 {
+        self.peak_zonal_stress_pa
+    }
+
+    /// Zonal centre `x₀` of the burst, in metres.
+    #[must_use]
+    pub const fn center_x_m(self) -> f64 {
+        self.center_x_m
+    }
+
+    /// Zonal `e`-folding scale `Lx`, in metres.
+    #[must_use]
+    pub const fn zonal_scale_m(self) -> f64 {
+        self.zonal_scale_m
+    }
+
+    /// Meridional `e`-folding scale `Ly`, in metres.
+    #[must_use]
+    pub const fn meridional_scale_m(self) -> f64 {
+        self.meridional_scale_m
+    }
+
+    /// Instant `t₀` of the burst's peak, in seconds since the start of the run.
+    #[must_use]
+    pub const fn peak_time_s(self) -> f64 {
+        self.peak_time_s
+    }
+
+    /// Temporal `e`-folding scale `Lt` of the burst, in seconds.
+    #[must_use]
+    pub const fn duration_s(self) -> f64 {
+        self.duration_s
+    }
+}
+
+impl WindStress for WindBurstAnomaly {
+    fn stress(&self, x_m: f64, y_m: f64, t_s: f64) -> (f64, f64) {
+        let envelope = gaussian(x_m - self.center_x_m, self.zonal_scale_m)
+            * gaussian(y_m, self.meridional_scale_m)
+            * gaussian(t_s - self.peak_time_s, self.duration_s);
+        (self.peak_zonal_stress_pa * envelope, CALM)
+    }
+}
+
+/// Several wind scenarios blowing at once: the pointwise sum of its
+/// components.
+///
+/// The combinator the burst needs. `CONTEXT.md` calls a westerly wind burst an
+/// anomaly *superimposed on* the trades, and the equations are linear in the
+/// stress, so "superimposed on" is addition — a burst is stacked on a base
+/// scenario rather than replacing it, and the same holds for the seasonal
+/// modulation of T-03.2 or any pair of them together.
+///
+/// An empty composite is calm, so a scenario with no forcing at all is the
+/// zero of this combinator rather than a special case. Components are summed
+/// in the order they were added, which fixes the floating-point result and so
+/// keeps runs deterministic (CODING_STANDARDS.md § Correctness and failure).
+#[derive(Default)]
+pub struct CompositeWind {
+    /// The components, in the order they will be summed.
+    components: Vec<Box<dyn WindStress>>,
+}
+
+impl CompositeWind {
+    /// A composite of nothing at all: a calm ocean surface.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// This composite with `wind` added to it, by value — the builder form,
+    /// for assembling a scenario in one expression.
+    #[must_use]
+    pub fn with<W: WindStress + 'static>(mut self, wind: W) -> Self {
+        self.push(wind);
+        self
+    }
+
+    /// Add `wind` to this composite, in place.
+    pub fn push<W: WindStress + 'static>(&mut self, wind: W) {
+        self.components.push(Box::new(wind));
+    }
+
+    /// How many components this composite sums.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.components.len()
+    }
+
+    /// Whether this composite has no components at all, and is therefore calm.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.components.is_empty()
+    }
+}
+
+impl WindStress for CompositeWind {
+    fn stress(&self, x_m: f64, y_m: f64, t_s: f64) -> (f64, f64) {
+        self.components
+            .iter()
+            .fold((CALM, CALM), |(tau_x_pa, tau_y_pa), component| {
+                let (component_x_pa, component_y_pa) = component.stress(x_m, y_m, t_s);
+                (tau_x_pa + component_x_pa, tau_y_pa + component_y_pa)
+            })
+    }
+}
+
+impl fmt::Debug for CompositeWind {
+    /// A `WindStress` is a function rather than data, so a composite can only
+    /// report how many of them it holds.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CompositeWind")
+            .field("components", &self.components.len())
+            .finish()
+    }
 }
 
 /// A surface wind stress field over one basin, in pascals: a [`WindStress`]

@@ -46,12 +46,13 @@ pub use state::OceanState;
 pub use basin::{Basin, BasinError};
 
 /// Re-exported so a scenario names one wind forcing: the [`forcing::WindStress`]
-/// trait a scenario implements, the scenarios that implement it, and the
-/// [`forcing::WindStressField`] the solver
-/// actually reads.
+/// trait a scenario implements, the scenarios that implement it, the
+/// [`forcing::WindStressField`] the solver actually reads, and the
+/// [`forcing::CompositeWind`] that stacks an anomaly such as
+/// [`forcing::WindBurstAnomaly`] on a base scenario.
 pub use forcing::{
-    SeasonalTradeWinds, SteadyTradeWinds, WindStress, WindStressError, WindStressField,
-    TROPICAL_YEAR_S,
+    CompositeWind, SeasonalTradeWinds, SteadyTradeWinds, WindBurstAnomaly, WindStress,
+    WindStressError, WindStressField, TROPICAL_YEAR_S,
 };
 
 /// Re-exported so binaries and the visualizer agree on one format version, and
