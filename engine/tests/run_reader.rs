@@ -149,11 +149,7 @@ fn write_run<W: std::io::Write>(
     let plane = BetaPlane::centered_on_equator(params(), spacing, grid);
     let mut solver =
         Solver::new(grid, spacing, params(), plane, dt_s).expect("half the CFL maximum is stable");
-    let wind = WindStressField::uniform_including_walls(
-        grid,
-        TRADE_WIND_STRESS_X_PA,
-        TRADE_WIND_STRESS_Y_PA,
-    );
+    let wind = WindStressField::uniform(grid, TRADE_WIND_STRESS_X_PA, TRADE_WIND_STRESS_Y_PA);
 
     let mut state = initial_state(grid);
     let mut written = Vec::new();

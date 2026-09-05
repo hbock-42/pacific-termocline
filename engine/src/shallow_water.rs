@@ -29,16 +29,13 @@
 //!
 //! That skewness is a summation by parts whose boundary term is `h·u` at the
 //! walls, so the identity is exact only while the wall faces carry no
-//! velocity. This module cannot promise that: it zeroes the *pressure
-//! gradient* on a wall, which leaves a wall velocity to decay at `−r` rather
-//! than forcing it to zero, and until Epic 04 gives the boundary a condition
-//! of its own nothing here stops a stress applied at the wall from starting
-//! one. A basin whose walls start and stay at rest — the unforced perturbation
-//! the criterion is about — is inside the guarantee. So, in practice, is a
-//! wind-driven one: a [`WindStressField`] sampled from a
-//! [`WindStress`](crate::WindStress) leaves the wall faces at exactly zero for
-//! this reason (see the `forcing` module's header). Closing the budget for a
-//! wall velocity that arrives some other way is still Epic 04's.
+//! velocity. This module cannot promise that on its own: it zeroes the
+//! *pressure gradient* on a wall, which leaves a wall velocity to decay at
+//! `−r` rather than forcing it to zero, and nothing here stops a stress
+//! applied at the wall from starting one. What does is the boundary condition
+//! of T-04.2: [`NoNormalFlow`](crate::NoNormalFlow) holds the wall velocities
+//! at exactly zero at every RK4 stage, so the boundary term vanishes for all
+//! time and the budget closes however the basin is forced.
 //!
 //! The spatial derivatives come from `termocline-numerics`, which is where the
 //! C-grid neighbour arithmetic lives. Two consequences are worth stating,
@@ -47,7 +44,7 @@
 //! - A center→face difference is undefined on the basin's four boundary faces,
 //!   which have a cell on one side only; the operators write zero there. So on
 //!   a wall the acceleration this module produces is the wind stress alone,
-//!   until Epic 04 gives the boundary a condition of its own.
+//!   and the solver's boundary condition is what discards it.
 //! - A face→center difference is defined at every cell, so `∂h/∂t` has no such
 //!   gap.
 

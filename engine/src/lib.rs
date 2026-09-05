@@ -20,6 +20,7 @@
 #![warn(missing_docs)]
 
 pub mod basin;
+pub mod boundary;
 pub mod coriolis;
 pub mod forcing;
 pub mod inspect;
@@ -53,6 +54,10 @@ pub use state::OceanState;
 /// Re-exported so a scenario, the forcing and the rotation all name one
 /// basin geometry.
 pub use basin::{Basin, BasinBounds, BasinBoundsError, BasinError};
+
+/// Re-exported so the solver and its tests name one boundary condition: the
+/// closed basin's no-normal-flow walls.
+pub use boundary::NoNormalFlow;
 
 /// Re-exported so a scenario names one wind forcing: the [`forcing::WindStress`]
 /// trait a scenario implements, the scenarios that implement it, the

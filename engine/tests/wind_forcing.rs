@@ -375,29 +375,32 @@ fn sampling_puts_each_component_on_the_faces_its_equation_lives_on() {
 }
 
 #[test]
-fn the_closed_basins_walls_carry_no_sampled_stress() {
-    // The rule the `forcing` module header derives at length: a wall face has
-    // water on one side only, so a sampled field leaves it at exactly zero. It
-    // is what keeps a wind-driven closed basin closed until T-04.2 gives the
-    // boundary a condition of its own — without it the coasts pass water and
-    // the basin never tilts at all.
+fn the_alizes_blow_over_the_coast_too() {
+    // A sampled field reports the wind's stress at every face it has, the
+    // basin's wall lines included: a uniform trade wind is uniform, and the
+    // discretisation does not edit it.
+    //
+    // T-03.1 did edit it, zeroing the wall faces as an interim stand-in for a
+    // boundary condition, because a stress at the coast opened the basin and
+    // the thermocline tilted the wrong way. T-04.2 replaced that stand-in with
+    // no-normal-flow at the solver (`tests/no_normal_flow.rs`), which is what
+    // keeps the tilt below the right way round — so the stress is free to say
+    // what it is again.
     let basin = equatorial_basin(NARROWING_BASIN_CELLS[0]);
     let winds = SteadyTradeWinds::uniform(TRADE_WIND_STRESS_PA)
         .expect("an easterly stress is a trade wind");
 
     let field = WindStressField::sampled(basin, &winds, 0.0);
 
-    let (nx, ny) = (basin.grid().nx(), basin.grid().ny());
+    let nx = basin.grid().nx();
     for j in 0..field.tau_x_pa().ny() {
-        assert_eq!(*field.tau_x_pa().get(0, j).expect("the western wall"), 0.0);
-        assert_eq!(*field.tau_x_pa().get(nx, j).expect("the eastern wall"), 0.0);
-    }
-    for i in 0..field.tau_y_pa().nx() {
-        assert_eq!(*field.tau_y_pa().get(i, 0).expect("the southern wall"), 0.0);
-        assert_eq!(
-            *field.tau_y_pa().get(i, ny).expect("the northern wall"),
-            0.0
-        );
+        for (wall, i) in [("western", 0), ("eastern", nx)] {
+            assert_eq!(
+                *field.tau_x_pa().get(i, j).expect("a wall face"),
+                TRADE_WIND_STRESS_PA,
+                "the {wall} wall at row {j} must carry the wind's own stress"
+            );
+        }
     }
 }
 
@@ -414,7 +417,7 @@ fn re_sampling_in_place_writes_every_point() {
     .expect("an easterly stress with a positive decay scale");
     let expected = WindStressField::sampled(basin, &winds, 0.0);
 
-    let mut field = WindStressField::uniform_including_walls(basin.grid(), 1.0, -1.0);
+    let mut field = WindStressField::uniform(basin.grid(), 1.0, -1.0);
     field.sample(basin, &winds, 0.0);
 
     assert_eq!(field, expected);

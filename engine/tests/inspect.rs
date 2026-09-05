@@ -166,11 +166,7 @@ fn write_run_to_files(dir: &Path) {
     let plane = BetaPlane::centered_on_equator(params(), spacing, grid);
     let mut solver = Solver::new(grid, spacing, params(), plane, DT_S)
         .expect("a 15-minute step is inside this basin's CFL bound");
-    let wind = WindStressField::uniform_including_walls(
-        grid,
-        TRADE_WIND_STRESS_X_PA,
-        TRADE_WIND_STRESS_Y_PA,
-    );
+    let wind = WindStressField::uniform(grid, TRADE_WIND_STRESS_X_PA, TRADE_WIND_STRESS_Y_PA);
 
     let mut state = OceanState::at_rest(grid);
     *state

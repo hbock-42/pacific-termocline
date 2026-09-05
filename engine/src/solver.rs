@@ -25,7 +25,17 @@
 //! do not care about latitude testable without one. Composing them is this
 //! module's whole job, and the order is fixed by their contracts — the
 //! shallow-water evaluator *writes* every point of the tendency, the Coriolis
-//! term *adds* to it.
+//! term *adds* to it, and [`NoNormalFlow`] overrules both at the walls.
+//!
+//! # The closed basin
+//!
+//! [`NoNormalFlow`] is applied here rather than inside either evaluator,
+//! because it is a statement about the *system being integrated* rather than
+//! about any one term: the normal velocity at a coast is not a degree of
+//! freedom, so no term may accelerate it. A step therefore puts the incoming
+//! state on the condition once, and holds the walls at rest at each of RK4's
+//! four stages; the `boundary` module explains why both, and why per stage
+//! rather than per step.
 //!
 //! # What the solver owns, and why
 //!
@@ -67,6 +77,8 @@
 use termocline_grid::Grid;
 
 use crate::basin::Basin;
+
+use crate::boundary::NoNormalFlow;
 use crate::coriolis::{BetaPlane, CoriolisTerm};
 use crate::forcing::{WindStress, WindStressField};
 use crate::integrator::Rk4;
@@ -225,6 +237,13 @@ impl Solver {
     /// because the seasonal and burst scenarios of Epic 03 are, and a step
     /// that sampled a varying stress once would integrate the wrong forcing.
     ///
+    /// `state` is brought onto the closed basin's boundary condition on the
+    /// way in: a normal velocity at a wall is not a degree of freedom, so a
+    /// state handed in carrying one has it set to zero rather than integrated
+    /// (see [`NoNormalFlow`]). That is stated here because it is a write the
+    /// caller did not ask for — everything the step does *after* it preserves
+    /// the condition exactly, so only a state that arrives off it is changed.
+    ///
     /// # Panics
     /// If `state` or a returned wind stress covers a different basin from the
     /// one this solver was built for. A shape mismatch means the calling code
@@ -243,15 +262,18 @@ impl Solver {
             integrator,
             stage_stress: _,
         } = self;
+        NoNormalFlow::apply_to_state(state);
         integrator.step(
             state,
             t_s,
             *dt_s,
             &mut |now: &OceanState, stage_t_s: f64, tendency: &mut OceanState| {
                 // Order matters: the shallow-water evaluator writes every point
-                // of the tendency, and the Coriolis term adds to what it wrote.
+                // of the tendency, the Coriolis term adds to what it wrote, and
+                // the boundary condition has the last word over both.
                 rhs.evaluate(now, wind_stress_at(stage_t_s), tendency);
                 coriolis.add_to_tendency(now, tendency);
+                NoNormalFlow::apply_to_tendency(tendency);
             },
         );
     }
@@ -267,6 +289,9 @@ impl Solver {
     ///
     /// Sampling writes into a buffer the solver owns, so a whole run allocates
     /// its forcing exactly once (CODING_STANDARDS.md § Performance).
+    ///
+    /// `state` is brought onto the boundary condition on the way in, exactly
+    /// as in [`Solver::step`].
     ///
     /// # Panics
     /// If `state` or `basin` covers a different grid from the one this solver
@@ -286,6 +311,7 @@ impl Solver {
             integrator,
             stage_stress,
         } = self;
+        NoNormalFlow::apply_to_state(state);
         integrator.step(
             state,
             t_s,
@@ -294,6 +320,7 @@ impl Solver {
                 stage_stress.sample(basin, wind, stage_t_s);
                 rhs.evaluate(now, stage_stress, tendency);
                 coriolis.add_to_tendency(now, tendency);
+                NoNormalFlow::apply_to_tendency(tendency);
             },
         );
     }

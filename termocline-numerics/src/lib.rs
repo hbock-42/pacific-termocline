@@ -120,8 +120,8 @@ impl CGridOperators {
     ///
     /// The basin's western and eastern boundary faces have a cell on one side
     /// only and are set to zero rather than to a one-sided guess. They are the
-    /// closed basin's walls, where boundary conditions (Epic 04) have the last
-    /// word.
+    /// closed basin's walls, where the engine's no-normal-flow condition
+    /// (T-04.2) has the last word.
     ///
     /// # Panics
     /// If either field's shape does not match [`CGridOperators::grid`].
@@ -392,8 +392,8 @@ const FOUR_POINT_AVERAGE_WEIGHT: f64 = AVERAGE_WEIGHT * AVERAGE_WEIGHT;
 /// This is a stated contract, not a quiet substitution: these operators define
 /// the interior faces and reset the two boundary lines, so a reused buffer
 /// cannot leak a previous step's values into a face nobody computed. Zero is
-/// the value a closed wall carries until Epic 04 gives the boundary a
-/// condition of its own, and
+/// the value a closed wall carries, which the engine's no-normal-flow
+/// condition (T-04.2) then holds it at, and
 /// [`CGridOperators::center_to_face_x`] and its siblings say so on the way in.
 /// It is deliberately not a NaN: an RK4 stage multiplies the wall by a normal
 /// velocity that is itself zero there, and a NaN would poison the whole field.

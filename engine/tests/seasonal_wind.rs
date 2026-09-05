@@ -507,9 +507,9 @@ fn the_sampled_time_series_carries_a_single_annual_spectral_line() {
 #[test]
 fn the_sampled_field_breathes_over_the_whole_basin() {
     // The season multiplies the field everywhere, not just at the one face the
-    // series above watches: every interior face must scale by the harmonic,
-    // and the walls must stay at exactly zero at every instant — the sampling
-    // rule of T-03.1, which a time-varying scenario must not have loosened.
+    // series above watches: every face must scale by the harmonic, the basin's
+    // wall lines included. What the solver does with a stress at the coast is
+    // the no-normal-flow condition of T-04.2's business, not the sampler's.
     let basin = equatorial_basin();
     let decay_scale_m = equatorial_deformation_radius_m(pacific_params(STRONG_DAMPING_PER_S));
     let seasonal = seasonal_decaying(decay_scale_m);
@@ -522,18 +522,16 @@ fn the_sampled_field_breathes_over_the_whole_basin() {
         let field = WindStressField::sampled(basin, &seasonal, t_s);
 
         for j in 0..field.tau_x_pa().ny() {
-            for i in 1..nx {
+            for i in 0..=nx {
                 let expected_pa =
-                    modulation * *reference.tau_x_pa().get(i, j).expect("an interior face");
-                let sampled_pa = *field.tau_x_pa().get(i, j).expect("an interior face");
+                    modulation * *reference.tau_x_pa().get(i, j).expect("an in-bounds face");
+                let sampled_pa = *field.tau_x_pa().get(i, j).expect("an in-bounds face");
                 assert!(
                     (sampled_pa - expected_pa).abs() <= ROUNDING_TOLERANCE * expected_pa.abs(),
                     "τx at face ({i}, {j}) at t = {t_s} s is {sampled_pa} Pa, expected \
                      {expected_pa} Pa"
                 );
             }
-            assert_eq!(*field.tau_x_pa().get(0, j).expect("the western wall"), 0.0);
-            assert_eq!(*field.tau_x_pa().get(nx, j).expect("the eastern wall"), 0.0);
         }
         for i in 0..field.tau_y_pa().nx() {
             for j in 0..=ny {
