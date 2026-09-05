@@ -1,18 +1,20 @@
-//! The shell itself: a window (or a canvas) that loads a run and says what it
-//! is.
+//! The shell itself: a window (or a canvas) that loads a run, says what it is,
+//! and draws one frame of it.
 //!
-//! T-08.1 draws no data. What it draws is the header — the grid, the scenario,
-//! the frame count — because that is what tells a reader the run they think
-//! they opened is the run they opened. Epic 09 fills the space below it.
+//! It draws the header first — the grid, the scenario, the frame count —
+//! because that is what tells a reader the run they think they opened is the
+//! run they opened, and under it the basin map of one chosen frame.
 //!
-//! Everything with a value in it lives in [`crate::run`] and
-//! [`crate::pending`]; this module is the part that needs a GPU, and so is
-//! deliberately thin.
+//! Everything with a value in it lives in [`crate::run`], [`crate::heatmap`]
+//! and [`crate::pending`]; this module is the part that needs a GPU, and so is
+//! deliberately thin. What it adds on top of them is a texture cache and a
+//! layout, and neither is where a wrong basin map would come from.
 
 use egui::{Color32, RichText};
 
 use crate::loading::Loaded;
-use crate::{LoadedRun, Loader, PendingRun};
+use crate::run::SECONDS_PER_DAY;
+use crate::{DivergingScale, Heatmap, LoadedRun, Loader, PendingRun};
 
 /// What the central panel is showing.
 enum Shown {
@@ -41,6 +43,8 @@ pub struct VisualizerApp {
     loader: Loader,
     /// The URL a run is served under, as typed or as passed in `?run=`.
     run_url: String,
+    /// The basin map: which frame it shows, and what it last drew.
+    basin_map: BasinMap,
 }
 
 impl Default for VisualizerApp {
@@ -50,6 +54,7 @@ impl Default for VisualizerApp {
             pending: PendingRun::default(),
             loader: Loader::default(),
             run_url: String::new(),
+            basin_map: BasinMap::default(),
         }
     }
 }
@@ -106,6 +111,9 @@ impl VisualizerApp {
     /// Take whatever finished loading since the last frame and show it.
     fn absorb_finished_loads(&mut self) {
         while let Some(Loaded { source, bytes }) = self.loader.poll() {
+            // Whatever arrives, the map of the last run is no longer the map
+            // of the run on screen.
+            self.basin_map.forget();
             self.shown = match bytes.and_then(|bytes| {
                 LoadedRun::from_bytes(source.clone(), bytes).map_err(|error| error.to_string())
             }) {
@@ -173,23 +181,23 @@ impl VisualizerApp {
             }
         });
     }
+}
 
-    /// What to show when there is no run yet, or the last one failed.
-    fn draw_instructions(&self, ui: &mut egui::Ui) {
-        ui.label(format!(
-            "Drop a run's {} and {} onto this window{}.",
-            termocline_format::HEADER_FILE_NAME,
-            termocline_format::FRAME_FILE_NAME,
-            if cfg!(target_arch = "wasm32") {
-                ""
-            } else {
-                ", or drop the run directory itself"
-            }
-        ));
-        let still_needed = self.pending.still_needed();
-        if still_needed.len() == 1 {
-            ui.label(format!("Waiting for {}.", still_needed[0]));
+/// What to show when there is no run yet, or the last one failed.
+fn draw_instructions(ui: &mut egui::Ui, pending: &PendingRun) {
+    ui.label(format!(
+        "Drop a run's {} and {} onto this window{}.",
+        termocline_format::HEADER_FILE_NAME,
+        termocline_format::FRAME_FILE_NAME,
+        if cfg!(target_arch = "wasm32") {
+            ""
+        } else {
+            ", or drop the run directory itself"
         }
+    ));
+    let still_needed = pending.still_needed();
+    if still_needed.len() == 1 {
+        ui.label(format!("Waiting for {}.", still_needed[0]));
     }
 }
 
@@ -205,8 +213,16 @@ impl eframe::App for VisualizerApp {
             ui.add_space(4.0);
         });
 
-        egui::CentralPanel::default().show(ctx, |ui| match &self.shown {
-            Shown::Nothing => self.draw_instructions(ui),
+        // Disjoint borrows: the panel reads the run while the map it draws
+        // caches a texture of one of its frames.
+        let Self {
+            shown,
+            pending,
+            basin_map,
+            ..
+        } = self;
+        egui::CentralPanel::default().show(ctx, |ui| match &*shown {
+            Shown::Nothing => draw_instructions(ui, pending),
             Shown::Loading(source) => {
                 ui.horizontal(|ui| {
                     ui.spinner();
@@ -221,9 +237,9 @@ impl eframe::App for VisualizerApp {
                 );
                 ui.label(message);
                 ui.separator();
-                self.draw_instructions(ui);
+                draw_instructions(ui, pending);
             }
-            Shown::Run(run) => draw_run(ui, run),
+            Shown::Run(run) => draw_run(ui, run, basin_map),
         });
 
         if ctx.input(|input| !input.raw.hovered_files.is_empty()) {
@@ -238,8 +254,8 @@ impl eframe::App for VisualizerApp {
     }
 }
 
-/// The metadata panel: every row the run's header yields, labelled.
-fn draw_run(ui: &mut egui::Ui, run: &LoadedRun) {
+/// The metadata panel, and under it the basin map of the chosen frame.
+fn draw_run(ui: &mut egui::Ui, run: &LoadedRun, basin_map: &mut BasinMap) {
     ui.label(RichText::new(run.source()).strong());
     ui.add_space(6.0);
     egui::Grid::new("run-metadata")
@@ -254,7 +270,8 @@ fn draw_run(ui: &mut egui::Ui, run: &LoadedRun) {
             }
         });
     ui.add_space(12.0);
-    ui.label("No frames drawn yet — rendering lands in Epic 09.");
+    ui.separator();
+    basin_map.draw(ui, run);
 }
 
 /// The name and bytes of a dropped file, from whichever of the two egui fills
@@ -271,4 +288,188 @@ fn dropped_file_contents(file: &egui::DroppedFile) -> Result<(String, Vec<u8>), 
         .as_ref()
         .ok_or_else(|| format!("{} arrived with no contents", file.name))?;
     Ok((file.name.clone(), bytes.to_vec()))
+}
+
+/// Height of the colour bar, in points.
+const COLOR_BAR_HEIGHT: f32 = 14.0;
+
+/// Samples across the colour bar. More than the eye can separate at the width
+/// a panel gives it, and few enough that building it is not worth caching
+/// beyond the frame it belongs to.
+const COLOR_BAR_SAMPLES: usize = 256;
+
+/// The basin map of one chosen frame of the loaded run.
+///
+/// The map is a texture rather than a mesh: `h` is one value per cell, and the
+/// cheapest honest way to show a cell grid is one pixel per cell, magnified
+/// without interpolation. It is also the way that costs the same on both
+/// targets, which is what ADR-0006 asks of anything drawn here.
+#[derive(Default)]
+struct BasinMap {
+    /// The frame the reader has chosen, by index into the run.
+    index: u64,
+    /// The last attempt at drawing a frame, if there has been one.
+    attempt: Option<Attempt>,
+}
+
+/// What came of trying to draw one frame.
+///
+/// Kept because reaching a frame decodes every frame before it
+/// ([`LoadedRun::frame`]), and a panel repaints many times per second while
+/// the chosen frame does not change. The failure is kept for the same reason:
+/// retrying it every repaint would fail every repaint.
+struct Attempt {
+    /// The frame this was an attempt at.
+    index: u64,
+    /// The map of it, or what refused to build one, in the words of whatever
+    /// refused it.
+    outcome: Result<DrawnFrame, String>,
+}
+
+/// A frame already colour-mapped and uploaded.
+struct DrawnFrame {
+    /// Its model time, in seconds since the start of the run.
+    t_s: f64,
+    /// The scale its colours came from, for the bar beside it.
+    scale: DivergingScale,
+    /// The map itself, one texel per cell.
+    map: egui::TextureHandle,
+    /// The colour bar, sampled across the same scale.
+    bar: egui::TextureHandle,
+}
+
+impl BasinMap {
+    /// Forget the run this was a map of.
+    fn forget(&mut self) {
+        self.index = 0;
+        self.attempt = None;
+    }
+
+    /// Draw the frame chooser and the map of the chosen frame.
+    fn draw(&mut self, ui: &mut egui::Ui, run: &LoadedRun) {
+        let frame_count = run.header().output.frame_count;
+        let Some(last) = frame_count.checked_sub(1) else {
+            ui.label("This run holds no frames to draw.");
+            return;
+        };
+        self.index = self.index.min(last);
+        if last > 0 {
+            ui.add(egui::Slider::new(&mut self.index, 0..=last).text("Frame"));
+        }
+
+        if self
+            .attempt
+            .as_ref()
+            .is_none_or(|last| last.index != self.index)
+        {
+            self.attempt = Some(Attempt {
+                index: self.index,
+                outcome: self.build(ui, run),
+            });
+        }
+        let outcome = &self
+            .attempt
+            .as_ref()
+            .expect("an attempt was just made")
+            .outcome;
+        let drawn = match outcome {
+            Ok(drawn) => drawn,
+            Err(message) => {
+                ui.label(
+                    RichText::new(format!("Frame {} could not be drawn", self.index))
+                        .color(Color32::LIGHT_RED)
+                        .strong(),
+                );
+                ui.label(message);
+                return;
+            }
+        };
+
+        ui.label(format!(
+            "Thermocline depth anomaly h at {:.2} days",
+            drawn.t_s / SECONDS_PER_DAY
+        ));
+        ui.horizontal(|ui| {
+            ui.label("west");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label("east");
+            });
+        });
+        draw_texture_fitted(ui, &drawn.map);
+        draw_color_bar(ui, drawn);
+    }
+
+    /// Colour-map the chosen frame and upload it, or say what stopped that.
+    fn build(&self, ui: &egui::Ui, run: &LoadedRun) -> Result<DrawnFrame, String> {
+        let scale = run.anomaly_scale();
+        let frame = run
+            .frame(self.index)
+            .ok_or_else(|| format!("this run holds no frame {}", self.index))?;
+        let heatmap = Heatmap::of_frame(run.header().grid, &frame, scale)
+            .map_err(|error| error.to_string())?;
+        let image = egui::ColorImage::from_rgb([heatmap.width(), heatmap.height()], heatmap.rgb());
+        Ok(DrawnFrame {
+            t_s: frame.t_s(),
+            scale,
+            // Nearest, not linear: a texel is a cell of the model, and
+            // smoothing between them would draw an anomaly the run never
+            // produced.
+            map: ui
+                .ctx()
+                .load_texture("basin-map", image, egui::TextureOptions::NEAREST),
+            bar: ui.ctx().load_texture(
+                "basin-map-scale",
+                egui::ColorImage::from_rgb(
+                    [COLOR_BAR_SAMPLES, 1],
+                    &scale.bar_rgb(COLOR_BAR_SAMPLES),
+                ),
+                egui::TextureOptions::LINEAR,
+            ),
+        })
+    }
+}
+
+/// Draw the colour bar and the anomalies its ends stand for.
+fn draw_color_bar(ui: &mut egui::Ui, drawn: &DrawnFrame) {
+    let width = ui.available_width();
+    ui.add(egui::Image::new(egui::load::SizedTexture::new(
+        drawn.bar.id(),
+        egui::vec2(width, COLOR_BAR_HEIGHT),
+    )));
+    let half_range_m = drawn.scale.half_range_m();
+    // Negating zero would label a run at rest "-0.0 m".
+    let shallow_m = if half_range_m == 0.0 {
+        0.0
+    } else {
+        -half_range_m
+    };
+    // Three equal columns, so the middle label sits under the middle of the
+    // bar — where the neutral colour is — rather than wherever the two end
+    // labels happen to leave room.
+    ui.columns(3, |columns| {
+        columns[0].label(format!("{shallow_m:+.1} m (shallower)"));
+        columns[1].with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+            ui.label("0 m")
+        });
+        columns[2].with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(format!("{half_range_m:+.1} m (deeper)"));
+        });
+    });
+}
+
+/// Draw `texture` as large as the panel allows without changing its shape.
+///
+/// The basin is far wider than it is tall, so fitting it to the width alone
+/// would push the colour bar off the bottom of a short window.
+fn draw_texture_fitted(ui: &mut egui::Ui, texture: &egui::TextureHandle) {
+    let size = texture.size_vec2();
+    let available = egui::vec2(
+        ui.available_width(),
+        (ui.available_height() - COLOR_BAR_HEIGHT * 3.0).max(COLOR_BAR_HEIGHT),
+    );
+    let scale = (available.x / size.x).min(available.y / size.y);
+    ui.add(egui::Image::new(egui::load::SizedTexture::new(
+        texture.id(),
+        size * scale,
+    )));
 }
