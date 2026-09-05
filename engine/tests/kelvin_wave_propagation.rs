@@ -157,12 +157,11 @@ use std::sync::OnceLock;
 
 use engine::{
     max_stable_dt, Basin, BetaPlane, Grid, OceanState, PhysicalParams, Solver, Spacing, WaveSpeed,
-    WindStressField, H_STAGGERING, U_STAGGERING,
+    WindStressField, H_STAGGERING,
 };
 
 use support::{
-    equatorial_deformation_radius_m, gaussian_envelope, kelvin_wave_speed_m_per_s, pacific_params,
-    MeridionalStructure,
+    equatorial_deformation_radius_m, kelvin_wave_speed_m_per_s, pacific_params, MeridionalStructure,
 };
 
 /// Zonal extent of the test basin, in metres — 20 000 km, the order of the
@@ -468,28 +467,17 @@ impl Experiment {
     /// and no Rossby energy at all — which is what the westward projection of
     /// [`the_kelvin_pulse_carries_no_westward_energy`] checks has stayed true.
     fn initial_state(self) -> OceanState {
-        let mut state = OceanState::at_rest(self.basin.grid());
-        let current_amplitude_m_per_s =
-            PULSE_AMPLITUDE_M * self.wave_speed_m_per_s() / self.params.mean_thermocline_depth_m();
-        let profile = |x_m: f64| gaussian_envelope(x_m, PULSE_CENTRE_X_M, self.pulse_width_m);
-
-        for j in 0..state.h().ny() {
-            let waveguide = MeridionalStructure::Gravest.at(
-                self.basin.y_of_row_m(H_STAGGERING, j),
-                self.deformation_radius_m,
-            );
-            for i in 0..state.h().nx() {
-                let x_m = self.basin.x_of_column_m(H_STAGGERING, i);
-                *state.h_mut().get_mut(i, j).expect("a cell centre") =
-                    PULSE_AMPLITUDE_M * profile(x_m) * waveguide;
-            }
-            for i in 0..state.u().nx() {
-                let x_m = self.basin.x_of_column_m(U_STAGGERING, i);
-                *state.u_mut().get_mut(i, j).expect("an east/west face") =
-                    current_amplitude_m_per_s * profile(x_m) * waveguide;
-            }
-        }
-        state
+        support::kelvin_pulse_state(
+            self.basin,
+            self.params,
+            self.deformation_radius_m,
+            self.wave_speed_m_per_s(),
+            support::Packet {
+                amplitude_m: PULSE_AMPLITUDE_M,
+                centre_x_m: PULSE_CENTRE_X_M,
+                width_m: self.pulse_width_m,
+            },
+        )
     }
 
     /// Run the experiment: the pulse in a closed, unforced, undamped basin,

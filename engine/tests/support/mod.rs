@@ -29,6 +29,14 @@
 //!   centroid of a projected profile ([`energy_centroid_m`]), which moves at the
 //!   packet's energy-weighted mean group velocity, or the time of flight of its
 //!   peak between two fixed zonal stations ([`peak_time_s`]).
+//! - **The initial conditions themselves**: [`kelvin_pulse_state`] and
+//!   [`gravest_rossby_packet_state`], the two analytic packets every run in
+//!   this suite starts from.
+//! - **How a wave's meridional decay scale is read**: the zonal sum of one
+//!   invariant, row by row ([`invariant_meridional_profile`]), fitted against
+//!   the `ψₘ` the theory says it is with the trapping scale left free
+//!   ([`fitted_trapping_scale_m`]). The projections above hold the scale fixed
+//!   at `Le` and read an amplitude; this reads the scale itself.
 //!
 //! Nothing here asserts anything or carries a tolerance: a tolerance is a
 //! property of one run's configuration and belongs in the test that states that
@@ -43,7 +51,7 @@
 // remainder is dead code in that binary and live in the next one.
 #![allow(dead_code)]
 
-use engine::{Basin, OceanState, PhysicalParams, H_STAGGERING};
+use engine::{Basin, OceanState, PhysicalParams, H_STAGGERING, U_STAGGERING, V_STAGGERING};
 
 /// Reduced gravity `g'` of the equatorial Pacific's first baroclinic mode, in
 /// m/s². Standard value for the 1.5-layer model (Gill, *Atmosphere–Ocean
@@ -70,14 +78,33 @@ pub const UNDAMPED_PER_S: f64 = 0.0;
 /// If the published parameters above are rejected as unphysical, which would
 /// mean the engine's validation is wrong rather than the values.
 pub fn pacific_params() -> PhysicalParams {
+    params_with_reduced_gravity_and_beta(PACIFIC_REDUCED_GRAVITY_M_PER_S2, BETA_PER_M_PER_S)
+}
+
+/// The same ocean with `g'` and `β` replaced, and `H`, `ρ₀` and the undamped
+/// `r` left at the Pacific values above.
+///
+/// `Le = √(c/β) = √(√(g'H)/β)` is a *prediction*, and a validation that only
+/// ever ran in one ocean could not tell that prediction apart from a fixed
+/// length that happened to fit. These are the only two parameters `Le` depends
+/// on, so varying them — and nothing else — moves the predicted radius while
+/// leaving the basin, the packet and the measurement alone.
+///
+/// # Panics
+/// If the pair is rejected as unphysical, which is the caller asking for an
+/// ocean that does not exist rather than a fault in the engine.
+pub fn params_with_reduced_gravity_and_beta(
+    reduced_gravity_m_per_s2: f64,
+    beta_per_m_per_s: f64,
+) -> PhysicalParams {
     PhysicalParams::new(
-        PACIFIC_REDUCED_GRAVITY_M_PER_S2,
+        reduced_gravity_m_per_s2,
         PACIFIC_MEAN_DEPTH_M,
         UNDAMPED_PER_S,
-        BETA_PER_M_PER_S,
+        beta_per_m_per_s,
         REFERENCE_DENSITY_KG_PER_M3,
     )
-    .expect("the published equatorial-Pacific parameters are physical")
+    .expect("the caller's reduced gravity and beta are physical")
 }
 
 /// Kelvin wave speed `c = √(g'·H)`, in m/s, written out from the definition in
@@ -89,14 +116,26 @@ pub fn pacific_params() -> PhysicalParams {
 /// the same number from the same two parameters, which is what makes the
 /// comparison a test rather than a tautology.
 pub fn kelvin_wave_speed_m_per_s() -> f64 {
-    (PACIFIC_REDUCED_GRAVITY_M_PER_S2 * PACIFIC_MEAN_DEPTH_M).sqrt()
+    wave_speed_of_m_per_s(PACIFIC_REDUCED_GRAVITY_M_PER_S2)
+}
+
+/// The same `c = √(g'·H)` for an ocean of reduced gravity
+/// `reduced_gravity_m_per_s2`, in m/s.
+pub fn wave_speed_of_m_per_s(reduced_gravity_m_per_s2: f64) -> f64 {
+    (reduced_gravity_m_per_s2 * PACIFIC_MEAN_DEPTH_M).sqrt()
 }
 
 /// Equatorial deformation radius `Le = √(c/β)`, in metres — the meridional
 /// scale of the waveguide (`CONTEXT.md`), written out from the same definition
 /// and for the same reason.
 pub fn equatorial_deformation_radius_m() -> f64 {
-    (kelvin_wave_speed_m_per_s() / BETA_PER_M_PER_S).sqrt()
+    deformation_radius_of_m(kelvin_wave_speed_m_per_s(), BETA_PER_M_PER_S)
+}
+
+/// The same `Le = √(c/β)` for an ocean of wave speed `wave_speed_m_per_s` and
+/// beta-plane gradient `beta_per_m_per_s`, in metres.
+pub fn deformation_radius_of_m(wave_speed_m_per_s: f64, beta_per_m_per_s: f64) -> f64 {
+    (wave_speed_m_per_s / beta_per_m_per_s).sqrt()
 }
 
 /// A Gaussian zonal envelope of e-folding half-width `width_m`, centred on
@@ -204,9 +243,7 @@ impl Waveguide {
         Self {
             le_m: (params.kelvin_wave_speed_m_per_s() / params.beta_per_m_per_s()).sqrt(),
             dy_m: basin.spacing().dy_m(),
-            row_y_m: (0..basin.grid().ny())
-                .map(|j| basin.y_of_row_m(H_STAGGERING, j))
-                .collect(),
+            row_y_m: row_positions_m(basin),
         }
     }
 
@@ -233,6 +270,15 @@ impl Waveguide {
     pub fn truncation_bound(&self, structure: MeridionalStructure) -> f64 {
         structure.truncation_richness() * (self.dy_m / self.le_m).powi(2)
     }
+}
+
+/// Meridional positions of `basin`'s cell-centre rows, in metres north of the
+/// equator — where `h` sits, where `u` is averaged to, and the abscissae of
+/// every meridional quadrature and fit below.
+pub fn row_positions_m(basin: Basin) -> Vec<f64> {
+    (0..basin.grid().ny())
+        .map(|j| basin.y_of_row_m(H_STAGGERING, j))
+        .collect()
 }
 
 /// `ψₘ` sampled on the cell-centre rows, which is where `h` sits and where `u`
@@ -468,4 +514,322 @@ pub fn peak_time_s(series: &[f64], dt_s: f64) -> f64 {
          resolved peak to time"
     );
     (peak as f64 + 0.5 * (before - after) / curvature) * dt_s
+}
+
+/// Which of the two invariants `u/c ± h/H` a measurement reads.
+///
+/// The module header states which wave lives in which: the Kelvin wave is the
+/// whole of [`Invariant::Eastward`], and the gravest Rossby mode puts its `ψ₀`
+/// content in [`Invariant::Westward`] and its `ψ₂` content in the eastward one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Invariant {
+    /// `u/c + h/H`.
+    Eastward,
+    /// `u/c − h/H`.
+    Westward,
+}
+
+impl Invariant {
+    /// The invariant's value from the two scaled fields at one cell centre.
+    pub fn of(self, current_in_c: f64, depth_in_mean_depths: f64) -> f64 {
+        match self {
+            Self::Eastward => current_in_c + depth_in_mean_depths,
+            Self::Westward => current_in_c - depth_in_mean_depths,
+        }
+    }
+}
+
+/// The meridional profile of one invariant: its zonal sum, row by row.
+///
+/// [`project_columns`] and the functions built on it collapse the *meridional*
+/// axis and keep the zonal one, because what they read is where a wave is. A
+/// decay-scale fit needs the opposite, so this collapses the zonal axis
+/// instead. For a separable packet `A·E(x)·ψₘ(y/Le)` the sum is
+/// `A·(ΣᵢE)·ψₘ(y/Le)`: the same meridional shape, with the envelope reduced to
+/// one constant that the fit's free amplitude absorbs.
+///
+/// Summing over the whole basin rather than a window around the packet is
+/// deliberate — a window needs a centre, and taking that from theory is the
+/// circularity a measurement must not have. The cost is that whatever the run
+/// has shed elsewhere is weighed too, which is the leading term of the fit's
+/// error budget rather than a neglected one.
+///
+/// `u` is averaged from its two faces onto the cell centre, so it and the
+/// depth anomaly are read at one set of positions — the same averaging
+/// [`gravest_current_projection`] makes, and what makes their sum and
+/// difference the invariants at all.
+pub fn invariant_meridional_profile(
+    basin: Basin,
+    params: PhysicalParams,
+    state: &OceanState,
+    wave_speed_m_per_s: f64,
+    invariant: Invariant,
+) -> Vec<f64> {
+    (0..basin.grid().ny())
+        .map(|j| {
+            (0..basin.grid().nx())
+                .map(|i| {
+                    let west = state.u().get(i, j).expect("an east/west face");
+                    let east = state.u().get(i + 1, j).expect("an east/west face");
+                    let current_in_c = 0.5 * (west + east) / wave_speed_m_per_s;
+                    let depth_in_mean_depths = state.h().get(i, j).expect("a cell centre")
+                        / params.mean_thermocline_depth_m();
+                    invariant.of(current_in_c, depth_in_mean_depths)
+                })
+                .sum()
+        })
+        .collect()
+}
+
+/// How well `ψₘ(y/scale_m)` explains `profile`, as a number in `[0, 1]`.
+///
+/// The squared cosine between the profile and the model,
+/// `(Σd·m)² / (Σd²·Σm²)`, which is the fraction of the profile's energy a
+/// least-squares fit of the model to it accounts for. The model's amplitude
+/// does not appear: for a one-parameter family scaled by a free amplitude, the
+/// best amplitude is `Σd·m / Σm²` and substituting it leaves exactly this. So
+/// maximising this over `scale_m` *is* the least-squares fit, with the
+/// amplitude eliminated analytically rather than searched for.
+///
+/// # Panics
+/// If the profile carries no energy, which would mean the run has no wave in
+/// it.
+pub fn shape_correlation(
+    row_y_m: &[f64],
+    profile: &[f64],
+    structure: MeridionalStructure,
+    scale_m: f64,
+) -> f64 {
+    let (cross, model_energy, profile_energy) = row_y_m
+        .iter()
+        .zip(profile)
+        .map(|(y_m, value)| (structure.at(*y_m, scale_m), *value))
+        .fold((0.0, 0.0, 0.0), |(cross, model, data), (shape, value)| {
+            (
+                cross + shape * value,
+                model + shape * shape,
+                data + value * value,
+            )
+        });
+    assert!(
+        profile_energy > 0.0,
+        "the meridional profile carries no energy, so it has no shape to fit"
+    );
+    cross * cross / (model_energy * profile_energy)
+}
+
+/// How many points [`fitted_trapping_scale_m`] samples its bracket at before
+/// refining.
+///
+/// The objective is unimodal for the `ψ₀` fit — for two Gaussians of scales
+/// `L` and `Le` it is `4LLe/(L+Le)²`, whose only stationary point is `L = Le` —
+/// but a `ψₘ` with nodes can put a second, lower hump in it where the model's
+/// lobes fall between the profile's. A scan first makes the refinement start in
+/// the right hump instead of trusting unimodality; 64 points over a bracket
+/// spanning a factor of nine resolve the humps of every structure used here,
+/// which are `O(Le)` wide, many times over.
+const TRAPPING_SCALE_SCAN_POINTS: usize = 64;
+/// Relative width the golden-section refinement narrows the bracket to.
+///
+/// `10⁻⁶`, which is four orders of magnitude below the smallest term of any
+/// decay-scale budget these tests state, so the fit's own convergence never
+/// appears in a comparison. It is not taken to machine precision because the
+/// objective is quadratic at its maximum, where rounding flattens it below
+/// about `√ε ≈ 10⁻⁸` of the scale.
+const TRAPPING_SCALE_PRECISION: f64 = 1.0e-6;
+
+/// The trapping scale, in metres, that best fits `profile` as `ψₘ(y/scale)`.
+///
+/// The measurement the deformation-radius validation is built on: the theory
+/// says the profile is `ψₘ(y/Le)` with `Le = √(c/β)`, so leaving the scale free
+/// and fitting it recovers `Le` from the run, to be compared against the
+/// analytic one. The amplitude is eliminated analytically
+/// ([`shape_correlation`]) and only the scale is searched for: a coarse scan of
+/// `bracket_m` to pick the right hump of the objective, then golden-section
+/// refinement within the two scan points either side of the best.
+///
+/// # Panics
+/// If the best scan point is an endpoint of `bracket_m`, which means the
+/// profile's scale is outside the bracket — the run is not carrying the wave
+/// the caller thinks it is, rather than the fit having failed to converge.
+pub fn fitted_trapping_scale_m(
+    row_y_m: &[f64],
+    profile: &[f64],
+    structure: MeridionalStructure,
+    bracket_m: (f64, f64),
+) -> f64 {
+    let (smallest_m, largest_m) = bracket_m;
+    assert!(
+        0.0 < smallest_m && smallest_m < largest_m,
+        "a trapping-scale bracket runs from a positive scale up to a larger one, not \
+         ({smallest_m}, {largest_m})"
+    );
+    let step_m = (largest_m - smallest_m) / (TRAPPING_SCALE_SCAN_POINTS - 1) as f64;
+    let scan_at = |point: usize| smallest_m + point as f64 * step_m;
+    let objective = |scale_m: f64| shape_correlation(row_y_m, profile, structure, scale_m);
+
+    let best = peak_index(
+        &(0..TRAPPING_SCALE_SCAN_POINTS)
+            .map(|point| objective(scan_at(point)))
+            .collect::<Vec<_>>(),
+    );
+    assert!(
+        best > 0 && best + 1 < TRAPPING_SCALE_SCAN_POINTS,
+        "the profile is best fitted at the {}edge of the bracket [{smallest_m} m, {largest_m} m], \
+         so its meridional scale lies outside it",
+        if best == 0 { "lower " } else { "upper " }
+    );
+
+    // Golden-section search for the maximum inside the bracketing triple the
+    // scan found. The interval shrinks by the golden ratio each iteration, so
+    // the loop terminates; it is written as a `while` on the width rather than
+    // a fixed count so the stopping condition is the stated precision itself.
+    let golden = 0.5 * (5.0_f64.sqrt() - 1.0);
+    let (mut low_m, mut high_m) = (scan_at(best - 1), scan_at(best + 1));
+    while high_m - low_m > TRAPPING_SCALE_PRECISION * high_m {
+        let span_m = high_m - low_m;
+        let (left_m, right_m) = (high_m - golden * span_m, low_m + golden * span_m);
+        if objective(left_m) > objective(right_m) {
+            high_m = right_m;
+        } else {
+            low_m = left_m;
+        }
+    }
+    0.5 * (low_m + high_m)
+}
+
+/// The Gaussian wave packet a validation run is started from.
+///
+/// The zonal half of an initial condition: how tall it is, where it is, and how
+/// wide. The meridional half is fixed by which wave the packet is, and belongs
+/// to the state constructor rather than to this.
+#[derive(Debug, Clone, Copy)]
+pub struct Packet {
+    /// Scale of the packet's thermocline depth anomaly, in metres.
+    ///
+    /// The core is linear, so every speed, width and ratio a validation reads
+    /// is independent of this; it only sets the units the diagnostics come out
+    /// in.
+    pub amplitude_m: f64,
+    /// Zonal position of the packet's centre at `t = 0`, in metres east of the
+    /// western wall.
+    pub centre_x_m: f64,
+    /// Zonal e-folding half-width `σ` of the Gaussian envelope, in metres.
+    pub width_m: f64,
+}
+
+/// An equatorial Kelvin pulse: Gaussian in `x` on the `ψ₀` waveguide, with
+/// `u = (c/H)·h` and `v = 0`.
+///
+/// An exact solution of the continuous linear equations for *any* zonal
+/// profile — the eastward invariant obeys `∂r/∂t + c·∂r/∂x = 0` and the
+/// westward one is identically zero — so a run started from it carries one
+/// wave, travelling east, and no Rossby energy at all.
+pub fn kelvin_pulse_state(
+    basin: Basin,
+    params: PhysicalParams,
+    deformation_radius_m: f64,
+    wave_speed_m_per_s: f64,
+    packet: Packet,
+) -> OceanState {
+    let mut state = OceanState::at_rest(basin.grid());
+    let current_amplitude_m_per_s =
+        packet.amplitude_m * wave_speed_m_per_s / params.mean_thermocline_depth_m();
+    let profile = |x_m: f64| gaussian_envelope(x_m, packet.centre_x_m, packet.width_m);
+
+    for j in 0..state.h().ny() {
+        let waveguide = MeridionalStructure::Gravest
+            .at(basin.y_of_row_m(H_STAGGERING, j), deformation_radius_m);
+        for i in 0..state.h().nx() {
+            let x_m = basin.x_of_column_m(H_STAGGERING, i);
+            *state.h_mut().get_mut(i, j).expect("a cell centre") =
+                packet.amplitude_m * profile(x_m) * waveguide;
+        }
+        for i in 0..state.u().nx() {
+            let x_m = basin.x_of_column_m(U_STAGGERING, i);
+            *state.u_mut().get_mut(i, j).expect("an east/west face") =
+                current_amplitude_m_per_s * profile(x_m) * waveguide;
+        }
+    }
+    state
+}
+
+/// The gravest-mode equatorial Rossby packet, Gaussian in `x` and travelling
+/// west.
+///
+/// The long-wave mode of Matsuno 1966: `v ∝ ψ₁` with the zonal slope of the
+/// envelope, `h/H ∝ (2ŷ² + 1)·e^{−ŷ²/2}` and `u/c ∝ (2ŷ² − 3)·e^{−ŷ²/2}`. In
+/// the invariants those combine to `ψ₂` eastward and `−4·ψ₀` westward, which
+/// is the decomposition every measurement of this mode reads it through. It is
+/// the exact mode only as `k̂ → 0`, so a run started from it sheds an amplitude
+/// `O(⟨k̂²⟩)` into the other branches — the stray-energy term of a budget.
+pub fn gravest_rossby_packet_state(
+    basin: Basin,
+    params: PhysicalParams,
+    deformation_radius_m: f64,
+    wave_speed_m_per_s: f64,
+    packet: Packet,
+) -> OceanState {
+    let mut state = OceanState::at_rest(basin.grid());
+    let grid = basin.grid();
+    let mean_depth_m = params.mean_thermocline_depth_m();
+    let amplitude = packet.amplitude_m / mean_depth_m;
+    let envelope = |x_m: f64| gaussian_envelope(x_m, packet.centre_x_m, packet.width_m);
+    // `dE/dx` of that envelope, in m⁻¹.
+    let envelope_slope_per_m =
+        |x_m: f64| -(x_m - packet.centre_x_m) / (packet.width_m * packet.width_m) * envelope(x_m);
+
+    let (h_nx, h_ny) = grid.field_shape(H_STAGGERING);
+    for j in 0..h_ny {
+        let y_hat = basin.y_of_row_m(H_STAGGERING, j) / deformation_radius_m;
+        let trapping = (-0.5 * y_hat * y_hat).exp();
+        for i in 0..h_nx {
+            let x_m = basin.x_of_column_m(H_STAGGERING, i);
+            *state
+                .h_mut()
+                .get_mut(i, j)
+                .expect("the loop bounds are the field's own shape") =
+                mean_depth_m * amplitude * envelope(x_m) * (2.0 * y_hat * y_hat + 1.0) * trapping;
+        }
+    }
+
+    let (u_nx, u_ny) = grid.field_shape(U_STAGGERING);
+    for j in 0..u_ny {
+        let y_hat = basin.y_of_row_m(U_STAGGERING, j) / deformation_radius_m;
+        let trapping = (-0.5 * y_hat * y_hat).exp();
+        for i in 0..u_nx {
+            let x_m = basin.x_of_column_m(U_STAGGERING, i);
+            *state
+                .u_mut()
+                .get_mut(i, j)
+                .expect("the loop bounds are the field's own shape") = wave_speed_m_per_s
+                * amplitude
+                * envelope(x_m)
+                * (2.0 * y_hat * y_hat - 3.0)
+                * trapping;
+        }
+    }
+
+    // `(8/3)·ŷ·e^{−ŷ²/2}` is `(4/3)·ψ₁`, and writing it that way is the point:
+    // the mode is defined by its meridional velocity sitting on `ψ₁`, and every
+    // other field of it follows from that.
+    let (v_nx, v_ny) = grid.field_shape(V_STAGGERING);
+    for j in 0..v_ny {
+        let waveguide =
+            MeridionalStructure::First.at(basin.y_of_row_m(V_STAGGERING, j), deformation_radius_m);
+        for i in 0..v_nx {
+            let x_m = basin.x_of_column_m(V_STAGGERING, i);
+            *state
+                .v_mut()
+                .get_mut(i, j)
+                .expect("the loop bounds are the field's own shape") = wave_speed_m_per_s
+                * (4.0 / 3.0)
+                * amplitude
+                * deformation_radius_m
+                * envelope_slope_per_m(x_m)
+                * waveguide;
+        }
+    }
+
+    state
 }
