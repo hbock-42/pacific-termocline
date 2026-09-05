@@ -10,7 +10,9 @@ The project is split into two independent components:
   headless, produces time-series output of the ocean state.
 - **Visualizer** (`visualizer/`, Rust) — consumes the engine's output and
   renders it (maps, cross-sections, time series, playback), per
-  [ADR-0002](docs/planning/adr/0002-visualizer-language-choice.md).
+  [ADR-0002](docs/planning/adr/0002-visualizer-language-choice.md). It is a
+  browser app that also runs natively
+  ([ADR-0006](docs/planning/adr/0006-web-visualizer.md)).
 - **`termocline-format/`** — the file format the two share, and their only
   coupling ([ADR-0001](docs/planning/adr/0001-engine-visualizer-split.md)).
 - **`termocline-grid/`** — the shared 2D field and Arakawa C-grid geometry
@@ -27,6 +29,27 @@ cargo build --workspace
 cargo test --workspace
 cargo bench -p engine    # the performance suite; see docs/benchmarks.md
 ```
+
+## Running the visualizer
+
+Natively, optionally naming a run directory to open:
+
+```sh
+cargo run -p visualizer --bin termocline-viz -- /tmp/run-demo
+```
+
+In a browser, from `visualizer/` ([trunk](https://trunkrs.dev) builds the
+`wasm32-unknown-unknown` target and serves it on `localhost:8080`):
+
+```sh
+cargo install trunk
+cd visualizer && trunk serve
+```
+
+A browser has no filesystem, so a run reaches the web build by dragging its
+`header.json` and `frames.bin` onto the page, or over HTTP: serve a run
+directory and open `?run=<url>`, e.g. `http://localhost:8080/?run=run-demo/`
+with the run copied into `visualizer/dist/run-demo/`.
 
 ## Where to start reading
 

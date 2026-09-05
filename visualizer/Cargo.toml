@@ -9,6 +9,52 @@ description = "Reads the engine's output files and renders them. Never touches t
 
 [dependencies]
 termocline-format.workspace = true
+# `wgpu`, not `glow`: it is the backend that reaches WebGPU, and the one whose
+# native and web behaviour agree most closely (ADR-0006).
+eframe = { version = "0.33", default-features = false, features = [
+    "default_fonts",
+    "wgpu",
+    "wayland",
+    "x11",
+] }
+egui = "0.33"
+# `eframe`'s `wgpu` feature takes `egui-wgpu` with its default features off,
+# and those defaults are what turn on `wgpu/webgpu` — without them the crate
+# does not compile for `wasm32` at all. Named here so the browser build has a
+# backend; nothing in this crate calls into it directly.
+egui-wgpu = "0.33"
+# One HTTP client for both targets, so `?run=` on the web and a typed URL
+# natively take the same code path.
+ehttp = "0.7"
+log = "0.4"
+
+# A run directory only exists where there is a filesystem, so the reader's `fs`
+# feature and the folder picker are native-only (ADR-0006).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+termocline-format = { workspace = true, features = ["fs"] }
+env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
+rfd = "0.17"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# WebGPU is the backend; WebGL2 is the fallback where a browser has no WebGPU
+# (ADR-0006). `wgpu` is named only to add that fallback to what `egui-wgpu`
+# already asks for.
+wgpu = { version = "27", default-features = false, features = ["webgl"] }
+console_error_panic_hook = "0.1"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Document",
+    "Element",
+    "HtmlCanvasElement",
+    "Location",
+    "UrlSearchParams",
+    "Window",
+] }
+
+[dev-dependencies]
+bincode = { version = "2", features = ["serde"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
 
 [[bin]]
 name = "termocline-viz"
@@ -17,3 +63,6 @@ path = "src/main.rs"
 [lib]
 name = "visualizer"
 path = "src/lib.rs"
+# `cdylib` is what `wasm-bindgen` links the browser build from; `rlib` is what
+# the binary and the tests link.
+crate-type = ["cdylib", "rlib"]

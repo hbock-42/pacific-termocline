@@ -1,0 +1,8 @@
+# `trunk serve` from this directory builds the browser visualizer and serves
+# it at http://localhost:8080. Runs are handed to it by drag-and-drop, or
+# fetched with `?run=<url>` — a browser has no filesystem (ADR-0006).
+[build]
+target = "index.html"
+
+[serve]
+port = 8080

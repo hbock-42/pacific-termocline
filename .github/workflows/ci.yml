@@ -27,6 +27,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          # ADR-0006: the visualizer is a browser app that also runs natively,
+          # so the web target is built on every PR and cannot rot silently.
+          targets: wasm32-unknown-unknown
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
@@ -47,6 +50,12 @@ jobs:
       # `std::fs` import leaked into the core reader.
       - name: Check the format crate without its filesystem feature
         run: cargo check -p termocline-format --no-default-features
+
+      # The other half of ADR-0006: the visualizer itself has to compile for
+      # the browser. Nothing above builds `wasm32`, so a `std::fs` call or a
+      # native-only dependency would reach `main` unnoticed.
+      - name: Build the visualizer for the browser
+        run: cargo build -p visualizer --target wasm32-unknown-unknown
 
   # Non-blocking by design (T-10.1): a benchmark is a measurement, and a
   # measurement taken on a shared runner whose neighbours we do not control is
