@@ -19,6 +19,10 @@ toml = { version = "0.9", default-features = false, features = ["parse", "displa
 
 [dev-dependencies]
 criterion = "0.8"
+# `tests/parallel_determinism.rs` pins a run to the same bits on any number of
+# workers, which means building pools of a stated size. The engine itself never
+# names rayon: the sweeps it parallelises are `termocline-grid`'s.
+rayon = "1"
 
 # `bench = false` on both: neither carries a `#[bench]`, and leaving them in
 # makes `cargo bench` run two empty libtest harnesses that reject criterion's

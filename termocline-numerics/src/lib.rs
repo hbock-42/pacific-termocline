@@ -32,6 +32,7 @@ pub use cfl::{
 };
 
 use std::fmt;
+use termocline_grid::sweep::write_rows;
 use termocline_grid::{Axis, Field2D, Grid, Staggering};
 
 /// Why a spacing could not be built.
@@ -251,18 +252,20 @@ impl CGridOperators {
             Staggering::NorthSouthFace,
         );
         self.check_shape("east/west-face output", ew_face, Staggering::EastWestFace);
-        let (nx, ny) = (self.grid.nx(), self.grid.ny());
-        for j in 0..ny {
-            *at_mut(ew_face, 0, j) = BOUNDARY_FACE;
+        let nx = self.grid.nx();
+        write_rows(ew_face, |j, face_row| {
+            // The four neighbours of an east/west face are the southern and
+            // northern faces of the two cells flanking it: two rows of the
+            // input, read in the order the average is written in.
+            let south = ns_face.row(j);
+            let north = ns_face.row(j + 1);
+            face_row[0] = BOUNDARY_FACE;
             for i in 1..nx {
-                *at_mut(ew_face, i, j) = FOUR_POINT_AVERAGE_WEIGHT
-                    * (at(ns_face, i - 1, j)
-                        + at(ns_face, i, j)
-                        + at(ns_face, i - 1, j + 1)
-                        + at(ns_face, i, j + 1));
+                face_row[i] =
+                    FOUR_POINT_AVERAGE_WEIGHT * (south[i - 1] + south[i] + north[i - 1] + north[i]);
             }
-            *at_mut(ew_face, nx, j) = BOUNDARY_FACE;
-        }
+            face_row[nx] = BOUNDARY_FACE;
+        });
     }
 
     /// An east/west-face field interpolated onto the north/south faces.
@@ -281,20 +284,19 @@ impl CGridOperators {
             ns_face,
             Staggering::NorthSouthFace,
         );
-        let (nx, ny) = (self.grid.nx(), self.grid.ny());
-        for i in 0..nx {
-            *at_mut(ns_face, i, 0) = BOUNDARY_FACE;
-            *at_mut(ns_face, i, ny) = BOUNDARY_FACE;
-        }
-        for j in 1..ny {
-            for i in 0..nx {
-                *at_mut(ns_face, i, j) = FOUR_POINT_AVERAGE_WEIGHT
-                    * (at(ew_face, i, j - 1)
-                        + at(ew_face, i + 1, j - 1)
-                        + at(ew_face, i, j)
-                        + at(ew_face, i + 1, j));
+        let ny = self.grid.ny();
+        write_rows(ns_face, |j, face_row| {
+            if j == 0 || j == ny {
+                face_row.fill(BOUNDARY_FACE);
+                return;
             }
-        }
+            let south = ew_face.row(j - 1);
+            let north = ew_face.row(j);
+            for (i, value) in face_row.iter_mut().enumerate() {
+                *value =
+                    FOUR_POINT_AVERAGE_WEIGHT * (south[i] + south[i + 1] + north[i] + north[i + 1]);
+            }
+        });
     }
 
     /// Fill an east/west-face field from the pair of centers flanking each
@@ -303,16 +305,17 @@ impl CGridOperators {
         &self,
         center: &Field2D<f64>,
         face: &mut Field2D<f64>,
-        combine: impl Fn(f64, f64) -> f64,
+        combine: impl Fn(f64, f64) -> f64 + Sync,
     ) {
-        let (nx, ny) = (self.grid.nx(), self.grid.ny());
-        for j in 0..ny {
-            *at_mut(face, 0, j) = BOUNDARY_FACE;
+        let nx = self.grid.nx();
+        write_rows(face, |j, face_row| {
+            let centers = center.row(j);
+            face_row[0] = BOUNDARY_FACE;
             for i in 1..nx {
-                *at_mut(face, i, j) = combine(at(center, i - 1, j), at(center, i, j));
+                face_row[i] = combine(centers[i - 1], centers[i]);
             }
-            *at_mut(face, nx, j) = BOUNDARY_FACE;
-        }
+            face_row[nx] = BOUNDARY_FACE;
+        });
     }
 
     /// Fill a north/south-face field from the pair of centers flanking each
@@ -321,18 +324,20 @@ impl CGridOperators {
         &self,
         center: &Field2D<f64>,
         face: &mut Field2D<f64>,
-        combine: impl Fn(f64, f64) -> f64,
+        combine: impl Fn(f64, f64) -> f64 + Sync,
     ) {
-        let (nx, ny) = (self.grid.nx(), self.grid.ny());
-        for i in 0..nx {
-            *at_mut(face, i, 0) = BOUNDARY_FACE;
-            *at_mut(face, i, ny) = BOUNDARY_FACE;
-        }
-        for j in 1..ny {
-            for i in 0..nx {
-                *at_mut(face, i, j) = combine(at(center, i, j - 1), at(center, i, j));
+        let ny = self.grid.ny();
+        write_rows(face, |j, face_row| {
+            if j == 0 || j == ny {
+                face_row.fill(BOUNDARY_FACE);
+                return;
             }
-        }
+            let south = center.row(j - 1);
+            let north = center.row(j);
+            for (i, value) in face_row.iter_mut().enumerate() {
+                *value = combine(south[i], north[i]);
+            }
+        });
     }
 
     /// Fill a cell-centered field from the pair of east/west faces flanking
@@ -341,13 +346,14 @@ impl CGridOperators {
         &self,
         face: &Field2D<f64>,
         center: &mut Field2D<f64>,
-        combine: impl Fn(f64, f64) -> f64,
+        combine: impl Fn(f64, f64) -> f64 + Sync,
     ) {
-        for j in 0..self.grid.ny() {
-            for i in 0..self.grid.nx() {
-                *at_mut(center, i, j) = combine(at(face, i, j), at(face, i + 1, j));
+        write_rows(center, |j, center_row| {
+            let faces = face.row(j);
+            for (i, value) in center_row.iter_mut().enumerate() {
+                *value = combine(faces[i], faces[i + 1]);
             }
-        }
+        });
     }
 
     /// Fill a cell-centered field from the pair of north/south faces flanking
@@ -356,13 +362,15 @@ impl CGridOperators {
         &self,
         face: &Field2D<f64>,
         center: &mut Field2D<f64>,
-        combine: impl Fn(f64, f64) -> f64,
+        combine: impl Fn(f64, f64) -> f64 + Sync,
     ) {
-        for j in 0..self.grid.ny() {
-            for i in 0..self.grid.nx() {
-                *at_mut(center, i, j) = combine(at(face, i, j), at(face, i, j + 1));
+        write_rows(center, |j, center_row| {
+            let south = face.row(j);
+            let north = face.row(j + 1);
+            for (i, value) in center_row.iter_mut().enumerate() {
+                *value = combine(south[i], north[i]);
             }
-        }
+        });
     }
 
     /// Panic unless `field` has the shape this grid asks for at `staggering`.
@@ -398,20 +406,6 @@ const FOUR_POINT_AVERAGE_WEIGHT: f64 = AVERAGE_WEIGHT * AVERAGE_WEIGHT;
 /// It is deliberately not a NaN: an RK4 stage multiplies the wall by a normal
 /// velocity that is itself zero there, and a NaN would poison the whole field.
 const BOUNDARY_FACE: f64 = 0.0;
-
-/// The value at `(i, j)`, which the shape check has already proved is present.
-fn at(field: &Field2D<f64>, i: usize, j: usize) -> f64 {
-    *field
-        .get(i, j)
-        .expect("shape checked on entry, so this point exists")
-}
-
-/// Mutable access to `(i, j)`, likewise already proved present.
-fn at_mut(field: &mut Field2D<f64>, i: usize, j: usize) -> &mut f64 {
-    field
-        .get_mut(i, j)
-        .expect("shape checked on entry, so this point exists")
-}
 
 fn check_positive(axis: Axis, value_m: f64) -> Result<(), SpacingError> {
     if !value_m.is_finite() || value_m <= 0.0 {

@@ -914,6 +914,7 @@ dependencies = [
  "bincode",
  "clap",
  "criterion",
+ "rayon",
  "serde",
  "serde_json",
  "termocline-format",
@@ -2953,6 +2954,9 @@ dependencies = [
 [[package]]
 name = "termocline-grid"
 version = "0.1.0"
+dependencies = [
+ "rayon",
+]
 
 [[package]]
 name = "termocline-numerics"

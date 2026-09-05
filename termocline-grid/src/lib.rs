@@ -16,6 +16,8 @@
 //!
 //! [ADR-0003]: ../../docs/planning/adr/0003-numerical-scheme.md
 
+pub mod sweep;
+
 use std::fmt;
 
 /// One of the grid's two axes, named so an error can say which one it means.
@@ -232,6 +234,25 @@ impl<T> Field2D<T> {
     /// the field.
     pub fn get_mut(&mut self, i: usize, j: usize) -> Option<&mut T> {
         self.flat_index(i, j).map(|flat| &mut self.values[flat])
+    }
+
+    /// The `j`th row of the field: its `nx` values, contiguous.
+    ///
+    /// The read side of [`sweep::write_rows`], which hands a kernel one output
+    /// row at a time and leaves it to reach for the input rows it needs.
+    ///
+    /// # Panics
+    /// If `j` is past the last row. A kernel indexes rows the field's own
+    /// shape defines, so an out-of-range row means the calling code is wrong,
+    /// which is what panics are for.
+    #[must_use]
+    pub fn row(&self, j: usize) -> &[T] {
+        assert!(
+            j < self.ny,
+            "row {j} is outside a field of {} rows",
+            self.ny
+        );
+        &self.values[j * self.nx..][..self.nx]
     }
 
     /// The backing buffer, row-major.

@@ -78,7 +78,9 @@ use crate::forcing::{CompositeWind, WindForcing, WindStressField};
 use crate::integrator::Rk4;
 use crate::params::PhysicalParams;
 use crate::scenario::Scenario;
-use crate::shallow_water::{subtract_damping, turn_gradient_into_acceleration, ShallowWaterRhs};
+use crate::shallow_water::{
+    subtract_damping, turn_gradient_into_acceleration, write_continuity, ShallowWaterRhs,
+};
 use crate::solver::{check_rotation_timestep, SolverError};
 use crate::state::OceanState;
 
@@ -762,15 +764,12 @@ impl TermProfiler {
             .ddy_face_to_center(state.v(), &mut self.meridional_divergence_per_s);
         mark = charge(RhsTerm::MeridionalDivergence, mark);
 
-        let thickness_rate = tendency.h_mut().as_mut_slice().iter_mut();
-        let divergence = self
-            .zonal_divergence_per_s
-            .as_slice()
-            .iter()
-            .zip(self.meridional_divergence_per_s.as_slice());
-        for (rate, (zonal, meridional)) in thickness_rate.zip(divergence) {
-            *rate = minus_mean_depth_m * (zonal + meridional);
-        }
+        write_continuity(
+            tendency.h_mut(),
+            &self.zonal_divergence_per_s,
+            &self.meridional_divergence_per_s,
+            minus_mean_depth_m,
+        );
         mark = charge(RhsTerm::Continuity, mark);
 
         subtract_damping(tendency.h_mut(), state.h(), damping_per_s);

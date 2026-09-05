@@ -48,6 +48,7 @@
 //! - A face→center difference is defined at every cell, so `∂h/∂t` has no such
 //!   gap.
 
+use termocline_grid::sweep::write_rows;
 use termocline_grid::{Field2D, Grid, H_STAGGERING};
 use termocline_numerics::{CGridOperators, Spacing};
 
@@ -143,16 +144,12 @@ impl ShallowWaterRhs {
             .ddx_face_to_center(state.u(), &mut self.zonal_divergence_per_s);
         self.operators
             .ddy_face_to_center(state.v(), &mut self.meridional_divergence_per_s);
-        let minus_mean_depth_m = -self.params.mean_thermocline_depth_m();
-        let thickness_rate = tendency.h_mut().as_mut_slice().iter_mut();
-        let divergence = self
-            .zonal_divergence_per_s
-            .as_slice()
-            .iter()
-            .zip(self.meridional_divergence_per_s.as_slice());
-        for (rate, (zonal, meridional)) in thickness_rate.zip(divergence) {
-            *rate = minus_mean_depth_m * (zonal + meridional);
-        }
+        write_continuity(
+            tendency.h_mut(),
+            &self.zonal_divergence_per_s,
+            &self.meridional_divergence_per_s,
+            -self.params.mean_thermocline_depth_m(),
+        );
         subtract_damping(tendency.h_mut(), state.h(), damping_per_s);
     }
 
@@ -182,9 +179,38 @@ pub(crate) fn turn_gradient_into_acceleration(
     stress_pa: &Field2D<f64>,
     layer_mass_kg_per_m2: f64,
 ) {
-    for (value, stress) in field.as_mut_slice().iter_mut().zip(stress_pa.as_slice()) {
-        *value = minus_g_prime_m_per_s2 * *value + stress / layer_mass_kg_per_m2;
-    }
+    write_rows(field, |j, row| {
+        let stresses = stress_pa.row(j);
+        for (value, stress) in row.iter_mut().zip(stresses) {
+            *value = minus_g_prime_m_per_s2 * *value + stress / layer_mass_kg_per_m2;
+        }
+    });
+}
+
+/// Write the continuity equation's divergence term
+/// `∂h/∂t = −H·(∂u/∂x + ∂v/∂y)`, in m/s, over the cell centers.
+///
+/// The two halves of the divergence arrive as separate cell-centered fields
+/// because the C-grid operators produce them separately; this is where they
+/// are added and scaled by the mean depth. Damping is not here — it is
+/// [`subtract_damping`], applied to `h` exactly as it is to `u` and `v`.
+///
+/// `pub(crate)` for the same reason as its neighbours: [`crate::profiling`]
+/// charges this kernel, and a profiler timing its own copy of the loop would
+/// be timing something the engine does not run.
+pub(crate) fn write_continuity(
+    thickness_rate_m_per_s: &mut Field2D<f64>,
+    zonal_divergence_per_s: &Field2D<f64>,
+    meridional_divergence_per_s: &Field2D<f64>,
+    minus_mean_depth_m: f64,
+) {
+    write_rows(thickness_rate_m_per_s, |j, row| {
+        let zonal = zonal_divergence_per_s.row(j);
+        let meridional = meridional_divergence_per_s.row(j);
+        for (rate, (zonal, meridional)) in row.iter_mut().zip(zonal.iter().zip(meridional)) {
+            *rate = minus_mean_depth_m * (zonal + meridional);
+        }
+    });
 }
 
 /// Subtract the Rayleigh damping `r·anomaly` from a tendency that already
@@ -205,13 +231,12 @@ pub(crate) fn subtract_damping(
     anomaly: &Field2D<f64>,
     rayleigh_damping_per_s: f64,
 ) {
-    for (rate, value) in tendency
-        .as_mut_slice()
-        .iter_mut()
-        .zip(anomaly.as_slice().iter())
-    {
-        *rate -= rayleigh_damping_per_s * value;
-    }
+    write_rows(tendency, |j, row| {
+        let anomalies = anomaly.row(j);
+        for (rate, value) in row.iter_mut().zip(anomalies) {
+            *rate -= rayleigh_damping_per_s * value;
+        }
+    });
 }
 
 /// The time derivative of `state` under `wind_stress`, as a freshly allocated
