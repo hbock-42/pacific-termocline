@@ -15,11 +15,13 @@
 //! [ADR-0006]: ../../docs/planning/adr/0006-web-visualizer.md
 
 mod app;
+mod heatmap;
 mod loading;
 mod pending;
 mod run;
 
 pub use app::VisualizerApp;
+pub use heatmap::{DivergingScale, Heatmap};
 #[cfg(not(target_arch = "wasm32"))]
 pub use loading::native::read_run_directory;
 pub use loading::Loader;

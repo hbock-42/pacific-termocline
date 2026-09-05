@@ -72,7 +72,24 @@ pub fn run_bytes(header: &RunHeader) -> RunBytes {
 }
 
 /// `count` encoded frames on `header`'s grid, spaced by its output interval.
+///
+/// Every field is zero: what these serve is a test of the header and of the
+/// shape of the frames, never of their values.
 pub fn encoded_frames(header: &RunHeader, count: u64) -> Vec<u8> {
+    let zero_h = vec![0.0; header.grid.field_len(Variable::ThermoclineDepthAnomaly)];
+    encoded_frames_with_h(header, count, |_| zero_h.clone())
+}
+
+/// `count` encoded frames on `header`'s grid whose thermocline depth anomaly
+/// `h` is `h_m(index)`, in metres, and whose every other field is zero.
+///
+/// `h` alone because it is the field the basin map draws; the currents and the
+/// wind stress only have to be the right shape for the frame to encode.
+pub fn encoded_frames_with_h(
+    header: &RunHeader,
+    count: u64,
+    h_m: impl Fn(u64) -> Vec<f64>,
+) -> Vec<u8> {
     let grid = header.grid;
     let field = |variable| vec![0.0; grid.field_len(variable)];
     let mut frames = Vec::new();
@@ -82,7 +99,7 @@ pub fn encoded_frames(header: &RunHeader, count: u64) -> Vec<u8> {
         let frame = Frame::new(
             t_s,
             &grid,
-            field(Variable::ThermoclineDepthAnomaly),
+            h_m(index),
             field(Variable::ZonalCurrentAnomaly),
             field(Variable::MeridionalCurrentAnomaly),
             field(Variable::ZonalWindStress),

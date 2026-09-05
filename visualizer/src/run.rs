@@ -9,11 +9,11 @@
 
 use std::fmt;
 
-use termocline_format::{RunHeader, RunReadError, RunReader};
+use termocline_format::{Frame, RunHeader, RunReadError, RunReader};
 
 /// Seconds in a day, for reporting a run's model time in the unit its output
 /// cadence is chosen in (`steady-trades.toml` writes a frame a day).
-const SECONDS_PER_DAY: f64 = 86_400.0;
+pub(crate) const SECONDS_PER_DAY: f64 = 86_400.0;
 
 /// The two byte sources a run is made of, however they arrived.
 ///
@@ -50,8 +50,9 @@ impl MetadataRow {
 /// A run the shell has loaded: its header decoded, its frames still bytes.
 ///
 /// The frames are kept rather than dropped because on the web they cannot be
-/// re-read — the bytes a user dropped or a fetch returned are the only copy —
-/// and Epic 09 draws them. T-08.1 only counts them.
+/// re-read: the bytes a user dropped or a fetch returned are the only copy,
+/// and any frame of the run may be the one asked for next
+/// ([`LoadedRun::frame`]).
 #[derive(Debug, Clone)]
 pub struct LoadedRun {
     /// Where the run came from, for a reader checking they opened the one they
@@ -59,6 +60,9 @@ pub struct LoadedRun {
     source: String,
     /// Everything the frames do not say about themselves.
     header: RunHeader,
+    /// The header's own bytes, kept so a [`RunReader`] can be rebuilt over the
+    /// frames whenever one is wanted back.
+    header_bytes: Vec<u8>,
     /// The run's encoded frames, undecoded.
     frames: Vec<u8>,
 }
@@ -87,10 +91,13 @@ impl LoadedRun {
     ///
     /// [format version]: termocline_format::FORMAT_VERSION
     pub fn from_bytes(source: impl Into<String>, bytes: RunBytes) -> Result<Self, RunReadError> {
-        let RunBytes { header, frames } = bytes;
+        let RunBytes {
+            header: header_source,
+            frames,
+        } = bytes;
         // Taken by value, and the frames moved rather than copied: a run in a
         // browser tab has no second copy to spare (ADR-0006).
-        let mut reader = RunReader::new(header.as_slice(), frames.as_slice())?;
+        let mut reader = RunReader::new(header_source.as_slice(), frames.as_slice())?;
         let header = reader.header().clone();
         for frame in reader.by_ref() {
             frame?;
@@ -98,6 +105,7 @@ impl LoadedRun {
         Ok(Self {
             source: source.into(),
             header,
+            header_bytes: header_source,
             frames,
         })
     }
@@ -114,10 +122,41 @@ impl LoadedRun {
         &self.header
     }
 
-    /// The run's encoded frames, for the renderer of Epic 09.
+    /// The run's encoded frames, still encoded. [`LoadedRun::frame`] is how
+    /// to get one back; this is the whole run, for a caller that wants to hand
+    /// the bytes on.
     #[must_use]
     pub fn frame_bytes(&self) -> &[u8] {
         &self.frames
+    }
+
+    /// Frame number `index`, counting from zero, or `None` past the end of the
+    /// run.
+    ///
+    /// The format is forward-only by design (`termocline_format::reader`), so
+    /// reaching frame `n` decodes the `n` before it and throws them away. That
+    /// is the cost of not holding a decoded run in a browser tab (ADR-0006),
+    /// and it is why the shell caches the map it built rather than rebuilding
+    /// it every time the panel repaints.
+    ///
+    /// # Panics
+    /// If a frame this run already decoded at load does not decode again. That
+    /// is not bad input — [`LoadedRun::from_bytes`] refused bad input — but
+    /// this code disagreeing with itself.
+    #[must_use]
+    pub fn frame(&self, index: u64) -> Option<Frame> {
+        if index >= self.header.output.frame_count {
+            return None;
+        }
+        let reader = RunReader::new(self.header_bytes.as_slice(), self.frames.as_slice())
+            .expect("the header decoded at load");
+        let index = usize::try_from(index).expect("a frame index that fits the run fits a usize");
+        let frame = reader
+            .take(index + 1)
+            .last()
+            .expect("the run has at least index + 1 frames")
+            .expect("every frame decoded at load");
+        Some(frame)
     }
 
     /// What the shell shows about this run, in the order it shows it.
