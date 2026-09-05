@@ -45,6 +45,7 @@ use termocline_format::{FormatError, GridSpec, RunHeader};
 
 use crate::coriolis::BetaPlane;
 use crate::forcing::WindStressField;
+use crate::progress::RunObserver;
 use crate::run_writer::{RunWriteError, RunWriter};
 use crate::scenario::{Scenario, ScenarioError};
 use crate::solver::{Solver, SolverError};
@@ -151,12 +152,27 @@ impl RunReport {
 /// read or built, a grid the output format cannot describe, a timestep the
 /// scheme refuses, or a run directory that could not be written.
 pub fn run_scenario_file(config_path: &Path, directory: &Path) -> Result<RunReport, RunError> {
+    run_scenario_file_observed(config_path, directory, &mut ())
+}
+
+/// [`run_scenario_file`], reporting what it does to `observer`.
+///
+/// The variant the CLI calls: the observer is where progress and logging live
+/// (T-06.2), so that this module decides nothing about a terminal.
+///
+/// # Errors
+/// The errors of [`run_scenario_file`].
+pub fn run_scenario_file_observed(
+    config_path: &Path,
+    directory: &Path,
+    observer: &mut dyn RunObserver,
+) -> Result<RunReport, RunError> {
     let scenario = Scenario::load(config_path)?;
     let description = config_path.file_stem().map_or_else(
         || config_path.display().to_string(),
         |stem| stem.to_string_lossy().into_owned(),
     );
-    run_scenario(&scenario, &description, directory)
+    run_scenario_observed(&scenario, &description, directory, observer)
 }
 
 /// Run `scenario` to the end of its output schedule, writing it into
@@ -173,6 +189,24 @@ pub fn run_scenario(
     scenario: &Scenario,
     description: &str,
     directory: &Path,
+) -> Result<RunReport, RunError> {
+    run_scenario_observed(scenario, description, directory, &mut ())
+}
+
+/// [`run_scenario`], reporting what it does to `observer`.
+///
+/// The run tells the observer four things: that it started, that a step was
+/// taken, that a frame was written, and that it finished. What any of that
+/// looks like — a progress bar, a log line, nothing at all — is the observer's
+/// business, not this module's.
+///
+/// # Errors
+/// The errors of [`run_scenario`].
+pub fn run_scenario_observed(
+    scenario: &Scenario,
+    description: &str,
+    directory: &Path,
+    observer: &mut dyn RunObserver,
 ) -> Result<RunReport, RunError> {
     let basin = scenario.basin();
     let grid = basin.grid();
@@ -202,22 +236,30 @@ pub fn run_scenario(
     let mut stress = WindStressField::calm(grid);
 
     let mut writer = RunWriter::create(directory, &header)?;
+    observer.run_started(description, schedule);
     let mut frames_written = 0;
     for step in 0..=schedule.total_steps() {
-        let t_s = step as f64 * schedule.dt_s();
+        let t_s = schedule.model_time_at_step(step);
         if schedule.writes_at_step(step) {
             stress.sample(basin, &wind, t_s);
             writer.append(t_s, &state, &stress)?;
+            observer.frame_written(frames_written, t_s);
             frames_written += 1;
         }
         if step < schedule.total_steps() {
             solver.step_forced_by(&mut state, t_s, basin, &wind);
+            // The step just taken is `step + 1` of the run, and it reached the
+            // model time of the *next* iteration — which is what the observer
+            // reports, so the time on screen is the time the state is at.
+            observer.step_taken(step + 1, schedule.model_time_at_step(step + 1));
         }
     }
     writer.finish()?;
 
-    Ok(RunReport {
+    let report = RunReport {
         steps_taken: schedule.total_steps(),
         frames_written,
-    })
+    };
+    observer.run_finished(&report);
+    Ok(report)
 }
