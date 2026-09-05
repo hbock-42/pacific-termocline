@@ -61,8 +61,12 @@
 //! meridional_decay_scale_m = 361000.0
 //! ```
 //!
-//! Three worked examples live in `engine/scenarios/`, one per scenario of
-//! `docs/planning/01-scientific-model.md`.
+//! The sketch above is a tour, not the specification: every field, its unit,
+//! its default and the bound behind it are in
+//! `docs/scenario-config-reference.md`, which
+//! `engine/tests/scenario_config_reference.rs` holds to this module field by
+//! field. Three worked examples live in `engine/scenarios/`, one per scenario
+//! of `docs/planning/01-scientific-model.md`.
 
 use std::fmt;
 use std::fs;
