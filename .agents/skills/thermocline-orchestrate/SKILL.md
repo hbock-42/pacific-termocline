@@ -127,6 +127,21 @@ it into the commit. Run the full gate locally before force-pushing.
 The ruleset requires branches be up to date, so a stale PR cannot merge even
 if you try. Let that be the backstop, not the plan.
 
+## Sweep for orphan branches
+
+A worker sometimes pushes a follow-up branch with **no PR** — work it could
+not fit in its own ticket, often because a sibling ticket had not merged yet.
+Nothing surfaces it, so after each wave:
+
+```
+git ls-remote --heads origin | grep -v 'main$'
+```
+
+Anything with no open PR is orphaned work. Cherry-pick it onto current `main`
+rather than merging the branch: it was cut before the wave landed, so merging
+it whole can revert tickets that merged after it. Run the gate, open a PR,
+then delete the stale branch.
+
 ## When a worker fails
 
 A `worker_done` with `--outcome failed` means the worker spent both attempts.
