@@ -30,7 +30,10 @@ pub use loading::Loader;
 pub use pending::PendingRun;
 pub use run::{LoadedRun, MetadataRow, RunBytes};
 pub use scrubber::Scrubber;
-pub use wind::{StressScale, WindArrow, WindOverlay};
+pub use wind::{
+    StressScale, WindArrow, WindOverlay, ARROW_SPACING_CELLS, MAX_ARROW_LENGTH_CELLS,
+    MIN_ARROW_LENGTH_CELLS,
+};
 
 /// Re-exported so the visualizer and engine agree on one format version.
 pub use termocline_format::FORMAT_VERSION;

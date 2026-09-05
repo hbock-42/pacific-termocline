@@ -308,20 +308,6 @@ const COLOR_BAR_HEIGHT: f32 = 14.0;
 /// beyond the frame it belongs to.
 const COLOR_BAR_SAMPLES: usize = 256;
 
-/// Cells between neighbouring wind arrows, along both axes.
-///
-/// The stress is a field: one arrow per cell would be 32 000 of them over the
-/// control basin, which is ink rather than information. Twelve of its
-/// half-degree cells is six degrees of arc, so a dozen rows still fall inside
-/// the equatorial waveguide the trades force.
-const ARROW_SPACING_CELLS: usize = 12;
-
-/// Length in cells of an arrow drawing the strongest stress in the run.
-///
-/// Shorter than [`ARROW_SPACING_CELLS`], so that even a basin of arrows at full
-/// length does not run into itself.
-const MAX_ARROW_LENGTH_CELLS: f64 = 9.0;
-
 /// Width of the arrow line, in points.
 const ARROW_WIDTH_PT: f32 = 1.2;
 
@@ -529,13 +515,8 @@ impl BasinMap {
             .ok_or_else(|| format!("this run holds no frame {index}"))?;
         let heatmap = Heatmap::of_frame(run.header().grid, &frame, run.anomaly_scale())
             .map_err(|error| error.to_string())?;
-        let wind = WindOverlay::of_frame(
-            run.header().grid,
-            &frame,
-            run.wind_stress_scale(),
-            ARROW_SPACING_CELLS,
-        )
-        .map_err(|error| error.to_string())?;
+        let wind = WindOverlay::of_frame(run.header().grid, &frame, run.wind_stress_scale())
+            .map_err(|error| error.to_string())?;
         let image = egui::ColorImage::from_rgb([heatmap.width(), heatmap.height()], heatmap.rgb());
         Ok(DrawnFrame {
             t_s: frame.t_s(),
@@ -615,7 +596,7 @@ fn draw_wind_arrows(ui: &egui::Ui, map: egui::Rect, drawn: &DrawnFrame) {
     let painter = ui.painter().with_clip_rect(map);
     for arrow in drawn.wind.arrows() {
         let tail = to_screen(arrow.tail_cells());
-        let along = to_screen(arrow.tip_cells(MAX_ARROW_LENGTH_CELLS)) - tail;
+        let along = to_screen(arrow.tip_cells()) - tail;
         for (width, color) in [
             (ARROW_CASING_WIDTH_PT, ARROW_CASING_COLOR),
             (ARROW_WIDTH_PT, ARROW_COLOR),

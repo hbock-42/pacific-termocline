@@ -27,9 +27,12 @@
 
 mod common;
 
-use common::{encoded_frames_with_fields, steady_trades_header, FrameFields, NX, NY};
+use common::{encoded_frames_with_fields, steady_trades_header, FrameFields, NX, NY, PACIFIC};
 use termocline_format::{RunHeader, Variable};
-use visualizer::{Heatmap, LoadedRun, RunBytes, WindOverlay};
+use visualizer::{
+    Heatmap, LoadedRun, RunBytes, WindOverlay, ARROW_SPACING_CELLS, MAX_ARROW_LENGTH_CELLS,
+    MIN_ARROW_LENGTH_CELLS,
+};
 
 /// `τ₀`, the equatorial zonal stress of `steady-trades.toml`, in pascals.
 /// Negative because the alizés are easterly.
@@ -46,16 +49,16 @@ const MERIDIONAL_DECAY_SCALE_M: f64 = 361_000.0;
 /// against is restated here rather than imported.
 const METRES_PER_DEGREE_OF_ARC: f64 = 6_371_008.8 * std::f64::consts::PI / 180.0;
 
-/// Cells between neighbouring arrows, along both axes, in these tests.
+/// A meridional decay scale wide enough that the waveguide covers most of the
+/// basin, in metres: ten times the control scenario's.
 ///
-/// Ten of the scenario's half-degree cells is five degrees of arc — coarse
-/// enough that the overlay is a scatter of arrows over the map rather than a
-/// wall of ink, fine enough that several rows land inside the waveguide `Ly`
-/// describes.
-const SPACING_CELLS: usize = 10;
-
-/// Length in cells of an arrow at the full extent of the stress scale.
-const MAX_ARROW_LENGTH_CELLS: f64 = 8.0;
+/// The shape of the forcing off the equator is what
+/// [`the_arrows_shorten_where_the_stress_weakens`] is about, and under the
+/// control scenario's own `Ly` the stress a few degrees off the equator is
+/// already too weak to draw at all. A wider waveguide is a scenario the engine
+/// takes — the decay scale is scenario input — and it puts several arrow rows
+/// on the falling part of the same Gaussian.
+const WIDE_DECAY_SCALE_M: f64 = 10.0 * MERIDIONAL_DECAY_SCALE_M;
 
 /// A relative tolerance of a few ULP.
 ///
@@ -70,9 +73,9 @@ const FEW_ULP: f64 = 4.0 * f64::EPSILON;
 ///
 /// The scenario's analytic profile, evaluated independently of the code under
 /// test.
-fn trade_wind_stress_pa(latitude_deg: f64) -> f64 {
+fn trade_wind_stress_pa(latitude_deg: f64, decay_scale_m: f64) -> f64 {
     let y_m = latitude_deg * METRES_PER_DEGREE_OF_ARC;
-    let scaled = y_m / MERIDIONAL_DECAY_SCALE_M;
+    let scaled = y_m / decay_scale_m;
     EQUATORIAL_ZONAL_STRESS_PA * (-scaled * scaled).exp()
 }
 
@@ -81,9 +84,9 @@ fn trade_wind_stress_pa(latitude_deg: f64) -> f64 {
 /// Not `τ₀`: the equator falls on a cell *edge* of this basin, so the two rows
 /// either side of it sit a quarter degree off and carry very slightly less than
 /// the equatorial stress. The profile says how much less.
-fn strongest_trade_wind_stress_pa(header: &RunHeader) -> f64 {
+fn strongest_trade_wind_stress_pa(header: &RunHeader, decay_scale_m: f64) -> f64 {
     (0..header.grid.ny())
-        .map(|j| trade_wind_stress_pa(cell_centre_latitude_deg(header, j)).abs())
+        .map(|j| trade_wind_stress_pa(cell_centre_latitude_deg(header, j), decay_scale_m).abs())
         .fold(0.0_f64, f64::max)
 }
 
@@ -98,26 +101,54 @@ fn cell_centre_latitude_deg(header: &RunHeader, j: usize) -> f64 {
     extent.south_deg_north + offset * resolution_deg
 }
 
-/// The steady trade winds sampled onto `header`'s C-grid: `τx` at the
-/// east/west faces, `τy` calm.
+/// Trade winds of decay scale `decay_scale_m` sampled onto `header`'s C-grid:
+/// `τx` at the east/west faces, `τy` calm.
+///
+/// The scale is a parameter because it is scenario input — exactly the knob the
+/// forcing sensitivity of Epic 07 varies — not because anything here needs it
+/// to vary for its own convenience.
 ///
 /// `τx` does not vary with `x`, so every face of a row carries the row's own
 /// value; the row's `y` is the cell centre's, which is where `u` — and so `τx`
 /// — sits on the meridional axis (`Staggering::EastWestFace`).
-fn steady_trades_fields(header: &RunHeader) -> FrameFields {
+fn trade_wind_fields(header: &RunHeader, decay_scale_m: f64) -> FrameFields {
     let (faces_x, faces_y) = header
         .grid
         .grid()
         .field_shape(Variable::ZonalWindStress.staggering());
     let mut tau_x_pa = Vec::with_capacity(faces_x * faces_y);
     for j in 0..faces_y {
-        let stress_pa = trade_wind_stress_pa(cell_centre_latitude_deg(header, j));
+        let stress_pa = trade_wind_stress_pa(cell_centre_latitude_deg(header, j), decay_scale_m);
         tau_x_pa.extend(std::iter::repeat_n(stress_pa, faces_x));
     }
     FrameFields {
         tau_x_pa,
         ..FrameFields::calm(header)
     }
+}
+
+/// A uniform easterly stress of `tau_x_pa` over the whole basin.
+///
+/// Not a scenario — the trades decay away from the equator — but the field that
+/// asks a layout question without a magnitude question mixed in: every cell
+/// carries the same stress, so every cell the layout picks gets an arrow.
+fn uniform_stress_fields(header: &RunHeader, tau_x_pa: f64) -> FrameFields {
+    let calm = FrameFields::calm(header);
+    FrameFields {
+        tau_x_pa: vec![tau_x_pa; calm.tau_x_pa.len()],
+        ..calm
+    }
+}
+
+/// The image row of the arrow line closest to the equator.
+fn nearest_arrow_row(header: &RunHeader) -> usize {
+    arrow_line(header.grid.ny())
+        .min_by(|a, b| {
+            latitude_of_row(header, *a as f64)
+                .abs()
+                .total_cmp(&latitude_of_row(header, *b as f64).abs())
+        })
+        .expect("the basin carries arrows")
 }
 
 /// A one-frame run of `header`'s shape whose only frame carries `fields`.
@@ -137,13 +168,8 @@ fn run_of_one_frame(header: &RunHeader, fields: FrameFields) -> LoadedRun {
 fn overlay_of(header: &RunHeader, fields: FrameFields) -> WindOverlay {
     let run = run_of_one_frame(header, fields);
     let frame = run.frame(0).expect("a one-frame run has a frame 0");
-    WindOverlay::of_frame(
-        run.header().grid,
-        &frame,
-        run.wind_stress_scale(),
-        SPACING_CELLS,
-    )
-    .expect("the frame fits its own grid")
+    WindOverlay::of_frame(run.header().grid, &frame, run.wind_stress_scale())
+        .expect("the frame fits its own grid")
 }
 
 #[test]
@@ -152,7 +178,10 @@ fn the_steady_trades_are_drawn_as_easterly_arrows_along_the_equator() {
     // scenario forces must carry an easterly stress and be drawn pointing
     // west: on the image, west is the −x direction.
     let header = steady_trades_header(1);
-    let overlay = overlay_of(&header, steady_trades_fields(&header));
+    let overlay = overlay_of(
+        &header,
+        trade_wind_fields(&header, MERIDIONAL_DECAY_SCALE_M),
+    );
 
     let waveguide_deg = MERIDIONAL_DECAY_SCALE_M / METRES_PER_DEGREE_OF_ARC;
     let mut equatorial = 0;
@@ -168,7 +197,7 @@ fn the_steady_trades_are_drawn_as_easterly_arrows_along_the_equator() {
             "the alizés are easterly, so τx < 0 at {latitude_deg}°: {}",
             arrow.tau_x_pa()
         );
-        let (tip_x, tip_y) = arrow.tip_cells(MAX_ARROW_LENGTH_CELLS);
+        let (tip_x, tip_y) = arrow.tip_cells();
         assert!(
             tip_x < tail_x,
             "an easterly stress at {latitude_deg}° must be drawn pointing west: \
@@ -181,8 +210,8 @@ fn the_steady_trades_are_drawn_as_easterly_arrows_along_the_equator() {
         );
     }
     assert!(
-        equatorial >= 4,
-        "the waveguide is wider than one arrow row; only {equatorial} arrows fell in it"
+        equatorial >= arrow_line(NX).count(),
+        "a whole row of the lattice falls inside the waveguide; only {equatorial} arrows did"
     );
 }
 
@@ -192,12 +221,15 @@ fn each_arrow_carries_the_stress_the_scenario_puts_at_its_latitude() {
     // or averaged across the wrong pair of faces, would still point west
     // everywhere. The analytic profile says what the value must be.
     let header = steady_trades_header(1);
-    let overlay = overlay_of(&header, steady_trades_fields(&header));
+    let overlay = overlay_of(
+        &header,
+        trade_wind_fields(&header, MERIDIONAL_DECAY_SCALE_M),
+    );
 
     for arrow in overlay.arrows() {
         let (_, tail_y) = arrow.tail_cells();
         let latitude_deg = latitude_of_row(&header, tail_y);
-        let expected_pa = trade_wind_stress_pa(latitude_deg);
+        let expected_pa = trade_wind_stress_pa(latitude_deg, MERIDIONAL_DECAY_SCALE_M);
         assert!(
             (arrow.tau_x_pa() - expected_pa).abs() <= FEW_ULP * expected_pa.abs(),
             "τx at {latitude_deg}°: expected {expected_pa}, got {}",
@@ -212,12 +244,12 @@ fn each_arrow_carries_the_stress_the_scenario_puts_at_its_latitude() {
 }
 
 #[test]
-fn the_arrows_are_longest_on_the_equator_and_shorten_away_from_it() {
-    // The Gaussian is the whole meridional structure of the forcing. An
-    // overlay that drew every arrow the same length would hide it, and hiding
-    // it is hiding why the response is trapped near the equator.
+fn the_arrows_shorten_where_the_stress_weakens() {
+    // The Gaussian is the whole meridional structure of the forcing. An overlay
+    // that drew every arrow the same length would hide it, and hiding it is
+    // hiding why the response is trapped near the equator.
     let header = steady_trades_header(1);
-    let overlay = overlay_of(&header, steady_trades_fields(&header));
+    let overlay = overlay_of(&header, trade_wind_fields(&header, WIDE_DECAY_SCALE_M));
 
     let mut by_latitude: Vec<(f64, f64)> = overlay
         .arrows()
@@ -232,6 +264,11 @@ fn the_arrows_are_longest_on_the_equator_and_shorten_away_from_it() {
         })
         .collect();
     by_latitude.sort_by(|a, b| a.0.abs().total_cmp(&b.0.abs()));
+    assert!(
+        by_latitude.len() >= 4,
+        "a profile of {} arrows says nothing about a shape",
+        by_latitude.len()
+    );
 
     for pair in by_latitude.windows(2) {
         let ((near_deg, near), (far_deg, far)) = (pair[0], pair[1]);
@@ -242,18 +279,16 @@ fn the_arrows_are_longest_on_the_equator_and_shorten_away_from_it() {
         );
     }
 
-    // e⁻¹ of the equatorial stress at one decay scale off the equator, from
-    // the scenario's own profile. The nearest arrow row is a fraction of a
-    // degree off `Ly`, so the comparison is against the profile evaluated at
-    // that row rather than against e⁻¹ itself.
-    let (nearest_deg, _) = by_latitude[0];
+    // And the lengths are the profile itself, not merely decreasing: each is
+    // the stress the scenario puts at that latitude over the run's scale.
     let scale_pa = overlay.scale().max_magnitude_pa();
-    let expected = trade_wind_stress_pa(nearest_deg).abs() / scale_pa;
-    assert!(
-        (by_latitude[0].1 - expected).abs() <= FEW_ULP,
-        "the arrow closest to the equator is {} of the scale; the profile says {expected}",
-        by_latitude[0].1
-    );
+    for (latitude_deg, fraction) in by_latitude {
+        let expected = trade_wind_stress_pa(latitude_deg, WIDE_DECAY_SCALE_M).abs() / scale_pa;
+        assert!(
+            (fraction - expected).abs() <= FEW_ULP,
+            "the arrow at {latitude_deg}° is {fraction} of the scale; the profile says {expected}"
+        );
+    }
 }
 
 #[test]
@@ -268,7 +303,7 @@ fn a_northward_stress_is_drawn_pointing_up_the_image() {
 
     for arrow in overlay.arrows() {
         let (tail_x, tail_y) = arrow.tail_cells();
-        let (tip_x, tip_y) = arrow.tip_cells(MAX_ARROW_LENGTH_CELLS);
+        let (tip_x, tip_y) = arrow.tip_cells();
         assert!(
             tip_y < tail_y,
             "a northward stress belongs pointing up: tail {tail_y}, tip {tip_y}"
@@ -320,26 +355,102 @@ fn an_arrow_reports_the_stress_at_the_cell_centre_between_the_faces_it_spans() {
 fn the_arrows_sit_at_cell_centres_spaced_across_the_whole_basin() {
     // The overlay is drawn over the map in the map's own coordinates, so an
     // arrow's position is a cell-centre position: an arrow that landed on a
-    // cell corner would be drawn half a cell from the stress it reports.
+    // cell corner would be drawn half a cell from the stress it reports. The
+    // stress is uniform here so that every cell the layout picks carries an
+    // arrow, and the layout is the only thing under test.
     let header = steady_trades_header(1);
-    let overlay = overlay_of(&header, steady_trades_fields(&header));
+    let overlay = overlay_of(
+        &header,
+        uniform_stress_fields(&header, EQUATORIAL_ZONAL_STRESS_PA),
+    );
 
-    // The arrows start half a spacing in from the western and northern edges,
-    // so that the outermost of them sit inside the map rather than on its rim.
-    let expected_columns = (SPACING_CELLS / 2..NX).step_by(SPACING_CELLS).count();
-    let expected_rows = (SPACING_CELLS / 2..NY).step_by(SPACING_CELLS).count();
-    assert_eq!(overlay.arrows().len(), expected_columns * expected_rows);
+    let columns: Vec<usize> = arrow_line(NX).collect();
+    let rows: Vec<usize> = arrow_line(NY).collect();
+    assert_eq!(overlay.arrows().len(), columns.len() * rows.len());
     for arrow in overlay.arrows() {
         let (x_cells, y_cells) = arrow.tail_cells();
-        #[allow(clippy::cast_precision_loss)]
-        let (width, height) = (NX as f64, NY as f64);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let (column, row) = (x_cells.floor() as usize, y_cells.floor() as usize);
         assert!(
-            (0.0..width).contains(&x_cells) && (0.0..height).contains(&y_cells),
-            "an arrow at ({x_cells}, {y_cells}) is off a {width} × {height} map"
+            columns.contains(&column) && rows.contains(&row),
+            "an arrow at ({x_cells}, {y_cells}) is off the layout's lattice"
         );
         assert!(
             (x_cells.fract() - 0.5).abs() < FEW_ULP && (y_cells.fract() - 0.5).abs() < FEW_ULP,
             "({x_cells}, {y_cells}) is not a cell centre"
+        );
+    }
+}
+
+#[test]
+fn a_row_of_arrows_is_drawn_along_the_equator_itself() {
+    // Where the arrows fall is what decides whether the criterion can be read
+    // off the screen at all. The basin is symmetric about the equator, and the
+    // equator is where the trades are strongest and where the response they
+    // drive lives, so a layout that left it between two rows would draw
+    // everything except the thing being looked for.
+    let header = steady_trades_header(1);
+    let overlay = overlay_of(
+        &header,
+        trade_wind_fields(&header, MERIDIONAL_DECAY_SCALE_M),
+    );
+
+    // Half a cell is as close as a cell centre gets: the equator falls on a
+    // cell edge of this basin, not on a centre.
+    #[allow(clippy::cast_precision_loss)]
+    let half_cell_deg = (PACIFIC.north_deg_north - PACIFIC.south_deg_north) / (2.0 * NY as f64);
+    let on_the_equator: Vec<&visualizer::WindArrow> = overlay
+        .arrows()
+        .iter()
+        .filter(|arrow| latitude_of_row(&header, arrow.tail_cells().1).abs() <= half_cell_deg)
+        .collect();
+    assert_eq!(
+        on_the_equator.len(),
+        arrow_line(NX).count(),
+        "the equatorial row must carry an arrow in every column of the lattice"
+    );
+    for arrow in on_the_equator {
+        assert!(
+            arrow.tau_x_pa() < 0.0,
+            "the equatorial arrows are the easterly ones: {}",
+            arrow.tau_x_pa()
+        );
+    }
+}
+
+#[test]
+fn a_stress_too_weak_to_draw_an_arrow_is_not_drawn_as_a_dot() {
+    // The trades fall off as a Gaussian, so most of the basin carries a stress
+    // orders of magnitude below the strongest in the run. Drawn, those arrows
+    // are shorter than the cell they sit on — a stipple of marks over the map
+    // standing for a wind that is not there.
+    let header = steady_trades_header(1);
+    // Short enough that its arrow cannot reach the minimum length, by the
+    // overlay's own two constants.
+    let too_weak_pa =
+        EQUATORIAL_ZONAL_STRESS_PA * MIN_ARROW_LENGTH_CELLS / MAX_ARROW_LENGTH_CELLS / 2.0;
+    let mut fields = uniform_stress_fields(&header, too_weak_pa);
+    let (faces_x, _) = header
+        .grid
+        .grid()
+        .field_shape(Variable::ZonalWindStress.staggering());
+    // One band at full strength, so the run has a scale to be weak against.
+    let strong_row = NY - 1 - nearest_arrow_row(&header);
+    for i in 0..faces_x {
+        fields.tau_x_pa[strong_row * faces_x + i] = EQUATORIAL_ZONAL_STRESS_PA;
+    }
+    let overlay = overlay_of(&header, fields);
+
+    assert_eq!(
+        overlay.arrows().len(),
+        arrow_line(NX).count(),
+        "only the band at full strength is long enough to draw"
+    );
+    for arrow in overlay.arrows() {
+        assert!(
+            arrow.length_cells() >= MIN_ARROW_LENGTH_CELLS,
+            "an arrow shorter than a cell must not be drawn: {} cells",
+            arrow.length_cells()
         );
     }
 }
@@ -351,7 +462,7 @@ fn one_stress_scale_covers_the_whole_run_so_a_weakening_wind_is_seen_to_weaken()
     // trades — the thing this overlay exists to show beside its effect — would
     // look like a wind that never moved.
     let header = steady_trades_header(2);
-    let strong = steady_trades_fields(&header);
+    let strong = trade_wind_fields(&header, MERIDIONAL_DECAY_SCALE_M);
     let weak: Vec<f64> = strong.tau_x_pa.iter().map(|tau| tau / 4.0).collect();
     let bytes = RunBytes {
         header: serde_json::to_vec(&header).expect("a header serializes"),
@@ -365,7 +476,7 @@ fn one_stress_scale_covers_the_whole_run_so_a_weakening_wind_is_seen_to_weaken()
         }),
     };
     let run = LoadedRun::from_bytes("run", bytes).expect("the run loads");
-    let strongest_pa = strongest_trade_wind_stress_pa(&header);
+    let strongest_pa = strongest_trade_wind_stress_pa(&header, MERIDIONAL_DECAY_SCALE_M);
     assert!(
         (run.wind_stress_scale().max_magnitude_pa() - strongest_pa).abs() <= FEW_ULP * strongest_pa,
         "the run's scale is the strongest stress anywhere in it, {strongest_pa} Pa: {}",
@@ -374,13 +485,8 @@ fn one_stress_scale_covers_the_whole_run_so_a_weakening_wind_is_seen_to_weaken()
 
     let overlay_of_frame = |index| {
         let frame = run.frame(index).expect("the run has two frames");
-        WindOverlay::of_frame(
-            run.header().grid,
-            &frame,
-            run.wind_stress_scale(),
-            SPACING_CELLS,
-        )
-        .expect("the frame fits its own grid")
+        WindOverlay::of_frame(run.header().grid, &frame, run.wind_stress_scale())
+            .expect("the frame fits its own grid")
     };
     let longest = |overlay: &WindOverlay| {
         overlay
@@ -400,7 +506,11 @@ fn one_stress_scale_covers_the_whole_run_so_a_weakening_wind_is_seen_to_weaken()
     );
     // And the lengths are the stresses against the run's scale, not against
     // each frame's own strongest arrow — which would make both frames equal.
-    let strongest_drawn_pa = trade_wind_stress_pa(nearest_arrow_latitude_deg(&header)).abs();
+    let strongest_drawn_pa = trade_wind_stress_pa(
+        nearest_arrow_latitude_deg(&header),
+        MERIDIONAL_DECAY_SCALE_M,
+    )
+    .abs();
     assert!(
         (strong_cells - strongest_drawn_pa / strongest_pa).abs() <= FEW_ULP,
         "the longest arrow of the strong frame is its own stress over the run's scale"
@@ -423,15 +533,21 @@ fn a_stress_that_has_blown_up_is_drawn_as_missing_rather_than_as_a_gale() {
     // would put the strongest wind in the basin wherever the arithmetic broke,
     // and rescale every honest arrow against it.
     let header = steady_trades_header(1);
-    let clean = overlay_of(&header, steady_trades_fields(&header));
-    let mut fields = steady_trades_fields(&header);
+    let clean = overlay_of(
+        &header,
+        trade_wind_fields(&header, MERIDIONAL_DECAY_SCALE_M),
+    );
+    let mut fields = trade_wind_fields(&header, MERIDIONAL_DECAY_SCALE_M);
     let (faces_x, _) = header
         .grid
         .grid()
         .field_shape(Variable::ZonalWindStress.staggering());
     // The western face of the cell the northwesternmost arrow samples, so that
     // the broken value is one an arrow would otherwise have drawn.
-    let broken = (NY - 1 - SPACING_CELLS / 2) * faces_x + SPACING_CELLS / 2;
+    // The western face of a cell on the equatorial arrow row: the broken value
+    // is one an arrow would otherwise have drawn.
+    let column = arrow_line(NX).next().expect("the basin carries arrows");
+    let broken = (NY - 1 - nearest_arrow_row(&header)) * faces_x + column;
     fields.tau_x_pa[broken] = f64::NAN;
     let overlay = overlay_of(&header, fields);
 
@@ -460,20 +576,15 @@ fn toggling_the_overlay_does_not_change_the_heatmap_under_it() {
     // geometry, so there is no path by which showing or hiding it could reach
     // the colour-mapped image the shell uploads.
     let header = steady_trades_header(1);
-    let mut fields = steady_trades_fields(&header);
+    let mut fields = trade_wind_fields(&header, MERIDIONAL_DECAY_SCALE_M);
     fields.h_m = tilt_field(NX, NY);
     let run = run_of_one_frame(&header, fields);
     let frame = run.frame(0).expect("a one-frame run has a frame 0");
 
     let without = Heatmap::of_frame(run.header().grid, &frame, run.anomaly_scale())
         .expect("the frame fits its own grid");
-    let overlay = WindOverlay::of_frame(
-        run.header().grid,
-        &frame,
-        run.wind_stress_scale(),
-        SPACING_CELLS,
-    )
-    .expect("the frame fits its own grid");
+    let overlay = WindOverlay::of_frame(run.header().grid, &frame, run.wind_stress_scale())
+        .expect("the frame fits its own grid");
     let with = Heatmap::of_frame(run.header().grid, &frame, run.anomaly_scale())
         .expect("the frame fits its own grid");
 
@@ -491,12 +602,10 @@ fn toggling_the_overlay_does_not_change_the_heatmap_under_it() {
 
 /// The latitude of the arrow row closest to the equator, in degrees north.
 ///
-/// Arrows are drawn every [`SPACING_CELLS`] cells starting half a spacing in
-/// from the map's northern edge, so which rows carry one is a property of that
-/// layout rather than of the stress field.
+/// Which rows carry an arrow is a property of the overlay's layout rather than
+/// of the stress field, so it is restated here from that rule.
 fn nearest_arrow_latitude_deg(header: &RunHeader) -> f64 {
-    (SPACING_CELLS / 2..header.grid.ny())
-        .step_by(SPACING_CELLS)
+    arrow_line(header.grid.ny())
         .map(|row| cell_centre_latitude_deg(header, header.grid.ny() - 1 - row))
         .min_by(|a, b| a.abs().total_cmp(&b.abs()))
         .expect("the basin is taller than half a spacing")
@@ -510,6 +619,15 @@ fn latitude_of_row(header: &RunHeader, y_cells: f64) -> f64 {
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let row = y_cells.floor() as usize;
     cell_centre_latitude_deg(header, header.grid.ny() - 1 - row)
+}
+
+/// The lines of cells that carry arrows along an axis `extent` cells long.
+///
+/// The overlay anchors its pattern on the middle of each axis rather than on
+/// its start, so that a basin laid out symmetrically about the equator gets a
+/// row of arrows along the equator itself.
+fn arrow_line(extent: usize) -> impl Iterator<Item = usize> {
+    (extent / 2 % ARROW_SPACING_CELLS..extent).step_by(ARROW_SPACING_CELLS)
 }
 
 /// A thermocline tilt to draw under the arrows: deep in the west, shallow in
