@@ -36,3 +36,12 @@ overflow-checks = true
 # where the loops actually live.
 [profile.test.package."*"]
 opt-level = 2
+
+# The build a sampling profiler is pointed at (T-10.2, `docs/performance-notes.md`).
+# Release code, so what is sampled is what a user runs, plus the debug info a
+# sampler needs to turn a return address into a function name. Separate from
+# `release` rather than switching symbols on there, so that what ships and what
+# is profiled stay the same instructions built from the same flags.
+[profile.profiling]
+inherits = "release"
+debug = true
