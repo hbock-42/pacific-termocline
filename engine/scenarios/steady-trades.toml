@@ -1,0 +1,35 @@
+# Control scenario: steady easterly alizés over an idealized equatorial basin.
+#
+# The Ly of the trade winds is the equatorial deformation radius
+# Le = √(c/β) = √(3.0 / 2.3e-11) ≈ 3.61e5 m for the g' and H below
+# (CONTEXT.md, *Equatorial deformation radius*), so the stress is confined to
+# the waveguide it is meant to drive.
+
+[basin]
+# 200 × 60 cells of 50 km: 10 000 km of Pacific by 3 000 km of latitude,
+# straddling the equator (the default southern edge is −ny·dy/2).
+nx = 200
+ny = 60
+dx_m = 50000.0
+dy_m = 50000.0
+
+[physics]
+# g' = 0.06 m/s² and H = 150 m give c = √(g'H) = 3.0 m/s, the observed
+# first-baroclinic Kelvin speed of the equatorial Pacific (CONTEXT.md).
+reduced_gravity_m_per_s2 = 0.06
+mean_thermocline_depth_m = 150.0
+# r⁻¹ ≈ 116 days, the weak damping of docs/planning/01-scientific-model.md.
+rayleigh_damping_per_s = 1.0e-7
+
+[run]
+# dt = 1 h is well inside the CFL bound of 0.8·dx/c ≈ 13 333 s for this grid.
+dt_s = 3600.0
+# 17 520 steps of 1 h = 730 days, two years of spin-up; a frame a day.
+total_steps = 17520
+output_every_n_steps = 24
+
+[[wind]]
+type = "steady_trade_winds"
+# τ₀ = −0.05 Pa, the mean easterly stress over the equatorial Pacific.
+equatorial_zonal_stress_pa = -0.05
+meridional_decay_scale_m = 361000.0

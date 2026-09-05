@@ -10,9 +10,10 @@
 //! equations are written in terms of, the [`Solver`] that puts them together
 //! into one time step of the linear shallow-water core, the [`WindStress`]
 //! forcing that drives it — steady, seasonal, or a burst stacked on either —
-//! and the [`RunWriter`] that saves the result at a configurable output
-//! cadence; and, on the CLI side, the `inspect` command that reports a written
-//! run's header back to a terminal.
+//! the [`Scenario`] that names all of those in one TOML file, and the
+//! [`RunWriter`] that saves the result at a configurable output cadence; and,
+//! on the CLI side, the `inspect` command that reports a written run's header
+//! back to a terminal.
 
 // The acceptance criterion of T-02.1 is that every field states its unit; the
 // lint is what keeps that true as the crate grows.
@@ -25,6 +26,7 @@ pub mod inspect;
 pub mod integrator;
 pub mod params;
 pub mod run_writer;
+pub mod scenario;
 pub mod shallow_water;
 pub mod solver;
 pub mod state;
@@ -60,6 +62,11 @@ pub use forcing::{
     CompositeWind, SeasonalTradeWinds, SteadyTradeWinds, WindBurstAnomaly, WindStress,
     WindStressError, WindStressField, TROPICAL_YEAR_S,
 };
+
+/// Re-exported so the CLI, the tests and the example files name one scenario
+/// format: [`scenario::ScenarioConfig`] is the TOML record on disk, and
+/// [`scenario::Scenario`] the validated result the engine runs.
+pub use scenario::{Scenario, ScenarioConfig, ScenarioError, ScenarioWind};
 
 /// Re-exported so binaries and the visualizer agree on one format version, on
 /// where a run's two files live, and on the one reader that opens them
