@@ -353,12 +353,6 @@ impl SeasonalTradeWinds {
         self.peak_time_s
     }
 
-    /// Period of the modulation, in seconds — the [`TROPICAL_YEAR_S`].
-    #[must_use]
-    pub const fn period_s(self) -> f64 {
-        TROPICAL_YEAR_S
-    }
-
     /// The harmonic `1 + a·cos(2π(t − t_peak)/T_year)` at `t_s`, dimensionless.
     ///
     /// Never negative, because `a ∈ [0, 1]` and `cos ≥ −1`: that is what keeps

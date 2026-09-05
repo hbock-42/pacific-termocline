@@ -62,10 +62,10 @@ const TRADE_WIND_STRESS_PA: f64 = -0.05;
 
 /// One solar day, in seconds.
 const DAY_S: f64 = 86_400.0;
-/// The tropical year, in seconds, computed here from its length in days
-/// (365.2422 d, the *Astronomical Almanac*'s mean tropical year) so that the
-/// engine's own constant is checked against an independent statement of it
-/// rather than against itself.
+/// The tropical year, in seconds: 365.2422 mean solar days, the *Astronomical
+/// Almanac*'s mean tropical year. Every expected value below is written in
+/// terms of this rather than of the engine's own constant, so a change to the
+/// period would have to be made here too before the suite agreed with it.
 const YEAR_S: f64 = 365.2422 * DAY_S;
 
 /// Relative amplitude `a` of the seasonal modulation. The equatorial Pacific's
@@ -158,6 +158,16 @@ fn seasonal_uniform() -> SeasonalTradeWinds {
         .expect("a fractional amplitude at a finite phase is a season")
 }
 
+/// The same season over trade winds that decay away from the equator at
+/// `decay_scale_m`: the profile that shows whether the modulation preserves
+/// the field's shape in `y` while changing its strength.
+fn seasonal_decaying(decay_scale_m: f64) -> SeasonalTradeWinds {
+    let steady = SteadyTradeWinds::with_meridional_decay(TRADE_WIND_STRESS_PA, decay_scale_m)
+        .expect("an easterly stress with a positive decay scale");
+    SeasonalTradeWinds::new(steady, SEASONAL_RELATIVE_AMPLITUDE, PEAK_TIME_S)
+        .expect("a fractional amplitude at a finite phase is a season")
+}
+
 /// The annual harmonic `1 + a·cos(2π(t − t_peak)/T_year)`, evaluated here from
 /// the ticket's formula rather than read back from the engine.
 fn expected_modulation(t_s: f64) -> f64 {
@@ -168,10 +178,13 @@ fn expected_modulation(t_s: f64) -> f64 {
 
 #[test]
 fn the_period_of_the_season_is_the_tropical_year() {
-    // The engine's constant against the mean tropical year of the
-    // *Astronomical Almanac*, 365.2422 days, written out independently.
+    // Which year the season follows is a modelling decision, not an
+    // implementation detail: it fixes what "annual" means for every scenario
+    // and for T-03.4's config files. This pins it to the *Astronomical
+    // Almanac*'s mean tropical year of 365.2422 days, so that adopting the
+    // sidereal year or the calendar's 365 has to be a deliberate change to a
+    // stated value rather than a quiet one.
     assert_eq!(engine::TROPICAL_YEAR_S, YEAR_S);
-    assert_eq!(seasonal_uniform().period_s(), YEAR_S);
 }
 
 #[test]
@@ -181,10 +194,7 @@ fn the_season_modulates_the_steady_field_by_the_annual_harmonic() {
     // harmonic evaluated in this file and the steady profile — a Gaussian in
     // `y` — evaluated by the field it wraps.
     let decay_scale_m = equatorial_deformation_radius_m(pacific_params(STRONG_DAMPING_PER_S));
-    let steady = SteadyTradeWinds::with_meridional_decay(TRADE_WIND_STRESS_PA, decay_scale_m)
-        .expect("an easterly stress with a positive decay scale");
-    let seasonal = SeasonalTradeWinds::new(steady, SEASONAL_RELATIVE_AMPLITUDE, PEAK_TIME_S)
-        .expect("a fractional amplitude at a finite phase is a season");
+    let seasonal = seasonal_decaying(decay_scale_m);
 
     for y_m in [0.0, decay_scale_m, -2.0 * decay_scale_m] {
         let scaled = y_m / decay_scale_m;
@@ -349,9 +359,10 @@ fn a_phase_that_is_not_an_instant_is_refused_by_name() {
 /// `τx` in pascals at one fixed interior east/west face of `basin`, sampled
 /// from `wind` at `samples` instants spaced `interval_s` apart from zero.
 ///
-/// The face is mid-basin and off the equator, so neither a stress that had
-/// gone uniform in `x` nor one that had lost its meridional profile could hide
-/// in the series.
+/// The face is an interior one mid-basin, so the series is the stress the
+/// solver would actually read at a degree of freedom rather than at a wall,
+/// where a sampled field is zero by the rule of T-03.1 and would carry no
+/// season at all.
 fn sampled_tau_x_series(
     basin: Basin,
     wind: &impl WindStress,
@@ -501,13 +512,10 @@ fn the_sampled_field_breathes_over_the_whole_basin() {
     // rule of T-03.1, which a time-varying scenario must not have loosened.
     let basin = equatorial_basin();
     let decay_scale_m = equatorial_deformation_radius_m(pacific_params(STRONG_DAMPING_PER_S));
-    let steady = SteadyTradeWinds::with_meridional_decay(TRADE_WIND_STRESS_PA, decay_scale_m)
-        .expect("an easterly stress with a positive decay scale");
-    let seasonal = SeasonalTradeWinds::new(steady, SEASONAL_RELATIVE_AMPLITUDE, PEAK_TIME_S)
-        .expect("a fractional amplitude at a finite phase is a season");
+    let seasonal = seasonal_decaying(decay_scale_m);
     let (nx, ny) = (basin.grid().nx(), basin.grid().ny());
 
-    let reference = WindStressField::sampled(basin, &steady, 0.0);
+    let reference = WindStressField::sampled(basin, &seasonal.steady(), 0.0);
     for eighths in 0..8 {
         let t_s = eighths as f64 * YEAR_S / 8.0;
         let modulation = expected_modulation(t_s);

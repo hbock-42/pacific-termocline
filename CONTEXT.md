@@ -62,6 +62,12 @@ parameters, wind-forcing description, and run length. The engine's unit of
 input.
 _Avoid_: config, experiment, case
 
+**Seasonal cycle**:
+The alizés breathing with the year: the steady wind-stress field scaled by an
+annual harmonic, `1 + a·cos(2π(t − t_peak)/T_year)`, with `T_year` the tropical
+year. It changes the winds' strength, not their shape or their direction.
+_Avoid_: annual cycle, monsoon (a different phenomenon)
+
 **Westerly wind burst**:
 An idealized positive-`τx` anomaly (Gaussian in x, y and t) superimposed on the
 trade winds, representing the class of perturbation known to trigger El Niño
