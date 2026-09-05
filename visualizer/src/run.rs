@@ -202,7 +202,7 @@ impl LoadedRun {
     pub fn frame(&self, index: u64) -> Option<Frame> {
         let index = usize::try_from(index).ok()?;
         let offset = *self.frame_offsets.get(index)?;
-        let (frame, _length) = decode_frame(&self.frames[offset..], &self.header.grid)
+        let (frame, _length) = decode_frame(&self.frames[offset..], &self.header)
             .expect("every frame decoded, and fitted the grid, at load");
         Some(frame)
     }

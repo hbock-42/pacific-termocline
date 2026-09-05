@@ -25,16 +25,16 @@
 //! # The SST coupling
 //!
 //! A scenario's `[sst]` section is read here and nowhere else: it decides
-//! which solver is built, which state is allocated, and which of the two
-//! [`RunForcing`] shapes the winds take, and the time loop is the same either
-//! way. A coupled run's forcing is a
+//! which solver is built, which state is allocated, which of the two
+//! [`RunForcing`] shapes the winds take, and — since T-05.4 — whether the
+//! run's header declares `T'` among its variables and its frames carry one.
+//! The time loop is the same either way. A coupled run's forcing is a
 //! [`CoupledWind`](crate::CoupledWind): the prescribed `[[wind]]` entries plus
 //! the atmospheric response to `T'` (T-12.2), so the stress a step reads — and
 //! the stress a frame records — is the one the ocean actually felt, feedback
-//! included. `T'` is *not* written to the run's frames — the
-//! interchange format of [ADR-0004] describes the three variables of the
-//! linear core, and extending it is a change to the contract the visualizer
-//! reads, not a side effect of adding a term (T-12.3's business).
+//! included. A run *without* the section writes the five variables of the
+//! linear core and says so; a reader of such a run finds `T'` absent rather
+//! than zero ([ADR-0004], ADR-0011).
 //!
 //! [ADR-0004]: ../../docs/planning/adr/0004-data-interchange-format.md
 //!
@@ -255,6 +255,14 @@ pub fn run_scenario_observed(
         description,
         schedule.timing(),
     );
+    // The header's variable list and the state's fields come from the same
+    // switch, one line apart, so a run cannot promise a `T'` it does not
+    // integrate or integrate one it does not promise.
+    let header = if solver.couples_sst() {
+        header.with_sst_anomaly()
+    } else {
+        header
+    };
 
     let mut state = if solver.couples_sst() {
         OceanState::at_rest_with_sst_anomaly(grid)

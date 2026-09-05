@@ -95,12 +95,12 @@ const TRADE_WIND_STRESS_X_PA: f64 = -0.05;
 const TRADE_WIND_STRESS_Y_PA: f64 = 0.02;
 
 /// The summary the header above must produce, written out by hand from the
-/// scenario constants rather than from the command's output. `1` is the
+/// scenario constants rather than from the command's output. `2` is the
 /// current [`termocline_format::FORMAT_VERSION`], stated as a literal for the
 /// same reason.
 fn expected_summary() -> String {
     "\
-format version: 1
+format version: 2
 scenario: steady trade winds over a resting basin
 grid: 6 x 4 cells
 basin extent: 120.0 to -80.0 degrees east, -5.0 to 5.0 degrees north

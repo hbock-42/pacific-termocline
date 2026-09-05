@@ -508,10 +508,21 @@ fields allocated, the right-hand side those epics were validated against.
 Writing it adds one term that writes only `∂T'/∂t`; `h`, `u` and `v` come out
 bit for bit identical either way.
 
-`T'` is **not written to the run's frames**. The interchange format of
-[ADR-0004](planning/adr/0004-data-interchange-format.md) describes the three
-variables of the linear core, and extending it is a change to the contract the
-visualizer reads rather than a side effect of adding a term.
+`T'` **is written to the run's frames**, as a sixth variable beside `h`, `u`,
+`v`, `τx` and `τy`, in kelvin, one value per cell (T-05.4). The header's
+variable list gains an `sst [K]` entry, which is what `termocline inspect`
+prints and what the visualizer reads; the interchange format of
+[ADR-0004](planning/adr/0004-data-interchange-format.md) is at version 2 for
+it.
+
+A scenario **without** an `[sst]` section writes no such field. Its frames
+record the anomaly as *absent* rather than as a basin of zeros: zeros would
+round-trip perfectly and would state, in a unit a reader is told to believe,
+that the whole ocean sat at exactly its climatological temperature — a
+physical claim about a run that never made one. Absence costs one byte a
+frame; a fabricated field would cost an `f64` a cell. Runs written before
+version 2 still read, with their `T'` absent for the same reason
+([ADR-0011](planning/adr/0011-reading-runs-from-older-format-versions.md)).
 
 <!-- fields: SstSection -->
 

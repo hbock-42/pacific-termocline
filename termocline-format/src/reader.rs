@@ -52,7 +52,10 @@
 use std::fmt;
 use std::io::Read;
 
-use crate::{frame_encoding, FormatError, Frame, GridSpec, RunHeader, FORMAT_VERSION};
+use crate::frame::FrameV1;
+use crate::{
+    frame_encoding, FormatError, Frame, RunHeader, FORMAT_VERSION, OLDEST_READABLE_FORMAT_VERSION,
+};
 
 /// Why a run could not be read.
 ///
@@ -69,8 +72,10 @@ pub enum RunReadError {
     UnsupportedVersion {
         /// Format version the run's header carries.
         found: u32,
-        /// Format version this build reads.
-        supported: u32,
+        /// Oldest format version this build reads.
+        oldest_supported: u32,
+        /// Newest format version this build reads — the one it writes.
+        newest_supported: u32,
     },
     /// A frame's bytes could not be decoded.
     Decode(bincode::error::DecodeError),
@@ -108,9 +113,14 @@ impl fmt::Display for RunReadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Header(error) => write!(f, "the run header could not be read: {error}"),
-            Self::UnsupportedVersion { found, supported } => write!(
+            Self::UnsupportedVersion {
+                found,
+                oldest_supported,
+                newest_supported,
+            } => write!(
                 f,
-                "the run is in format version {found} and this build reads version {supported}"
+                "the run is in format version {found} and this build reads versions \
+                 {oldest_supported} to {newest_supported}"
             ),
             Self::Decode(error) => write!(f, "a frame could not be decoded: {error}"),
             Self::Frame(error) => error.fmt(f),
@@ -173,20 +183,92 @@ impl From<std::io::Error> for RunReadError {
 /// frame be fetched without decoding the frames before it. Bytes past the
 /// frame are ignored, so the slice may be the rest of the run.
 ///
-/// The frame is held to `grid` exactly as [`RunReader`] holds it: a frame is
+/// The frame is held to `header` exactly as [`RunReader`] holds it: a frame is
 /// bytes until something says what shape they should be, and that is the
-/// header's job either way.
+/// header's job either way. `header` rather than a bare grid because the grid
+/// is only half of that — the format version says which frame layout the bytes
+/// are in, and version 1 has no room in it for `T'`.
 ///
 /// # Errors
-/// [`RunReadError::Decode`] if the bytes are not a frame, or run out part-way
-/// through one — a caller decoding a single frame is not counting against a
-/// promised total, so nothing here is [`RunReadError::Truncated`] — and
-/// [`RunReadError::Frame`] if the frame does not fit `grid`.
-pub fn decode_frame(bytes: &[u8], grid: &GridSpec) -> Result<(Frame, usize), RunReadError> {
-    let (frame, used): (Frame, usize) =
-        bincode::serde::decode_from_slice(bytes, frame_encoding()).map_err(RunReadError::Decode)?;
-    frame.validate(grid)?;
+/// [`RunReadError::UnsupportedVersion`] if the header is from a version this
+/// build does not read, [`RunReadError::Decode`] if the bytes are not a frame,
+/// or run out part-way through one — a caller decoding a single frame is not
+/// counting against a promised total, so nothing here is
+/// [`RunReadError::Truncated`] — and [`RunReadError::Frame`] if the frame does
+/// not fit the header's grid.
+pub fn decode_frame(bytes: &[u8], header: &RunHeader) -> Result<(Frame, usize), RunReadError> {
+    let layout = FrameLayout::of_version(header.format_version)?;
+    let (frame, used) = layout
+        .decode_from_slice(bytes)
+        .map_err(RunReadError::Decode)?;
+    frame.validate(&header.grid)?;
     Ok((frame, used))
+}
+
+/// Which shape a run's frames are in on disk.
+///
+/// The format version reduced to the only thing a frame decoder needs from it.
+/// Every readable version has a variant, so a version that reached this far is
+/// a version there are bytes-to-frame instructions for; there is no default
+/// case that would guess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrameLayout {
+    /// Version 1: the five fields of the linear core.
+    LinearCore,
+    /// Version 2: the linear core followed by the optional SST anomaly.
+    WithOptionalSstAnomaly,
+}
+
+impl FrameLayout {
+    /// The layout format version `version` writes its frames in.
+    ///
+    /// # Errors
+    /// [`RunReadError::UnsupportedVersion`] for any version outside
+    /// [`OLDEST_READABLE_FORMAT_VERSION`]..=[`FORMAT_VERSION`].
+    fn of_version(version: u32) -> Result<Self, RunReadError> {
+        match version {
+            1 => Ok(Self::LinearCore),
+            2 => Ok(Self::WithOptionalSstAnomaly),
+            found => Err(RunReadError::UnsupportedVersion {
+                found,
+                oldest_supported: OLDEST_READABLE_FORMAT_VERSION,
+                newest_supported: FORMAT_VERSION,
+            }),
+        }
+    }
+
+    /// Decode the frame at the start of `bytes`, and say how many bytes it
+    /// occupied.
+    fn decode_from_slice(
+        self,
+        bytes: &[u8],
+    ) -> Result<(Frame, usize), bincode::error::DecodeError> {
+        match self {
+            Self::LinearCore => {
+                bincode::serde::decode_from_slice::<FrameV1, _>(bytes, frame_encoding())
+                    .map(|(frame, used)| (frame.into(), used))
+            }
+            Self::WithOptionalSstAnomaly => {
+                bincode::serde::decode_from_slice(bytes, frame_encoding())
+            }
+        }
+    }
+
+    /// Decode the next frame from `source`.
+    fn decode_from_read<R: Read>(
+        self,
+        source: &mut R,
+    ) -> Result<Frame, bincode::error::DecodeError> {
+        match self {
+            Self::LinearCore => {
+                bincode::serde::decode_from_std_read::<FrameV1, _, _>(source, frame_encoding())
+                    .map(Frame::from)
+            }
+            Self::WithOptionalSstAnomaly => {
+                bincode::serde::decode_from_std_read(source, frame_encoding())
+            }
+        }
+    }
 }
 
 /// An open run: the header already decoded, the frames still to come.
@@ -204,6 +286,8 @@ pub fn decode_frame(bytes: &[u8], grid: &GridSpec) -> Result<(Frame, usize), Run
 pub struct RunReader<R: Read> {
     /// Everything the frames do not say about themselves.
     header: RunHeader,
+    /// The shape the run's frames are in, from the header's format version.
+    layout: FrameLayout,
     /// Encoded frames, in order, with nothing between them.
     frames: R,
     /// Frames decoded so far.
@@ -226,17 +310,13 @@ impl<R: Read> RunReader<R> {
     /// [`RunReadError::Header`] if the header could not be read or is not
     /// valid JSON for a [`RunHeader`], and
     /// [`RunReadError::UnsupportedVersion`] if it was written by a format
-    /// version this build does not understand.
+    /// version outside the range this build reads.
     pub fn new<H: Read>(header_source: H, frame_source: R) -> Result<Self, RunReadError> {
         let header: RunHeader = serde_json::from_reader(header_source)?;
-        if header.format_version != FORMAT_VERSION {
-            return Err(RunReadError::UnsupportedVersion {
-                found: header.format_version,
-                supported: FORMAT_VERSION,
-            });
-        }
+        let layout = FrameLayout::of_version(header.format_version)?;
         Ok(Self {
             header,
+            layout,
             frames: frame_source,
             read: 0,
             tail_checked: false,
@@ -269,7 +349,9 @@ impl<R: Read> RunReader<R> {
 
     /// Decode the next frame, whatever the counters say.
     fn decode_frame(&mut self) -> Result<Frame, RunReadError> {
-        let frame: Frame = bincode::serde::decode_from_std_read(&mut self.frames, frame_encoding())
+        let frame: Frame = self
+            .layout
+            .decode_from_read(&mut self.frames)
             .map_err(|error| {
                 if ended_early(&error) {
                     RunReadError::Truncated {

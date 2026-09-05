@@ -485,20 +485,36 @@ fn the_frame_file_is_a_plain_concatenation_of_encoded_frames() {
     //
     // The size is bincode's, derived from its specification rather than
     // measured: with the standard configuration a struct is its fields in
-    // order, an `f64` is 8 fixed bytes, and a sequence is a variable-length
-    // length prefix — one byte for a length below 251 — followed by its
-    // elements. So a frame is `t` (8) plus, for each of the five fields, one
-    // length byte plus 8 bytes per point: h over 6×4 cells, u and tau_x over
-    // 7×4 faces, v and tau_y over 6×5 faces.
+    // order, an `f64` is 8 fixed bytes, a sequence is a variable-length length
+    // prefix — one byte for a length below 251 — followed by its elements, and
+    // an `Option` is a one-byte tag followed by the payload it has, or nothing
+    // if it has none. So a frame of this uncoupled run is `t` (8) plus, for
+    // each of the five fields of the linear core, one length byte plus 8 bytes
+    // per point — h over 6×4 cells, u and tau_x over 7×4 faces, v and tau_y
+    // over 6×5 faces — plus the single byte that says this run has no `T'`.
+    //
+    // That last byte is the whole price of the format carrying an SST anomaly
+    // this run does not have: one byte a frame, not the 24 `f64` a frame that
+    // a basin of zeros would have cost (T-05.4).
     let grid = grid_spec(NX, NY);
-    let points: usize = Variable::ALL.iter().map(|v| grid.field_len(*v)).sum();
-    // 8 bytes of `t`, one length byte per field, and 8 bytes per point.
+    let points: usize = Variable::LINEAR_CORE
+        .iter()
+        .map(|v| grid.field_len(*v))
+        .sum();
+    // 8 bytes of `t`, one length byte per field, 8 bytes per point, and one
+    // byte for the absent SST anomaly.
     const T_BYTES: usize = 8;
     const LENGTH_PREFIX_BYTES: usize = 1;
     const F64_BYTES: usize = 8;
-    let expected_frame_bytes =
-        T_BYTES + Variable::ALL.len() * LENGTH_PREFIX_BYTES + points * F64_BYTES;
-    assert_eq!(expected_frame_bytes, 8 + 5 + (24 + 28 + 30 + 28 + 30) * 8);
+    const ABSENT_SST_BYTES: usize = 1;
+    let expected_frame_bytes = T_BYTES
+        + Variable::LINEAR_CORE.len() * LENGTH_PREFIX_BYTES
+        + points * F64_BYTES
+        + ABSENT_SST_BYTES;
+    assert_eq!(
+        expected_frame_bytes,
+        8 + 5 + (24 + 28 + 30 + 28 + 30) * 8 + 1
+    );
 
     let (header_bytes, frame_bytes) = write_short_run_to_memory();
     let header = read_header(&header_bytes);

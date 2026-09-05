@@ -125,6 +125,7 @@ pub use scenario::{Scenario, ScenarioConfig, ScenarioError, ScenarioWind};
 /// (ADR-0004: the format crate is the one place any of them is defined).
 pub use termocline_format::{
     RunReadError, RunReader, FORMAT_VERSION, FRAME_FILE_NAME, HEADER_FILE_NAME,
+    OLDEST_READABLE_FORMAT_VERSION,
 };
 
 /// Re-exported so the solver, its tests and the scenario loader all share one
@@ -149,6 +150,10 @@ mod tests {
     #[test]
     fn workspace_links_the_format_crate() {
         assert_eq!(crate::FORMAT_VERSION, termocline_format::FORMAT_VERSION);
+        assert_eq!(
+            crate::OLDEST_READABLE_FORMAT_VERSION,
+            termocline_format::OLDEST_READABLE_FORMAT_VERSION
+        );
     }
 
     #[test]

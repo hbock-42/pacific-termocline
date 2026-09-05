@@ -247,7 +247,11 @@ engine implements the first half only.
   run. A scenario that carries an `[sst]` section gets a real mixed-layer `T'`
   integrated alongside, warmed and cooled by the water the trade-driven
   upwelling draws up from just below the thermocline (T-12.1); the linear core
-  it rides on is unchanged, down to the last bit.
+  it rides on is unchanged, down to the last bit. Such a run writes `T'` into
+  its frames as a sixth variable, in kelvin, and `termocline inspect` lists it;
+  a run without the section records the anomaly as *absent* rather than as a
+  basin of zeros, so a plot can never show a temperature the model never
+  computed.
 - **The atmospheric half of the Bjerknes loop.** The winds do not respond to
   the ocean. Feed the engine a wind burst and you get the ocean's response to
   that burst; you do not get a self-sustaining oscillation, because the arrow
