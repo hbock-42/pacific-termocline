@@ -14,7 +14,7 @@ use egui::{Color32, RichText};
 
 use crate::loading::Loaded;
 use crate::run::SECONDS_PER_DAY;
-use crate::{DivergingScale, Heatmap, LoadedRun, Loader, PendingRun};
+use crate::{DivergingScale, Heatmap, LoadedRun, Loader, PendingRun, Scrubber};
 
 /// What the central panel is showing.
 enum Shown {
@@ -304,20 +304,33 @@ const COLOR_BAR_SAMPLES: usize = 256;
 /// cheapest honest way to show a cell grid is one pixel per cell, magnified
 /// without interpolation. It is also the way that costs the same on both
 /// targets, which is what ADR-0006 asks of anything drawn here.
+///
+/// # What a drag costs
+///
+/// The scrubber is dragged, so everything under it is on a path that runs once
+/// per frame of the *display*, not once per frame of the run. Three things
+/// were made not to happen there (T-08.3): reaching the run's frame walks no
+/// other frames ([`LoadedRun::frame`]); a repaint that lands on the frame
+/// already drawn rebuilds nothing ([`Attempt`]); and the colour bar, which is
+/// the run's and not the frame's, is uploaded once per run ([`ColorBar`]).
+/// What is left is one frame decoded, colour-mapped and uploaded per frame the
+/// reader actually asks for, which is the work the drag is for.
 #[derive(Default)]
 struct BasinMap {
-    /// The frame the reader has chosen, by index into the run.
-    index: u64,
+    /// The frame the reader has chosen, and the ways they choose another.
+    scrubber: Scrubber,
     /// The last attempt at drawing a frame, if there has been one.
     attempt: Option<Attempt>,
+    /// The run's colour bar, built the first time a frame of it is drawn.
+    bar: Option<ColorBar>,
 }
 
 /// What came of trying to draw one frame.
 ///
-/// Kept because reaching a frame decodes every frame before it
-/// ([`LoadedRun::frame`]), and a panel repaints many times per second while
-/// the chosen frame does not change. The failure is kept for the same reason:
-/// retrying it every repaint would fail every repaint.
+/// Kept because a panel repaints many times per second while the chosen frame
+/// does not change, and each repaint would otherwise decode and upload the
+/// frame again. The failure is kept for the same reason: retrying it every
+/// repaint would fail every repaint.
 struct Attempt {
     /// The frame this was an attempt at.
     index: u64,
@@ -330,41 +343,52 @@ struct Attempt {
 struct DrawnFrame {
     /// Its model time, in seconds since the start of the run.
     t_s: f64,
-    /// The scale its colours came from, for the bar beside it.
-    scale: DivergingScale,
     /// The map itself, one texel per cell.
     map: egui::TextureHandle,
-    /// The colour bar, sampled across the same scale.
-    bar: egui::TextureHandle,
 }
+
+/// The colour bar of a run, and the scale it was sampled from.
+///
+/// The scale is the run's rather than the frame's (`crate::heatmap`), so the
+/// bar is the same in every frame and is uploaded once — not once per frame a
+/// drag passes through.
+struct ColorBar {
+    /// The scale the bar was sampled from, so a run whose scale is not this
+    /// one gets its own bar.
+    scale: DivergingScale,
+    /// The bar itself, sampled across the scale.
+    texture: egui::TextureHandle,
+}
+
+/// Frames a page key moves the chooser by.
+///
+/// Ten, against the arrow keys' one: the scenario writes a frame a day
+/// (`steady-trades.toml`), so a page is a week and a half of model time — far
+/// enough to see a change, near enough to still be reading the same event.
+const FRAMES_PER_PAGE: i64 = 10;
 
 impl BasinMap {
     /// Forget the run this was a map of.
     fn forget(&mut self) {
-        self.index = 0;
+        self.scrubber = Scrubber::new();
         self.attempt = None;
+        self.bar = None;
     }
 
     /// Draw the frame chooser and the map of the chosen frame.
     fn draw(&mut self, ui: &mut egui::Ui, run: &LoadedRun) {
-        let frame_count = run.header().output.frame_count;
-        let Some(last) = frame_count.checked_sub(1) else {
+        self.scrubber.fit_to(run.header().output.frame_count);
+        let Some(last) = self.scrubber.last() else {
             ui.label("This run holds no frames to draw.");
             return;
         };
-        self.index = self.index.min(last);
-        if last > 0 {
-            ui.add(egui::Slider::new(&mut self.index, 0..=last).text("Frame"));
-        }
+        self.draw_scrubber(ui, last);
 
-        if self
-            .attempt
-            .as_ref()
-            .is_none_or(|last| last.index != self.index)
-        {
+        let index = self.scrubber.index();
+        if self.attempt.as_ref().is_none_or(|last| last.index != index) {
             self.attempt = Some(Attempt {
-                index: self.index,
-                outcome: self.build(ui, run),
+                index,
+                outcome: self.build(ui, run, index),
             });
         }
         let outcome = &self
@@ -376,7 +400,7 @@ impl BasinMap {
             Ok(drawn) => drawn,
             Err(message) => {
                 ui.label(
-                    RichText::new(format!("Frame {} could not be drawn", self.index))
+                    RichText::new(format!("Frame {index} could not be drawn"))
                         .color(Color32::LIGHT_RED)
                         .strong(),
                 );
@@ -386,7 +410,7 @@ impl BasinMap {
         };
 
         ui.label(format!(
-            "Thermocline depth anomaly h at {:.2} days",
+            "Frame {index} of {last} — thermocline depth anomaly h at {:.2} days",
             drawn.t_s / SECONDS_PER_DAY
         ));
         ui.horizontal(|ui| {
@@ -396,47 +420,131 @@ impl BasinMap {
             });
         });
         draw_texture_fitted(ui, &drawn.map);
-        draw_color_bar(ui, drawn);
+        let scale = run.anomaly_scale();
+        let bar = self.color_bar(ui, scale);
+        draw_color_bar(ui, bar, scale);
     }
 
-    /// Colour-map the chosen frame and upload it, or say what stopped that.
-    fn build(&self, ui: &egui::Ui, run: &LoadedRun) -> Result<DrawnFrame, String> {
-        let scale = run.anomaly_scale();
+    /// The scrubber itself: the slider, the steps either side of it, and the
+    /// keys that do the same thing without the mouse.
+    ///
+    /// Every control changes one number. What makes the frame appear is the
+    /// next repaint reading that number, so a drag, an arrow key and a jump to
+    /// the end of the run all cost exactly the same.
+    fn draw_scrubber(&mut self, ui: &mut egui::Ui, last: u64) {
+        ui.horizontal(|ui| {
+            let index = self.scrubber.index();
+            if step_button(ui, "⏮", "First frame (Home)", index > 0) {
+                self.scrubber.to_first();
+            }
+            if step_button(ui, "◀", "Back one frame (left arrow)", index > 0) {
+                self.scrubber.step(-1);
+            }
+            if step_button(ui, "▶", "On one frame (right arrow)", index < last) {
+                self.scrubber.step(1);
+            }
+            if step_button(ui, "⏭", "Last frame (End)", index < last) {
+                self.scrubber.to_last();
+            }
+            // The slider takes the whole rest of the row: it is dragged, and a
+            // frame of a long run is worth more pixels than a short slider
+            // gives it — at 731 frames a narrow one puts several frames under
+            // every pixel and none of them within reach.
+            let mut chosen = self.scrubber.index();
+            let slider = ui.add_sized(
+                egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+                egui::Slider::new(&mut chosen, 0..=last)
+                    .integer()
+                    .show_value(false),
+            );
+            if slider.changed() {
+                self.scrubber.set_index(chosen);
+            }
+        });
+        self.take_scrubber_keys(ui.ctx());
+    }
+
+    /// Move the chooser by whatever the keyboard asked for this frame.
+    ///
+    /// Nothing is taken while a text field has the keyboard: the run URL is
+    /// typed into one, and an arrow key inside it belongs to the caret.
+    fn take_scrubber_keys(&mut self, ctx: &egui::Context) {
+        if ctx.wants_keyboard_input() {
+            return;
+        }
+        let pressed = |key| ctx.input(|input| input.key_pressed(key));
+        if pressed(egui::Key::Home) {
+            self.scrubber.to_first();
+        }
+        if pressed(egui::Key::End) {
+            self.scrubber.to_last();
+        }
+        for (key, frames) in [
+            (egui::Key::ArrowLeft, -1),
+            (egui::Key::ArrowRight, 1),
+            (egui::Key::PageUp, -FRAMES_PER_PAGE),
+            (egui::Key::PageDown, FRAMES_PER_PAGE),
+        ] {
+            if pressed(key) {
+                self.scrubber.step(frames);
+            }
+        }
+    }
+
+    /// The run's colour bar, sampled the first time a frame of it is drawn.
+    fn color_bar(&mut self, ui: &egui::Ui, scale: DivergingScale) -> &ColorBar {
+        if self.bar.as_ref().is_none_or(|bar| bar.scale != scale) {
+            self.bar = Some(ColorBar {
+                scale,
+                texture: ui.ctx().load_texture(
+                    "basin-map-scale",
+                    egui::ColorImage::from_rgb(
+                        [COLOR_BAR_SAMPLES, 1],
+                        &scale.bar_rgb(COLOR_BAR_SAMPLES),
+                    ),
+                    egui::TextureOptions::LINEAR,
+                ),
+            });
+        }
+        self.bar.as_ref().expect("a bar was just built")
+    }
+
+    /// Colour-map frame `index` and upload it, or say what stopped that.
+    fn build(&self, ui: &egui::Ui, run: &LoadedRun, index: u64) -> Result<DrawnFrame, String> {
         let frame = run
-            .frame(self.index)
-            .ok_or_else(|| format!("this run holds no frame {}", self.index))?;
-        let heatmap = Heatmap::of_frame(run.header().grid, &frame, scale)
+            .frame(index)
+            .ok_or_else(|| format!("this run holds no frame {index}"))?;
+        let heatmap = Heatmap::of_frame(run.header().grid, &frame, run.anomaly_scale())
             .map_err(|error| error.to_string())?;
         let image = egui::ColorImage::from_rgb([heatmap.width(), heatmap.height()], heatmap.rgb());
         Ok(DrawnFrame {
             t_s: frame.t_s(),
-            scale,
             // Nearest, not linear: a texel is a cell of the model, and
             // smoothing between them would draw an anomaly the run never
             // produced.
             map: ui
                 .ctx()
                 .load_texture("basin-map", image, egui::TextureOptions::NEAREST),
-            bar: ui.ctx().load_texture(
-                "basin-map-scale",
-                egui::ColorImage::from_rgb(
-                    [COLOR_BAR_SAMPLES, 1],
-                    &scale.bar_rgb(COLOR_BAR_SAMPLES),
-                ),
-                egui::TextureOptions::LINEAR,
-            ),
         })
     }
 }
 
+/// One of the scrubber's step buttons: what it says, what it does when hovered
+/// over, and whether there is anywhere for it to go.
+fn step_button(ui: &mut egui::Ui, label: &str, hint: &str, enabled: bool) -> bool {
+    ui.add_enabled(enabled, egui::Button::new(label))
+        .on_hover_text(hint)
+        .clicked()
+}
+
 /// Draw the colour bar and the anomalies its ends stand for.
-fn draw_color_bar(ui: &mut egui::Ui, drawn: &DrawnFrame) {
+fn draw_color_bar(ui: &mut egui::Ui, bar: &ColorBar, scale: DivergingScale) {
     let width = ui.available_width();
     ui.add(egui::Image::new(egui::load::SizedTexture::new(
-        drawn.bar.id(),
+        bar.texture.id(),
         egui::vec2(width, COLOR_BAR_HEIGHT),
     )));
-    let half_range_m = drawn.scale.half_range_m();
+    let half_range_m = scale.half_range_m();
     // Negating zero would label a run at rest "-0.0 m".
     let shallow_m = if half_range_m == 0.0 {
         0.0

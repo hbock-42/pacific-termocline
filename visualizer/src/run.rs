@@ -7,9 +7,11 @@
 //! caller's problem, which is what lets the same code serve the browser and
 //! the native build (ADR-0006).
 
+use std::cell::Cell;
 use std::fmt;
+use std::io::Read;
 
-use termocline_format::{Frame, RunHeader, RunReadError, RunReader};
+use termocline_format::{frame_encoding, Frame, RunHeader, RunReadError, RunReader};
 
 use crate::DivergingScale;
 
@@ -62,11 +64,18 @@ pub struct LoadedRun {
     source: String,
     /// Everything the frames do not say about themselves.
     header: RunHeader,
-    /// The header's own bytes, kept so a [`RunReader`] can be rebuilt over the
-    /// frames whenever one is wanted back.
-    header_bytes: Vec<u8>,
     /// The run's encoded frames, undecoded.
     frames: Vec<u8>,
+    /// Where each frame begins in `frames`, by index into the run.
+    ///
+    /// The format is forward-only by design (`termocline_format::reader`), and
+    /// this is what buys random access back without asking it to seek: the
+    /// offsets are noted on the pass over the frames that load already makes,
+    /// and cost eight bytes a frame — 6 KB for a run of 731 — against a frame
+    /// of the scenario's basin, which is 1.3 MB. A scrubber is a random-access
+    /// control, so without them dragging to the end of a run would decode
+    /// every frame of it (T-08.3).
+    frame_offsets: Vec<usize>,
     /// A colour scale covering every frame of the run, built on the pass that
     /// counts them.
     scale: DivergingScale,
@@ -79,14 +88,16 @@ impl LoadedRun {
     /// so a run written by a format version this build does not read is
     /// refused here rather than mislabelled in the UI.
     ///
-    /// Every frame is decoded once here and thrown away. That costs a pass
-    /// over the run at load, and it buys the one thing the panel cannot get
-    /// from the header alone: the frame count it shows is a number the file
-    /// keeps rather than a number the header claims. A `header.json` beside
-    /// another run's `frames.bin` reads as a perfectly plausible run until the
-    /// frames are counted. The pass holds one frame at a time, so it costs
-    /// time and not memory — which is the resource a browser tab is short of
-    /// (ADR-0006).
+    /// Every frame is decoded once here and thrown away, and where each one
+    /// began is kept. That costs a pass over the run at load, and it buys two
+    /// things the panel cannot get from the header alone: the frame count it
+    /// shows is a number the file keeps rather than a number the header claims
+    /// — a `header.json` beside another run's `frames.bin` reads as a
+    /// perfectly plausible run until the frames are counted — and the offsets
+    /// that make [`LoadedRun::frame`] cost the same for every frame of the
+    /// run. The pass holds one frame at a time, so it costs time and (bar the
+    /// offsets, eight bytes a frame) not memory — which is the resource a
+    /// browser tab is short of (ADR-0006).
     ///
     /// # Errors
     /// The errors of [`RunReader`]: a header that is not valid JSON for a
@@ -102,17 +113,29 @@ impl LoadedRun {
         } = bytes;
         // Taken by value, and the frames moved rather than copied: a run in a
         // browser tab has no second copy to spare (ADR-0006).
-        let mut reader = RunReader::new(header_source.as_slice(), frames.as_slice())?;
+        let consumed = Cell::new(0);
+        let mut reader = RunReader::new(
+            header_source.as_slice(),
+            Counting {
+                inner: frames.as_slice(),
+                consumed: &consumed,
+            },
+        )?;
         let header = reader.header().clone();
         let mut scale = DivergingScale::symmetric_over(&[]);
+        let mut frame_offsets = Vec::new();
+        let mut offset = 0;
         for frame in reader.by_ref() {
-            scale = scale.widened(DivergingScale::symmetric_over(frame?.h()));
+            let frame = frame?;
+            frame_offsets.push(offset);
+            offset = consumed.get();
+            scale = scale.widened(DivergingScale::symmetric_over(frame.h()));
         }
         Ok(Self {
             source: source.into(),
             header,
-            header_bytes: header_source,
             frames,
+            frame_offsets,
             scale,
         })
     }
@@ -144,11 +167,13 @@ impl LoadedRun {
     /// Frame number `index`, counting from zero, or `None` past the end of the
     /// run.
     ///
-    /// The format is forward-only by design (`termocline_format::reader`), so
-    /// reaching frame `n` decodes the `n` before it and throws them away. That
-    /// is the cost of not holding a decoded run in a browser tab (ADR-0006),
-    /// and it is why the shell caches the map it built rather than rebuilding
-    /// it every time the panel repaints.
+    /// One decode, wherever the frame sits in the run: the frame's bytes are
+    /// found by the offset noted for it at load, and the frames before it are
+    /// never touched. That is what a scrubber needs — a drag lands on frame
+    /// 600 without passing through the 599 before it — and it is why dragging
+    /// costs the same at both ends of the run (T-08.3). The decoded frame is
+    /// not kept: a run in a browser tab has no room for a second copy of
+    /// itself (ADR-0006), and the shell caches the one map it is drawing.
     ///
     /// # Panics
     /// If a frame this run already decoded at load does not decode again. That
@@ -156,17 +181,11 @@ impl LoadedRun {
     /// this code disagreeing with itself.
     #[must_use]
     pub fn frame(&self, index: u64) -> Option<Frame> {
-        if index >= self.header.output.frame_count {
-            return None;
-        }
-        let reader = RunReader::new(self.header_bytes.as_slice(), self.frames.as_slice())
-            .expect("the header decoded at load");
-        let index = usize::try_from(index).expect("a frame index that fits the run fits a usize");
-        let frame = reader
-            .take(index + 1)
-            .last()
-            .expect("the run has at least index + 1 frames")
-            .expect("every frame decoded at load");
+        let index = usize::try_from(index).ok()?;
+        let offset = *self.frame_offsets.get(index)?;
+        let (frame, _bytes) =
+            bincode::serde::decode_from_slice::<Frame, _>(&self.frames[offset..], frame_encoding())
+                .expect("every frame decoded at load");
         Some(frame)
     }
 
@@ -246,6 +265,27 @@ impl LoadedRun {
         #[allow(clippy::cast_precision_loss)]
         let intervals = output.frame_count.saturating_sub(1) as f64;
         intervals * output.interval_s / SECONDS_PER_DAY
+    }
+}
+
+/// A byte source that remembers how much of itself has been handed out.
+///
+/// The reader is forward-only and says nothing about where it has got to, so
+/// this is how the offset of each frame is learned while the frames are being
+/// walked at load anyway: read the counter between frames, and the difference
+/// is the frame that just went past.
+struct Counting<'a, R: Read> {
+    /// The bytes themselves.
+    inner: R,
+    /// Bytes read out of `inner` so far.
+    consumed: &'a Cell<usize>,
+}
+
+impl<R: Read> Read for Counting<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.inner.read(buf)?;
+        self.consumed.set(self.consumed.get() + read);
+        Ok(read)
     }
 }
 
