@@ -216,9 +216,8 @@ impl std::error::Error for WindStressError {}
 /// ```
 ///
 /// with `τ₀ < 0` the stress on the equator and `Ly` the meridional decay
-/// scale. [`SteadyTradeWinds::uniform`] is the `Ly → ∞` limit, the profile
-/// that admits a closed-form steady state and therefore the one the analytic
-/// tilt check runs in.
+/// scale. [`SteadyTradeWinds::uniform`] is the `Ly → ∞` limit, the profile the
+/// analytic tilt check of T-07.4 runs in.
 ///
 /// There is no meridional stress: the alizés are zonal to the accuracy this
 /// model cares about, and a `τy` would drive an Ekman response the linear
@@ -239,10 +238,19 @@ impl SteadyTradeWinds {
     /// meridional structure at all.
     ///
     /// The `Ly → ∞` limit of [`SteadyTradeWinds::with_meridional_decay`], and
-    /// the one case where the closed basin has a closed-form steady state: a
-    /// stress independent of `y` is balanced by a thermocline tilt
-    /// independent of `y`, so the whole problem collapses to the
-    /// one-dimensional zonal balance the acceptance test checks against.
+    /// the forcing whose steady state has a closed form: a stress independent
+    /// of `y` drives a thermocline tilt independent of `y`, so the problem
+    /// collapses to the one-dimensional zonal balance
+    /// `tests/steady_wind_tilt.rs` checks against.
+    ///
+    /// That collapse needs the meridional momentum equation to be satisfied by
+    /// the collapsed solution, and `f·u + g'·∂h/∂y = 0` with a `y`-independent
+    /// `h` says `f·u = 0`. So it is exact in a basin one cell tall — where
+    /// [`NoNormalFlow`](crate::NoNormalFlow) pins `v` at zero and the rotation
+    /// terms drop out — and only approximate in a rotating one, where the
+    /// steady current the damping requires is turned by the beta-plane. T-07.4
+    /// runs the closed-form comparison in the first and the exact modal
+    /// balances of the equatorial waveguide in the second.
     ///
     /// # Errors
     /// [`WindStressError::NotEasterly`] unless the stress is strictly
