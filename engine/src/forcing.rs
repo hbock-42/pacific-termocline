@@ -55,6 +55,7 @@ use std::fmt;
 use termocline_grid::{Field2D, Grid, Staggering, U_STAGGERING, V_STAGGERING};
 
 use crate::basin::Basin;
+use crate::state::OceanState;
 
 /// Stress of a calm ocean surface, in Pa.
 const CALM: f64 = 0.0;
@@ -829,6 +830,69 @@ impl WindStressField {
         );
     }
 
+    /// Overwrite this field with `other`, component for component.
+    ///
+    /// What a forcing that *adds* two winds needs: the sum has to start from
+    /// one of them, and the one it starts from is a buffer somebody else owns
+    /// and re-samples on its own schedule
+    /// ([`CoupledWind`](crate::CoupledWind)).
+    ///
+    /// # Panics
+    /// If `other` covers a different basin. A shape mismatch means the calling
+    /// code is wrong, which is what panics are for (CODING_STANDARDS.md
+    /// § Correctness and failure).
+    pub fn assign(&mut self, other: &Self) {
+        assert!(
+            other.grid == self.grid,
+            "that stress covers {:?}, but this one was built for {:?}",
+            other.grid,
+            self.grid
+        );
+        self.tau_x_pa
+            .as_mut_slice()
+            .copy_from_slice(other.tau_x_pa.as_slice());
+        self.tau_y_pa
+            .as_mut_slice()
+            .copy_from_slice(other.tau_y_pa.as_slice());
+    }
+
+    /// Add `wind` sampled over `basin` at `t_s` seconds to what this field
+    /// already holds.
+    ///
+    /// [`WindStressField::sample`] at the field level: the superposition of
+    /// T-03.3, performed on a field rather than inside a
+    /// [`CompositeWind`]. The two are the same sum — the equations are linear
+    /// in the stress — and which one a forcing uses is decided by whether its
+    /// components can share a cache, not by the physics.
+    ///
+    /// # Panics
+    /// If `basin` covers a different grid from the one this field was built
+    /// for.
+    pub fn add_sampled<W: WindStress + ?Sized>(&mut self, basin: Basin, wind: &W, t_s: f64) {
+        assert!(
+            basin.grid() == self.grid,
+            "basin covers {:?}, but this wind stress field was built for {:?}",
+            basin.grid(),
+            self.grid
+        );
+        add_component(
+            &mut self.tau_x_pa,
+            basin,
+            U_STAGGERING,
+            |stress| stress.0,
+            wind,
+            t_s,
+        );
+        add_component(
+            &mut self.tau_y_pa,
+            basin,
+            V_STAGGERING,
+            |stress| stress.1,
+            wind,
+            t_s,
+        );
+    }
+
     /// Shape of the basin this stress covers.
     #[must_use]
     pub const fn grid(&self) -> Grid {
@@ -924,9 +988,17 @@ impl HeldInstant {
 /// [`BorrowedForcing`] borrows a wind and the solver's buffer for one step.
 /// The solver integrates against this, so it has one stage body rather than
 /// one per way of holding a forcing.
-pub(crate) trait StageForcing {
-    /// The stress field at `t_s` seconds.
-    fn at(&mut self, t_s: f64) -> &WindStressField;
+/// [`CoupledWind`](crate::CoupledWind) is the third, and it is why `at` is
+/// handed the state as well as the instant: the atmospheric response of Epic 12
+/// answers the SST anomaly of the stage being evaluated, not the clock. The
+/// two prescribed forcings ignore it, which is exactly what makes them
+/// prescribed.
+pub trait StageForcing {
+    /// The basin this forcing samples its wind over.
+    fn basin(&self) -> Basin;
+
+    /// The stress field at `t_s` seconds, for `state`.
+    fn at(&mut self, t_s: f64, state: &OceanState) -> &WindStressField;
 }
 
 /// A wind and a field the caller already owns, for the length of one step.
@@ -961,7 +1033,13 @@ impl<'a, W: WindStress + ?Sized> BorrowedForcing<'a, W> {
 }
 
 impl<W: WindStress + ?Sized> StageForcing for BorrowedForcing<'_, W> {
-    fn at(&mut self, t_s: f64) -> &WindStressField {
+    fn basin(&self) -> Basin {
+        self.basin
+    }
+
+    /// A prescribed wind is a pure function of `(x, y, t)`, so the state the
+    /// stage carries is none of its business.
+    fn at(&mut self, t_s: f64, _state: &OceanState) -> &WindStressField {
         self.held.ensure(self.field, self.basin, self.wind, t_s)
     }
 }
@@ -1001,7 +1079,13 @@ pub struct WindForcing<W: WindStress> {
 }
 
 impl<W: WindStress> StageForcing for WindForcing<W> {
-    fn at(&mut self, t_s: f64) -> &WindStressField {
+    fn basin(&self) -> Basin {
+        Self::basin(self)
+    }
+
+    /// A prescribed wind is a pure function of `(x, y, t)`, so the state the
+    /// stage carries is none of its business.
+    fn at(&mut self, t_s: f64, _state: &OceanState) -> &WindStressField {
         Self::at(self, t_s)
     }
 }
@@ -1037,6 +1121,32 @@ impl<W: WindStress> WindForcing<W> {
     /// The basin the wind is sampled over.
     pub const fn basin(&self) -> Basin {
         self.basin
+    }
+}
+
+/// Add one component of `wind` to `component`, at every face it has.
+///
+/// [`write_component`] with `+=` for `=`: the superposition
+/// [`WindStressField::add_sampled`] performs.
+fn add_component<W, Pick>(
+    component: &mut Field2D<f64>,
+    basin: Basin,
+    staggering: Staggering,
+    pick: Pick,
+    wind: &W,
+    t_s: f64,
+) where
+    W: WindStress + ?Sized,
+    Pick: Fn((f64, f64)) -> f64,
+{
+    for j in 0..component.ny() {
+        let y_m = basin.y_of_row_m(staggering, j);
+        for i in 0..component.nx() {
+            let value = pick(wind.stress(basin.x_of_column_m(staggering, i), y_m, t_s));
+            *component
+                .get_mut(i, j)
+                .expect("the loop bounds are the field's own extents") += value;
+        }
     }
 }
 

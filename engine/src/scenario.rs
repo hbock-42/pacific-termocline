@@ -99,6 +99,9 @@ use crate::params::{
 use crate::run_writer::{OutputSchedule, OutputScheduleError};
 use crate::solver::{check_rotation_timestep, RotationLimitError};
 use crate::sst::{SstParams, SstParamsError, DEFAULT_SURFACE_DRAG_PER_S};
+use crate::wind_response::{
+    WindResponseError, WindResponseParams, DEFAULT_WIND_RESPONSE_MERIDIONAL_SCALE_M,
+};
 
 /// Why a scenario could not be read.
 ///
@@ -154,6 +157,8 @@ pub enum ScenarioError {
     Rotation(RotationLimitError),
     /// `[sst]` asked for a mixed layer that cannot exist.
     Sst(SstParamsError),
+    /// `[sst]` asked for an atmospheric wind response that cannot exist.
+    WindResponse(WindResponseError),
 }
 
 impl fmt::Display for ScenarioError {
@@ -187,6 +192,7 @@ impl fmt::Display for ScenarioError {
             Self::Cfl(source) => write!(f, "[run]: {source}"),
             Self::Rotation(source) => write!(f, "[run]: {source}"),
             Self::Sst(source) => write!(f, "[sst]: {source}"),
+            Self::WindResponse(source) => write!(f, "[sst]: {source}"),
         }
     }
 }
@@ -225,14 +231,17 @@ const RESIDENT_BYTES_PER_CELL: u64 = 24 * 8;
 /// fields), and the [`SstTerm`](crate::SstTerm)'s eight — the two mixed-layer
 /// velocity components, the two interpolated stress components, the two
 /// divergence halves, the upwelling, and the zonal current on cell centers.
-/// That is 14 more `f64` a cell, rounded up to 16 for the extra row and column
-/// the four staggered ones carry, on the same reasoning as the count above.
+/// That is 14 more `f64` a cell, plus the two components of the extra
+/// [`WindStressField`](crate::WindStressField) a coupled forcing sums the
+/// prescribed winds and the atmospheric response into (T-12.2) — 16, rounded
+/// up to 20 for the extra rows and columns the five staggered ones carry, on
+/// the same reasoning as the count above.
 ///
 /// Counted separately rather than folded into one worst case so that a
 /// scenario of the validated linear model is held to the budget it has always
 /// been held to: turning the coupling on is what costs the memory, and it is
 /// the only scenario that should pay for it.
-const COUPLED_RESIDENT_BYTES_PER_CELL: u64 = RESIDENT_BYTES_PER_CELL + 16 * 8;
+const COUPLED_RESIDENT_BYTES_PER_CELL: u64 = RESIDENT_BYTES_PER_CELL + 20 * 8;
 
 /// The largest resident solver state this build will start a run with.
 ///
@@ -261,6 +270,7 @@ impl std::error::Error for ScenarioError {
             Self::Cfl(source) => Some(source),
             Self::Rotation(source) => Some(source),
             Self::Sst(source) => Some(source),
+            Self::WindResponse(source) => Some(source),
             Self::BasinTooLarge { .. } => None,
         }
     }
@@ -311,6 +321,12 @@ impl From<RotationLimitError> for ScenarioError {
 impl From<SstParamsError> for ScenarioError {
     fn from(source: SstParamsError) -> Self {
         Self::Sst(source)
+    }
+}
+
+impl From<WindResponseError> for ScenarioError {
+    fn from(source: WindResponseError) -> Self {
+        Self::WindResponse(source)
     }
 }
 
@@ -634,6 +650,16 @@ pub struct SstSection {
     /// means [`DEFAULT_SURFACE_DRAG_PER_S`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surface_drag_per_s: Option<f64>,
+    /// Feedback strength `μ` of the T-12.2 atmospheric wind response, in Pa/K.
+    /// Omitted means zero — the prescribed-wind model T-12.1 left, in which
+    /// the coupling runs one way and the alizés are whatever the `[[wind]]`
+    /// entries say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wind_feedback_strength_pa_per_k: Option<f64>,
+    /// Meridional scale `L_a` of that response, in metres. Omitted means
+    /// [`DEFAULT_WIND_RESPONSE_MERIDIONAL_SCALE_M`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wind_response_meridional_scale_m: Option<f64>,
 }
 
 impl SstSection {
@@ -650,6 +676,24 @@ impl SstSection {
             self.mean_zonal_sst_gradient_k_per_m,
             self.subsurface_temperature_sensitivity_k_per_m,
             self.thermal_damping_per_s,
+        )?)
+    }
+
+    /// The validated atmospheric wind response this section describes.
+    ///
+    /// Every coupled scenario has one, because "no feedback" is a strength of
+    /// zero rather than an absent object: the loop is open at `μ = 0` and the
+    /// run is the one T-12.1 validated, bit for bit, which is exactly the
+    /// claim T-12.2's acceptance criterion makes.
+    ///
+    /// # Errors
+    /// [`ScenarioError::WindResponse`], wrapping the [`WindResponseError`]
+    /// that names the offending value and the bound it violated.
+    pub fn build_wind_response(&self) -> Result<WindResponseParams, ScenarioError> {
+        Ok(WindResponseParams::new(
+            self.wind_feedback_strength_pa_per_k.unwrap_or(0.0),
+            self.wind_response_meridional_scale_m
+                .unwrap_or(DEFAULT_WIND_RESPONSE_MERIDIONAL_SCALE_M),
         )?)
     }
 }
@@ -728,6 +772,7 @@ impl ScenarioConfig {
     pub fn build(&self) -> Result<Scenario, ScenarioError> {
         let bounds = self.basin.bounds()?;
         let sst_params = self.sst.map(|sst| sst.build()).transpose()?;
+        let wind_response_params = self.sst.map(|sst| sst.build_wind_response()).transpose()?;
         check_grid_fits_in_memory(bounds.nx(), bounds.ny(), sst_params.is_some())?;
         let basin = bounds.basin();
         let physical_params = self.physics.build()?;
@@ -750,6 +795,7 @@ impl ScenarioConfig {
             winds,
             output_schedule: schedule,
             sst_params,
+            wind_response_params,
         })
     }
 }
@@ -797,6 +843,7 @@ pub struct Scenario {
     winds: Vec<ScenarioWind>,
     output_schedule: OutputSchedule,
     sst_params: Option<SstParams>,
+    wind_response_params: Option<WindResponseParams>,
 }
 
 impl Scenario {
@@ -887,5 +934,16 @@ impl Scenario {
     #[must_use]
     pub const fn sst_params(&self) -> Option<SstParams> {
         self.sst_params
+    }
+
+    /// The T-12.2 atmospheric wind response of this scenario, or `None` when
+    /// there is no `[sst]` section to respond to.
+    ///
+    /// `Some` with a zero feedback strength is the open loop — the answer for
+    /// every coupled scenario written before this ticket, and the one that
+    /// runs exactly as it did.
+    #[must_use]
+    pub const fn wind_response_params(&self) -> Option<WindResponseParams> {
+        self.wind_response_params
     }
 }
