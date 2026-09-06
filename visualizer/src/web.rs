@@ -4,7 +4,8 @@
 //! the page needs no JavaScript of its own beyond a canvas to draw on. The
 //! run to open is taken from the page's `?run=` query parameter — the HTTP
 //! fetch of ADR-0006, which is also what makes the browser build testable
-//! without a hand on a mouse.
+//! without a hand on a mouse. A second run named in `?compare=` opens beside
+//! it (T-09.5), so a comparison is a link a reader can be sent.
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -18,6 +19,9 @@ const CANVAS_ID: &str = "termocline_canvas";
 /// run's two files.
 const RUN_PARAM: &str = "run";
 
+/// Query parameter naming a second run to show beside the first.
+const COMPARE_PARAM: &str = "compare";
+
 /// Start the app on the page's canvas. Called by `wasm-bindgen` on load.
 #[wasm_bindgen(start)]
 pub fn start() {
@@ -27,7 +31,7 @@ pub fn start() {
 
     wasm_bindgen_futures::spawn_local(async {
         let canvas = canvas().expect("index.html defines the canvas the app draws on");
-        let run_url = run_url_from_query();
+        let (run_url, compare_url) = (url_from_query(RUN_PARAM), url_from_query(COMPARE_PARAM));
         let result = eframe::WebRunner::new()
             .start(
                 canvas,
@@ -36,6 +40,9 @@ pub fn start() {
                     let mut app = VisualizerApp::new();
                     if let Some(url) = run_url {
                         app.fetch_run(&url, &cc.egui_ctx);
+                    }
+                    if let Some(url) = compare_url {
+                        app.fetch_run_to_compare(&url, &cc.egui_ctx);
                     }
                     Ok(Box::new(app))
                 }),
@@ -56,9 +63,9 @@ fn canvas() -> Option<web_sys::HtmlCanvasElement> {
         .ok()
 }
 
-/// The `?run=` parameter of the page's URL, if it has one.
-fn run_url_from_query() -> Option<String> {
+/// The `name` parameter of the page's URL, if it has one.
+fn url_from_query(name: &str) -> Option<String> {
     let search = web_sys::window()?.location().search().ok()?;
     let params = web_sys::UrlSearchParams::new_with_str(&search).ok()?;
-    params.get(RUN_PARAM).filter(|url| !url.is_empty())
+    params.get(name).filter(|url| !url.is_empty())
 }

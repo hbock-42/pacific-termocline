@@ -195,6 +195,12 @@ The parameter is the base URL of a directory holding `header.json` and
 has a box for the same URL if you would rather paste it than edit the address
 bar.
 
+Two runs open side by side with `?compare=` beside `?run=` —
+<http://localhost:8080/?run=run-quick/&compare=run-burst/> — or, natively, by
+naming both directories: `termocline-viz /tmp/run-quick /tmp/run-burst`. The
+two panels share one frame index and one colour scale, so the difference
+between the runs is what the picture shows.
+
 The browser fetches the entire run before drawing it, so use a small one:
 `/tmp/run-quick` is the 28 MB run of section 5, while `/tmp/run-demo` would be
 a 941 MB download.

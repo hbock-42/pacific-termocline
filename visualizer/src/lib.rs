@@ -16,6 +16,7 @@
 
 mod app;
 mod chart;
+mod comparison;
 mod cross_section;
 mod heatmap;
 mod loading;
@@ -27,6 +28,7 @@ mod time_series;
 mod wind;
 
 pub use app::VisualizerApp;
+pub use comparison::{Comparison, Difference, Mismatch, Side};
 pub use cross_section::{CrossSection, CrossSectionPoint};
 pub use heatmap::{DivergingScale, Heatmap};
 #[cfg(not(target_arch = "wasm32"))]
