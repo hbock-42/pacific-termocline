@@ -1,0 +1,81 @@
+# Publishes the visualizer to GitHub Pages (T-08.4).
+#
+# Pages is configured with `build_type: workflow`, so this workflow *is* the
+# site's build: nothing is committed to a branch and `actions/deploy-pages`
+# publishes the artifact `trunk` produced.
+#
+# The site is the wasm bundle and nothing else. Per ADR-0012 the browser links
+# the engine and computes the run it draws, so there are no run files to serve
+# alongside it — which is what makes a 100 MB-per-file static host a viable
+# home for a visualizer whose control run is 941 MB.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  # A site can need republishing without a commit — a deploy that failed on
+  # something transient, or a Pages setting changed underneath it.
+  workflow_dispatch:
+
+# `pages: write` and `id-token: write` are what `actions/deploy-pages` needs:
+# it mints an OIDC token to prove to Pages that this run is allowed to deploy.
+# Without them the deploy step fails with a 403 after a green build.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time, and never cancel one in flight: a cancelled deploy
+# leaves the live site on whatever was published before, and the next push
+# republishes anyway.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      # Caches the registry, the target directory and `~/.cargo/bin`, which is
+      # where the `trunk` installed below lands — so the install is paid for
+      # once rather than on every push to `main`.
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install trunk
+        # Pinned, and from crates.io rather than a third-party action: what
+        # builds the published site is a version this repository chose.
+        run: cargo install trunk --locked --version 0.21.14
+
+      # THE line to get right. A GitHub project site is served from
+      # https://<owner>.github.io/<repo>/, so the loader `trunk` injects has to
+      # ask for the wasm at `/pacific-termocline/…`. Built for `/`, the page
+      # 404s its own bundle and renders nothing, while the workflow goes green
+      # — `visualizer/tests/pages_deploy.rs` is what keeps this path honest.
+      - name: Build the site for the Pages subpath
+        working-directory: visualizer
+        run: trunk build --release --public-url /pacific-termocline/
+
+      - name: Upload the site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: visualizer/dist
+
+  deploy:
+    name: deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

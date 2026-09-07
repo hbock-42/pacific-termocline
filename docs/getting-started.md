@@ -9,6 +9,13 @@ Nothing here explains the physics — [`docs/the-physics-explained.md`](the-phys
 does that, and is worth reading once you have a picture on screen to attach it
 to.
 
+If you would rather see a picture before installing anything, the visualizer
+is live at **<https://hbock-42.github.io/pacific-termocline/>**: it computes a
+run in the browser and draws it, with no toolchain and no download
+([ADR-0012](planning/adr/0012-the-browser-runs-the-engine.md)). This guide is
+the other half — running the engine yourself, at the resolutions and lengths a
+tab cannot hold.
+
 ## 1. Build
 
 You need a Rust toolchain at **1.90 or newer** (`rustup` is the easy way to
