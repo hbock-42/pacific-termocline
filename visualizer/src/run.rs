@@ -30,6 +30,7 @@ use termocline_format::{
     RunReader,
 };
 
+use crate::wind::CellCentreStress;
 use crate::{DivergingScale, StressScale};
 
 /// Seconds in a day, for reporting a run's model time in the unit its output
@@ -98,6 +99,9 @@ pub struct LoadedRun {
     scale: DivergingScale,
     /// A stress scale covering every frame of the run, built on the same pass.
     stress_scale: StressScale,
+    /// The strongest easterly zonal stress the run's equator carries, in
+    /// pascals, built on the same pass.
+    strongest_equatorial_easterly_pa: f64,
 }
 
 impl LoadedRun {
@@ -145,6 +149,7 @@ impl LoadedRun {
         let mut frame_offsets = Vec::new();
         let mut offset = 0;
         let mut stress_scale = StressScale::calm();
+        let mut strongest_equatorial_easterly_pa = 0.0;
         for frame in reader.by_ref() {
             let frame = frame?;
             frame_offsets.push(offset);
@@ -152,6 +157,9 @@ impl LoadedRun {
             scale = scale.widened(DivergingScale::symmetric_over(frame.h()));
             stress_scale = stress_scale
                 .widened(StressScale::covering(header.grid, &frame).map_err(RunReadError::Frame)?);
+            strongest_equatorial_easterly_pa =
+                strongest_easterly(strongest_equatorial_easterly_pa, header.grid, &frame)
+                    .map_err(RunReadError::Frame)?;
         }
         Ok(Self {
             source: source.into(),
@@ -160,6 +168,7 @@ impl LoadedRun {
             frame_offsets,
             scale,
             stress_scale,
+            strongest_equatorial_easterly_pa,
         })
     }
 
@@ -184,6 +193,7 @@ impl LoadedRun {
             frame_offsets: Vec::new(),
             scale: DivergingScale::symmetric_over(&[]),
             stress_scale: StressScale::calm(),
+            strongest_equatorial_easterly_pa: 0.0,
         }
     }
 
@@ -210,6 +220,11 @@ impl LoadedRun {
         self.stress_scale = self
             .stress_scale
             .widened(StressScale::covering(self.header.grid, frame)?);
+        self.strongest_equatorial_easterly_pa = strongest_easterly(
+            self.strongest_equatorial_easterly_pa,
+            self.header.grid,
+            frame,
+        )?;
         Ok(())
     }
 
@@ -248,6 +263,29 @@ impl LoadedRun {
     #[must_use]
     pub const fn wind_stress_scale(&self) -> StressScale {
         self.stress_scale
+    }
+
+    /// The strongest easterly wind the run's equator carries, in pascals, as
+    /// a magnitude.
+    ///
+    /// The mean zonal stress along the rows nearest the equator, in the frame
+    /// where that mean is most strongly easterly. Accumulated on the same pass
+    /// as the scales above and widened by each frame appended, for the same
+    /// reason they are: a caption calling this frame's wind slack is comparing
+    /// it against the whole run, and walking every frame again on every
+    /// repaint to find that out is a pass a browser tab cannot afford
+    /// (ADR-0012).
+    ///
+    /// It is deliberately not [`LoadedRun::wind_stress_scale`], which is the
+    /// largest stress *vector* anywhere in the basin. Those are different
+    /// quantities, and a sentence that quoted one while measuring the other
+    /// would be mislabelling its own number.
+    ///
+    /// Zero for a run whose equator never carries an easterly wind — including
+    /// a computed run before its first frame.
+    #[must_use]
+    pub const fn strongest_equatorial_easterly_pa(&self) -> f64 {
+        self.strongest_equatorial_easterly_pa
     }
 
     /// Where the run came from: a directory, a pair of dropped files, or a URL.
@@ -531,4 +569,26 @@ impl fmt::Display for Hemispheric {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:.1}°{}", self.magnitude_deg, self.hemisphere)
     }
+}
+
+/// `strongest_pa` widened to cover `frame`'s equatorial wind, in pascals.
+///
+/// The magnitude of the mean zonal stress along the rows nearest the equator,
+/// where that mean is easterly; a frame whose equator is under a westerly wind,
+/// or which has no rows to read, widens nothing. Free rather than a method
+/// because both the load pass and [`LoadedRun::append_frame`] need it and
+/// neither holds a `LoadedRun` in a state to ask.
+///
+/// # Errors
+/// [`FormatError::FieldShape`] if `frame` does not fit `grid`.
+fn strongest_easterly(
+    strongest_pa: f64,
+    grid: GridSpec,
+    frame: &Frame,
+) -> Result<f64, FormatError> {
+    let mean_pa = CellCentreStress::of_frame(grid, frame)?.equatorial_zonal_mean_pa(grid.extent());
+    let easterly_pa = mean_pa
+        .filter(|pa| pa.is_finite() && *pa < 0.0)
+        .unwrap_or(0.0);
+    Ok(strongest_pa.max(-easterly_pa))
 }

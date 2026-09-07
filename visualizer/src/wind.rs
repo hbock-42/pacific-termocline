@@ -35,8 +35,10 @@
 //!
 //! [ADR-0006]: ../../docs/planning/adr/0006-web-visualizer.md
 
-use termocline_format::{FormatError, Frame, GridSpec, Variable};
+use termocline_format::{BasinExtent, FormatError, Frame, GridSpec, Variable};
 use termocline_grid::{Grid, Staggering};
+
+use crate::cross_section::MeridionalAxis;
 
 /// How far the scale reaches when there is no wind at all.
 const CALM_PA: f64 = 0.0;
@@ -315,7 +317,7 @@ impl Stress {
 /// It borrows the frame rather than building a field of its own: the whole of
 /// a run is walked this way at load to find the stress scale, and one frame of
 /// it again for every frame drawn.
-struct CellCentreStress<'a> {
+pub(crate) struct CellCentreStress<'a> {
     /// The basin, in cells.
     cells: Grid,
     /// `τx`, on the cells' east/west faces.
@@ -329,7 +331,7 @@ impl<'a> CellCentreStress<'a> {
     ///
     /// # Errors
     /// [`FormatError::FieldShape`] if `frame` does not fit `grid`.
-    fn of_frame(grid: GridSpec, frame: &'a Frame) -> Result<Self, FormatError> {
+    pub(crate) fn of_frame(grid: GridSpec, frame: &'a Frame) -> Result<Self, FormatError> {
         frame.validate(&grid)?;
         let cells = grid.grid();
         Ok(Self {
@@ -361,6 +363,31 @@ impl<'a> CellCentreStress<'a> {
     /// The stress at the centre of every cell of the basin.
     fn every_cell(&self) -> impl Iterator<Item = Stress> + '_ {
         (0..self.height()).flat_map(move |j| (0..self.width()).map(move |i| self.at(i, j)))
+    }
+
+    /// The mean zonal stress along the rows nearest the equator, in pascals,
+    /// or `None` where there are no cells to read it from.
+    ///
+    /// Negative is easterly — the alizés (`CONTEXT.md`). The rows are the ones
+    /// [`crate::CrossSection`] averages `h` over, the waveguide the model is
+    /// about, so the wind this reports is the wind over the ocean the
+    /// equatorial views draw. It lives here rather than beside its one caller
+    /// ([`crate::captions`]) because it reads nothing but this type's own
+    /// field.
+    pub(crate) fn equatorial_zonal_mean_pa(&self, extent: BasinExtent) -> Option<f64> {
+        let rows = MeridionalAxis::of(self.height(), extent).rows_nearest_the_equator();
+        let width = self.width();
+        if rows.is_empty() || width == 0 {
+            return None;
+        }
+        let sum_pa: f64 = rows
+            .iter()
+            .flat_map(|&j| (0..width).map(move |i| (i, j)))
+            .map(|(i, j)| self.at(i, j).tau_x_pa)
+            .sum();
+        #[allow(clippy::cast_precision_loss)]
+        let count = (rows.len() * width) as f64;
+        Some(sum_pa / count)
     }
 }
 
