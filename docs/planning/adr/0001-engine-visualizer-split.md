@@ -1,7 +1,12 @@
 # ADR-0001: Split the engine and the visualizer into independent programs
 
 ## Status
-Accepted
+Accepted, then **superseded on the web target by
+[ADR-0012](0012-the-browser-runs-the-engine.md)**: the browser links the engine
+and computes runs itself, and the file format is not served to it. The
+file-based contract below still governs the native engine, the archived runs,
+the validation report and the benchmarks — everything the project's scientific
+claims rest on.
 
 ## Context
 The user's explicit requirement: an engine with no visuals, and something
