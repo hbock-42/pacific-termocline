@@ -3237,6 +3237,7 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "ehttp",
+ "engine",
  "env_logger",
  "log",
  "rfd",
@@ -3246,6 +3247,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "web-time",
  "wgpu",
 ]
 

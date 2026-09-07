@@ -1,5 +1,15 @@
-//! The shell itself: a window (or a canvas) that loads a run, says what it is,
-//! and draws one frame of it.
+//! The shell itself: a window (or a canvas) that gets hold of a run, says what
+//! it is, and draws one frame of it.
+//!
+//! Getting hold of a run means two different things on the two targets, and
+//! since [ADR-0012] that difference is the whole of the difference between
+//! them. Natively a run is *read*: a directory, a pair of dropped files, or an
+//! HTTP fetch. In a browser a run is *computed*, because the file format is
+//! not served to the web at all — so the shell holds a scenario, steps it a
+//! slice at a time between repaints ([`crate::compute`]), and draws the frames
+//! as they arrive.
+//!
+//! [ADR-0012]: ../../docs/planning/adr/0012-the-browser-runs-the-engine.md
 //!
 //! It draws the header first — the grid, the scenario, the frame count —
 //! because that is what tells a reader the run they think they opened is the
@@ -16,12 +26,16 @@ use egui::{Color32, RichText};
 use termocline_format::GridSpec;
 
 use crate::comparison::Side;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::loading::Loaded;
 use crate::run::SECONDS_PER_DAY;
 use crate::{
-    BasinPoint, Comparison, CrossSection, DivergingScale, Heatmap, LoadedRun, Loader, Mismatch,
-    PendingRun, Playback, PointSeries, Scrubber, StressScale, WindOverlay,
+    BasinPoint, BrowserScenario, Comparison, ComputedRun, CrossSection, DivergingScale,
+    FrameBudget, Heatmap, InMegabytes, LoadedRun, Mismatch, Playback, PointSeries, Scrubber,
+    StressScale, WindOverlay, STEP_BUDGET,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use crate::{Loader, PendingRun};
 
 /// What one panel is showing.
 #[derive(Default)]
@@ -29,10 +43,21 @@ enum Shown {
     /// No run yet: the panel explains how to load one.
     #[default]
     Nothing,
-    /// A load is in flight from the named source.
+    /// A load is in flight from the named source. Native only: a browser has
+    /// nothing to load (ADR-0012).
+    #[cfg(not(target_arch = "wasm32"))]
     Loading(String),
-    /// A run, with its metadata.
+    /// A run read from a file: a directory, a drop, or a fetch. Native only,
+    /// because all three are (ADR-0012).
+    #[cfg(not(target_arch = "wasm32"))]
     Run(Box<LoadedRun>),
+    /// A run being computed in this tab, and the frames of it so far.
+    ///
+    /// Kept as itself rather than collapsed into [`Shown::Run`] when it
+    /// finishes, because what a reader is shown while it develops — the
+    /// progress, and that the colour scale is still provisional — is a
+    /// property of the run having been computed here, not of it being partial.
+    Computing(Box<ComputedRun>),
     /// A source that did not yield a run.
     Failed {
         /// Where the run was to come from.
@@ -44,34 +69,62 @@ enum Shown {
 
 impl Shown {
     /// The run this panel is showing, if it is showing one.
+    ///
+    /// A computed run counts from its first frame: it is a run the moment the
+    /// engine has produced something to draw, which is what makes progress
+    /// visible rather than merely reported (ADR-0012).
     const fn run(&self) -> Option<&LoadedRun> {
         match self {
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Run(run) => Some(run),
+            Self::Computing(computed) => Some(computed.run()),
             _ => None,
         }
     }
 }
 
-/// One panel of the shell: what it is showing, and the two ways a run reaches
-/// it.
+/// One panel of the shell: what it is showing, and the ways a run reaches it.
 ///
-/// The three travel together — a run arrives for a panel, is shown in that
-/// panel, and the half-dropped files waiting for their pair are that panel's —
-/// so they are one thing rather than three arrays indexed in step.
-#[derive(Default)]
+/// They travel together — a run arrives for a panel or is computed into it,
+/// is shown in that panel, and the half-dropped files waiting for their pair
+/// are that panel's — so they are one thing rather than several arrays indexed
+/// in step.
 struct Panel {
     /// What this panel is showing.
     shown: Shown,
-    /// Dropped files seen so far, waiting for their pair.
+    /// The scenario this panel computes when asked to (ADR-0012).
+    scenario: BrowserScenario,
+    /// Dropped files seen so far, waiting for their pair. Native only.
+    #[cfg(not(target_arch = "wasm32"))]
     pending: PendingRun,
-    /// The URL a run is served under, as typed or as passed in the query.
+    /// The URL a run is served under, as typed. Native only.
+    #[cfg(not(target_arch = "wasm32"))]
     run_url: String,
+}
+
+impl Default for Panel {
+    fn default() -> Self {
+        Self {
+            shown: Shown::default(),
+            scenario: BrowserScenario::default_scenario(),
+            #[cfg(not(target_arch = "wasm32"))]
+            pending: PendingRun::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            run_url: String::new(),
+        }
+    }
 }
 
 impl Panel {
     /// Empty this panel, as closing the run in it leaves it.
+    ///
+    /// The scenario stays: it is what the reader picked for this panel, not
+    /// anything about the run that was in it.
     fn clear(&mut self) {
-        *self = Self::default();
+        *self = Self {
+            scenario: self.scenario,
+            ..Self::default()
+        };
     }
 }
 
@@ -87,15 +140,18 @@ pub struct VisualizerApp {
     /// The two panels: what each is showing, and how a run reaches it.
     panels: [Panel; 2],
     /// The one channel every source of run bytes posts to, whichever panel
-    /// asked for it.
+    /// asked for it. Native only: a browser computes its runs (ADR-0012).
+    #[cfg(not(target_arch = "wasm32"))]
     loader: Loader,
     /// Whether the second panel is open.
     comparing: bool,
-    /// Which panel a dropped run is loaded into.
+    /// Which panel a dropped run is loaded into. Native only, because drops
+    /// are (ADR-0012).
     ///
     /// Chosen by the reader rather than inferred from which panel is empty: a
     /// run arrives as two files, sometimes in two drops, and a target that
     /// moved between them would split one run across both panels.
+    #[cfg(not(target_arch = "wasm32"))]
     drop_side: Side,
     /// The frame chooser both panels share, and what each of them last drew.
     basin_map: BasinMap,
@@ -105,8 +161,10 @@ impl Default for VisualizerApp {
     fn default() -> Self {
         Self {
             panels: [Panel::default(), Panel::default()],
+            #[cfg(not(target_arch = "wasm32"))]
             loader: Loader::default(),
             comparing: false,
+            #[cfg(not(target_arch = "wasm32"))]
             drop_side: Side::Left,
             basin_map: BasinMap::default(),
         }
@@ -120,14 +178,27 @@ impl VisualizerApp {
         Self::default()
     }
 
+    /// Start computing the first panel's scenario, as the browser does on
+    /// load (ADR-0012).
+    ///
+    /// A visitor arrives to a run already developing rather than to an empty
+    /// window and a button: the whole argument for computing runs is that the
+    /// interesting thing is watching the ocean answer, and nothing here has to
+    /// be downloaded before it can start.
+    pub fn compute_default_run(&mut self) {
+        self.compute_into(Side::Left);
+    }
+
     /// Start fetching the run served under `base_url` into the first panel,
-    /// showing it as loading until it lands.
+    /// showing it as loading until it lands. Native only (ADR-0012).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn fetch_run(&mut self, base_url: &str, ctx: &egui::Context) {
         self.fetch_into(Side::Left, base_url, ctx);
     }
 
     /// Start fetching the run served under `base_url` into the second panel,
-    /// opening the comparison.
+    /// opening the comparison. Native only (ADR-0012).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn fetch_run_to_compare(&mut self, base_url: &str, ctx: &egui::Context) {
         self.comparing = true;
         self.drop_side = Side::Right;
@@ -135,6 +206,7 @@ impl VisualizerApp {
     }
 
     /// Start fetching the run served under `base_url` into `side`.
+    #[cfg(not(target_arch = "wasm32"))]
     fn fetch_into(&mut self, side: Side, base_url: &str, ctx: &egui::Context) {
         self.panels[side.index()].run_url = base_url.to_owned();
         self.panels[side.index()].shown = Shown::Loading(base_url.to_owned());
@@ -193,7 +265,8 @@ impl VisualizerApp {
     }
 
     /// Take whatever finished loading since the last frame and show it in the
-    /// panel that asked for it.
+    /// panel that asked for it. Native only (ADR-0012).
+    #[cfg(not(target_arch = "wasm32"))]
     fn absorb_finished_loads(&mut self) {
         while let Some(Loaded {
             side,
@@ -215,7 +288,9 @@ impl VisualizerApp {
     }
 
     /// Take the files dropped on the window this frame, and load the run into
-    /// the chosen panel once both of them have arrived.
+    /// the chosen panel once both of them have arrived. Native only
+    /// (ADR-0012).
+    #[cfg(not(target_arch = "wasm32"))]
     fn absorb_dropped_files(&mut self, ctx: &egui::Context) {
         let dropped = ctx.input(|input| input.raw.dropped_files.clone());
         let side = if self.comparing {
@@ -255,6 +330,97 @@ impl VisualizerApp {
         }
     }
 
+    /// Start computing `side`'s chosen scenario into that panel (ADR-0012).
+    ///
+    /// A scenario the engine refuses, or one whose frames would not fit in the
+    /// tab, is shown as a failure in the panel that asked for it — with the
+    /// message the refusal came with, because "too big" a reader cannot act on
+    /// and "941 MB against 33.6 MB allowed" they can.
+    fn compute_into(&mut self, side: Side) {
+        let scenario = self.panels[side.index()].scenario;
+        // Whatever this panel was showing is gone, and in a comparison the
+        // scale is both runs', so the other panel's map is no longer its map
+        // either.
+        self.basin_map.forget();
+        self.panels[side.index()].shown =
+            match ComputedRun::start(scenario.toml, scenario.name, FrameBudget::browser()) {
+                Ok(computed) => Shown::Computing(Box::new(computed)),
+                Err(error) => Shown::Failed {
+                    source: scenario.name.to_owned(),
+                    message: error.to_string(),
+                },
+            };
+    }
+
+    /// Step every run still being computed, for as long as this repaint can
+    /// spare, and ask for another repaint if any of them has further to go.
+    ///
+    /// This is the whole of ADR-0012's *the main thread must not be blocked*:
+    /// the budget is wall-clock time, not a step count, so a slower machine
+    /// takes fewer steps per frame rather than dropping frames. Two panels
+    /// computing at once split the budget, because it is the *frame* that has
+    /// to be delivered on time and there is one of those however many runs are
+    /// in flight.
+    fn advance_computations(&mut self, ctx: &egui::Context) {
+        let computing = self
+            .panels
+            .iter()
+            .filter(|panel| {
+                matches!(&panel.shown, Shown::Computing(computed) if !computed.is_finished())
+            })
+            .count();
+        let Some(share) = u32::try_from(computing).ok().filter(|count| *count > 0) else {
+            return;
+        };
+        let budget = STEP_BUDGET / share;
+        for panel in &mut self.panels {
+            let Shown::Computing(computed) = &mut panel.shown else {
+                continue;
+            };
+            if computed.is_finished() {
+                continue;
+            }
+            if let Err(error) = computed.advance_within(budget) {
+                panel.shown = Shown::Failed {
+                    source: computed.run().source().to_owned(),
+                    message: error.to_string(),
+                };
+            }
+        }
+        // The frame loop is otherwise idle-driven: a paused run asks for no
+        // repaint, which is exactly what a run still being computed must not
+        // do (`crate::playback`).
+        ctx.request_repaint();
+    }
+
+    /// Keep the frame chooser on the newest frame of a run that is still
+    /// growing.
+    ///
+    /// Only while one is growing: a run that arrived whole opens on its first
+    /// frame, which is where a reader starts reading it, and nothing here may
+    /// change that.
+    fn follow_computed_runs(&mut self) {
+        let growing = self.panels.iter().any(|panel| {
+            matches!(&panel.shown, Shown::Computing(computed) if !computed.run().is_complete())
+        });
+        if growing {
+            self.basin_map.follow_growing_run(self.shown_frame_count());
+        }
+    }
+
+    /// Frames the panels agree on, as the chooser will bound itself to.
+    ///
+    /// A comparison is over the frames both runs hold, so a run computing
+    /// beside a finished one grows the pair's extent one frame at a time.
+    fn shown_frame_count(&self) -> u64 {
+        let runs = self.panels.each_ref().map(|panel| panel.shown.run());
+        match (self.comparing, runs) {
+            (true, [Some(left), Some(right)]) => left.frame_count().min(right.frame_count()),
+            (true, _) => 0,
+            (false, [left, _]) => left.map_or(0, LoadedRun::frame_count),
+        }
+    }
+
     /// The bar of run-loading affordances: one row per open panel, and the
     /// switch that opens the second.
     ///
@@ -276,69 +442,138 @@ impl VisualizerApp {
                 "Show a second run beside this one, on one frame index and one colour scale",
             )
             .changed();
+        // The limit ADR-0012 makes binding, said out loud rather than left for
+        // a visitor to discover by having their tab die.
+        ui.label(
+            RichText::new(format!(
+                "{} holds at most {} of frames.",
+                if cfg!(target_arch = "wasm32") {
+                    "Runs are computed here, in this tab, and each one"
+                } else {
+                    "A run computed here, rather than opened from disk,"
+                },
+                InMegabytes(FrameBudget::browser().max_bytes())
+            ))
+            .weak(),
+        );
         if toggled && !self.comparing {
             // Closing the second panel closes the run in it. Keeping it would
             // leave a loaded run with nowhere on screen to be, and drops would
             // still be going to a panel the reader can no longer see.
             self.panels[Side::Right.index()].clear();
-            self.drop_side = Side::Left;
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                self.drop_side = Side::Left;
+            }
             self.basin_map.forget();
         }
         url_has_keyboard
     }
 
-    /// One panel's row of loading affordances.
+    /// One panel's row of affordances: the scenario it computes, and — where
+    /// there is a filesystem to read one from — the ways a written run
+    /// reaches it.
     fn draw_side_controls(&mut self, ui: &mut egui::Ui, side: Side) -> bool {
         ui.horizontal(|ui| {
             if self.comparing {
-                ui.radio_value(&mut self.drop_side, side, format!("Run {}", side.label()))
-                    .on_hover_text("Dropped files load into this panel");
+                ui.label(RichText::new(format!("Run {}", side.label())).strong());
             }
-            #[cfg(not(target_arch = "wasm32"))]
-            if ui.button("Open run directory…").clicked() {
-                self.pick_directory(side, ui.ctx());
+            egui::ComboBox::from_id_salt(format!("scenario-{}", side.label()))
+                .selected_text(self.panels[side.index()].scenario.name)
+                .show_ui(ui, |ui| {
+                    for scenario in BrowserScenario::ALL {
+                        ui.selectable_value(
+                            &mut self.panels[side.index()].scenario,
+                            scenario,
+                            scenario.name,
+                        )
+                        .on_hover_text(scenario.summary);
+                    }
+                });
+            if ui
+                .button("Compute run")
+                .on_hover_text(self.panels[side.index()].scenario.summary)
+                .clicked()
+            {
+                self.compute_into(side);
             }
-            ui.label("Run URL:");
-            let url = ui.add(
-                egui::TextEdit::singleline(&mut self.panels[side.index()].run_url)
-                    .hint_text("https://…/run-demo/")
-                    .desired_width(260.0),
-            );
-            let submitted =
-                url.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-            let fetch = ui.button("Fetch").clicked();
-            if (submitted || fetch) && !self.panels[side.index()].run_url.trim().is_empty() {
-                let (url, ctx) = (self.panels[side.index()].run_url.clone(), ui.ctx().clone());
-                self.fetch_into(side, &url, &ctx);
-            }
-            url.has_focus()
+            self.draw_loading_controls(ui, side)
         })
         .inner
+    }
+
+    /// A browser has no written run to reach for, so this row is empty there
+    /// and nothing in it can take the keyboard (ADR-0012).
+    #[cfg(target_arch = "wasm32")]
+    #[allow(clippy::unused_self)]
+    fn draw_loading_controls(&mut self, _ui: &mut egui::Ui, _side: Side) -> bool {
+        false
+    }
+
+    /// The ways a run that was written to disk reaches a panel: the directory
+    /// picker, the drop target, and a URL. Native only — ADR-0012 does not
+    /// serve the run format to the browser at all.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn draw_loading_controls(&mut self, ui: &mut egui::Ui, side: Side) -> bool {
+        if self.comparing {
+            ui.radio_value(&mut self.drop_side, side, "Drops")
+                .on_hover_text("Dropped files load into this panel");
+        }
+        if ui.button("Open run directory…").clicked() {
+            self.pick_directory(side, ui.ctx());
+        }
+        ui.label("Run URL:");
+        let url = ui.add(
+            egui::TextEdit::singleline(&mut self.panels[side.index()].run_url)
+                .hint_text("https://…/run-demo/")
+                .desired_width(200.0),
+        );
+        let submitted = url.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+        let fetch = ui.button("Fetch").clicked();
+        if (submitted || fetch) && !self.panels[side.index()].run_url.trim().is_empty() {
+            let (url, ctx) = (self.panels[side.index()].run_url.clone(), ui.ctx().clone());
+            self.fetch_into(side, &url, &ctx);
+        }
+        url.has_focus()
     }
 }
 
 /// What to show when a panel has no run yet, or its last one failed.
-fn draw_instructions(ui: &mut egui::Ui, pending: &PendingRun) {
+fn draw_instructions(ui: &mut egui::Ui, panel: &Panel) {
     ui.label(format!(
-        "Drop a run's {} and {} onto this window{}.",
-        termocline_format::HEADER_FILE_NAME,
-        termocline_format::FRAME_FILE_NAME,
-        if cfg!(target_arch = "wasm32") {
-            ""
-        } else {
-            ", or drop the run directory itself"
-        }
+        "Pick a scenario and press Compute run: {} is computed here, step by step, and drawn as \
+         it develops.",
+        panel.scenario.name
     ));
-    let still_needed = pending.still_needed();
-    if still_needed.len() == 1 {
-        ui.label(format!("Waiting for {}.", still_needed[0]));
+    ui.label(RichText::new(panel.scenario.summary).weak());
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        ui.add_space(6.0);
+        ui.label(format!(
+            "Or open a run the engine wrote: drop its {} and {} onto this window, or drop the run \
+             directory itself.",
+            termocline_format::HEADER_FILE_NAME,
+            termocline_format::FRAME_FILE_NAME,
+        ));
+        let still_needed = panel.pending.still_needed();
+        if still_needed.len() == 1 {
+            ui.label(format!("Waiting for {}.", still_needed[0]));
+        }
     }
 }
 
 impl eframe::App for VisualizerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.absorb_finished_loads();
-        self.absorb_dropped_files(ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.absorb_finished_loads();
+            self.absorb_dropped_files(ctx);
+        }
+        // Before anything is drawn, so what is drawn is the run as far as it
+        // has got this frame — and so the chooser is fitted to it before it is
+        // shown (ADR-0012).
+        self.advance_computations(ctx);
+        self.follow_computed_runs();
 
         let url_has_keyboard = egui::TopBottomPanel::top("controls")
             .show(ctx, |ui| {
@@ -367,6 +602,7 @@ impl eframe::App for VisualizerApp {
             }
         });
 
+        #[cfg(not(target_arch = "wasm32"))]
         if ctx.input(|input| !input.raw.hovered_files.is_empty()) {
             // Dropping is the web's only local affordance, so say the window
             // will take the file before the user lets go of it.
@@ -382,15 +618,62 @@ impl eframe::App for VisualizerApp {
 /// The one open panel: its metadata, and under it the basin map of the chosen
 /// frame.
 fn draw_single(ui: &mut egui::Ui, panel: &Panel, basin_map: &mut BasinMap, keyboard_free: bool) {
-    match &panel.shown {
-        Shown::Run(run) => {
-            draw_run_header(ui, Side::Left, run);
-            ui.add_space(12.0);
-            ui.separator();
-            basin_map.draw(ui, run, keyboard_free);
-        }
-        other => draw_waiting(ui, other, &panel.pending),
+    if let Some(run) = panel.shown.run() {
+        draw_run_header(ui, Side::Left, run);
+        draw_compute_progress(ui, &panel.shown);
+        ui.add_space(12.0);
+        ui.separator();
+        basin_map.draw(ui, run, keyboard_free);
+    } else {
+        draw_waiting(ui, panel);
     }
+}
+
+/// How far a computed run has got, and what that means for what is on screen.
+///
+/// Two things a reader cannot get from the picture: that frames are still
+/// arriving, and that the colours are therefore not yet the run's. The second
+/// matters more than it sounds — a run-wide scale is what lets a collapsing
+/// tilt be *seen* to collapse (T-08.2), and a scale that still has frames to
+/// see is one that may yet widen under the picture being read.
+///
+/// Nothing is drawn for a run that was loaded rather than computed: it was
+/// whole before it was shown.
+fn draw_compute_progress(ui: &mut egui::Ui, shown: &Shown) {
+    let Shown::Computing(computed) = shown else {
+        return;
+    };
+    let (done, promised) = computed.progress();
+    let run = computed.run();
+    if run.is_complete() {
+        ui.label(
+            RichText::new(format!(
+                "Computed here: {promised} frames, {} of the {} a run may hold in this tab.",
+                InMegabytes(FrameBudget::bytes_of(run.header())),
+                InMegabytes(FrameBudget::browser().max_bytes()),
+            ))
+            .weak(),
+        );
+        return;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let fraction = if promised == 0 {
+        0.0
+    } else {
+        done as f32 / promised as f32
+    };
+    ui.add(
+        egui::ProgressBar::new(fraction)
+            .desired_width(260.0)
+            .text(format!("Computing frame {done} of {promised}")),
+    );
+    ui.label(
+        RichText::new(
+            "The colour scale covers the frames computed so far and widens as the run develops, \
+             so it is provisional until the run finishes.",
+        )
+        .weak(),
+    );
 }
 
 /// Two runs held against each other, or why they are not.
@@ -413,9 +696,11 @@ fn draw_comparison(
                 let panel = &panels[side.index()];
                 let column = &mut columns[side.index()];
                 column.label(RichText::new(format!("Run {}", side.label())).strong());
-                match &panel.shown {
-                    Shown::Run(run) => draw_run_header(column, side, run),
-                    other => draw_waiting(column, other, &panel.pending),
+                if let Some(run) = panel.shown.run() {
+                    draw_run_header(column, side, run);
+                    draw_compute_progress(column, &panel.shown);
+                } else {
+                    draw_waiting(column, panel);
                 }
             }
         });
@@ -452,9 +737,10 @@ fn draw_refusal(ui: &mut egui::Ui, runs: [&LoadedRun; 2], mismatch: &Mismatch) {
 }
 
 /// A panel with no run in it yet: what it is doing, or how to give it one.
-fn draw_waiting(ui: &mut egui::Ui, shown: &Shown, pending: &PendingRun) {
-    match shown {
-        Shown::Nothing => draw_instructions(ui, pending),
+fn draw_waiting(ui: &mut egui::Ui, panel: &Panel) {
+    match &panel.shown {
+        Shown::Nothing => draw_instructions(ui, panel),
+        #[cfg(not(target_arch = "wasm32"))]
         Shown::Loading(source) => {
             ui.horizontal(|ui| {
                 ui.spinner();
@@ -463,15 +749,18 @@ fn draw_waiting(ui: &mut egui::Ui, shown: &Shown, pending: &PendingRun) {
         }
         Shown::Failed { source, message } => {
             ui.label(
-                RichText::new(format!("{source} could not be loaded"))
+                RichText::new(format!("{source} could not be shown"))
                     .color(Color32::LIGHT_RED)
                     .strong(),
             );
             ui.label(message);
             ui.separator();
-            draw_instructions(ui, pending);
+            draw_instructions(ui, panel);
         }
+        // Both are runs, and a panel with a run in it is not waiting for one.
+        #[cfg(not(target_arch = "wasm32"))]
         Shown::Run(_) => {}
+        Shown::Computing(_) => {}
     }
 }
 
@@ -497,8 +786,8 @@ fn draw_run_header(ui: &mut egui::Ui, side: Side, run: &LoadedRun) {
 
 /// The name and bytes of a dropped file, from whichever of the two egui fills
 /// in: a path natively, the bytes themselves in a browser.
+#[cfg(not(target_arch = "wasm32"))]
 fn dropped_file_contents(file: &egui::DroppedFile) -> Result<(String, Vec<u8>), String> {
-    #[cfg(not(target_arch = "wasm32"))]
     if let Some(path) = &file.path {
         let bytes = std::fs::read(path)
             .map_err(|error| format!("{} could not be read: {error}", path.display()))?;
@@ -746,6 +1035,14 @@ struct FramePanel {
 struct SeriesCache {
     /// The series at the cell the reader picked, if they have picked one.
     series: Option<PointSeries>,
+    /// Frames the run held when that series was built.
+    ///
+    /// Part of what identifies the series, because a computed run gains frames
+    /// as it goes (ADR-0012) and a series is of the *whole* run: one built at
+    /// frame 50 stops at frame 50 while the map carries on. For a run that
+    /// arrived whole this never changes, so the cost property below is
+    /// unaffected — it is only a growing run that this rebuilds for.
+    frames: u64,
     /// How many times a series has been built since this map was created.
     ///
     /// Not shown anywhere. It exists because "the run is walked once per cell
@@ -767,16 +1064,20 @@ impl SeriesCache {
     }
 
     /// Show the series at `point`, walking `run` for it unless the series
-    /// already in hand is that cell's.
+    /// already in hand is that cell's, over the run as it now stands.
     ///
     /// The guard is on the cell rather than on the click: a reader clicking
     /// twice in the same cell — or dragging across one — has asked for the
-    /// series they already have.
+    /// series they already have. It is on the frame count as well, because a
+    /// run still being computed grows under the series: the chart would
+    /// otherwise stop at the frame the cell was picked at while the map beside
+    /// it ran on.
     fn select(&mut self, run: &LoadedRun, point: BasinPoint) {
+        let frames = run.frame_count();
         if self
             .series
             .as_ref()
-            .is_some_and(|held| held.point() == point)
+            .is_some_and(|held| held.point() == point && self.frames == frames)
         {
             return;
         }
@@ -784,6 +1085,7 @@ impl SeriesCache {
             PointSeries::at_point(run, point)
                 .expect("a point picked off this run's own map is a cell of its basin"),
         );
+        self.frames = frames;
         self.walks += 1;
     }
 }
@@ -956,9 +1258,34 @@ impl BasinMap {
         self.bar = None;
     }
 
+    /// Follow the end of a run that is still growing, unless the reader has
+    /// scrubbed back into it.
+    ///
+    /// A computed run gains frames between repaints (ADR-0012), and a chooser
+    /// left where it was would sit on frame zero while the run developed
+    /// behind it — which is *not* watching the simulation run. So the chooser
+    /// tracks the last frame while it is already on the last frame, and stops
+    /// the moment the reader steps back to look at something. Scrubbing to the
+    /// end again resumes it.
+    fn follow_growing_run(&mut self, frame_count: u64) {
+        let at_end = self
+            .scrubber
+            .last()
+            .is_none_or(|last| self.scrubber.index() >= last);
+        self.scrubber.fit_to(frame_count);
+        if at_end {
+            self.scrubber.to_last();
+        }
+    }
+
     /// Draw the frame chooser and the map of the chosen frame of one run.
     fn draw(&mut self, ui: &mut egui::Ui, run: &LoadedRun, keyboard_free: bool) {
-        let frame_count = run.header().output.frame_count;
+        // The frames the run *holds*, not the frames its header promises. For
+        // a run read from a file the two agree — the reader counted them
+        // against each other at load — and for one still being computed the
+        // held count is the honest one: the chooser cannot name a frame the
+        // engine has not produced yet (ADR-0012).
+        let frame_count = run.frame_count();
         let Some(index) = self.chooser(ui, frame_count, keyboard_free) else {
             ui.label("This run holds no frames to draw.");
             return;
@@ -1664,6 +1991,10 @@ mod tests {
     use super::{BasinMap, DrawnFrame, LoadedRun, Side};
     use crate::{BasinPoint, Comparison, RunBytes, SeriesSample};
 
+    /// Model time between the frames of these runs, in seconds: a day, as
+    /// `steady-trades.toml` writes them.
+    const INTERVAL_S: f64 = 86_400.0;
+
     /// A basin small enough to build in a unit test, on the extent of
     /// `CONTEXT.md`, *Basin*.
     fn grid() -> GridSpec {
@@ -1698,26 +2029,12 @@ mod tests {
             source,
             OutputTiming {
                 frame_count,
-                interval_s: 86_400.0,
+                interval_s: INTERVAL_S,
             },
         );
         let mut frames = Vec::new();
         for index in 0..header.output.frame_count {
-            #[allow(clippy::cast_precision_loss)]
-            let value = index as f64 * metres_per_frame;
-            let field = |variable| vec![0.0; grid.field_len(variable)];
-            #[allow(clippy::cast_precision_loss)]
-            let t_s = index as f64 * header.output.interval_s;
-            let frame = Frame::new(
-                t_s,
-                &grid,
-                vec![value; grid.field_len(Variable::ThermoclineDepthAnomaly)],
-                field(Variable::ZonalCurrentAnomaly),
-                field(Variable::MeridionalCurrentAnomaly),
-                field(Variable::ZonalWindStress),
-                field(Variable::MeridionalWindStress),
-            )
-            .expect("fields sized from the grid fit it");
+            let frame = frame_of_value(grid, index, metres_per_frame);
             frames.extend(
                 bincode::serde::encode_to_vec(&frame, frame_encoding()).expect("a frame encodes"),
             );
@@ -1730,6 +2047,27 @@ mod tests {
             },
         )
         .expect("a run written from its own header loads")
+    }
+
+    /// Frame `index` of the runs above: every cell of `h` holds
+    /// `index · metres_per_frame`, so the frame says which frame it is through
+    /// the numbers in it, and its model time is that index at [`INTERVAL_S`].
+    fn frame_of_value(grid: GridSpec, index: u64, metres_per_frame: f64) -> Frame {
+        #[allow(clippy::cast_precision_loss)]
+        let value = index as f64 * metres_per_frame;
+        let field = |variable| vec![0.0; grid.field_len(variable)];
+        #[allow(clippy::cast_precision_loss)]
+        let t_s = index as f64 * INTERVAL_S;
+        Frame::new(
+            t_s,
+            &grid,
+            vec![value; grid.field_len(Variable::ThermoclineDepthAnomaly)],
+            field(Variable::ZonalCurrentAnomaly),
+            field(Variable::MeridionalCurrentAnomaly),
+            field(Variable::ZonalWindStress),
+            field(Variable::MeridionalWindStress),
+        )
+        .expect("fields sized from the grid fit it")
     }
 
     /// Repaint `map` once, and say which textures it drew the run with.
@@ -2159,5 +2497,75 @@ mod tests {
         let line = super::frame_line(0, 366, [Some(0.0), Some(8_640_000.0)]);
         assert!(line.contains("run A dates 0.00 days"), "{line}");
         assert!(line.contains("run B dates 100.00 days"), "{line}");
+    }
+
+    #[test]
+    fn a_series_over_a_growing_run_is_rebuilt_as_frames_arrive() {
+        // The one view that is of the whole run rather than of a frame, held
+        // against the one thing ADR-0012 changed about a run: it grows. The
+        // cache above is keyed on the picked cell, and a cell alone would
+        // leave the chart stopped at the frame it was picked at while the map
+        // beside it ran on.
+        let grid = grid();
+        let mut run = LoadedRun::computing(
+            "computing",
+            RunHeader::new(
+                grid,
+                PhysicalParams {
+                    mean_depth_m: 150.0,
+                    reduced_gravity_m_per_s2: 0.06,
+                    beta_per_m_per_s: 2.3e-11,
+                    rayleigh_damping_per_s: 1.0e-7,
+                    reference_density_kg_per_m3: 1025.0,
+                },
+                "computing",
+                OutputTiming {
+                    frame_count: 3,
+                    interval_s: INTERVAL_S,
+                },
+            ),
+        );
+        for index in 0..2 {
+            run.append_frame(&frame_of_value(grid, index, 1.0))
+                .expect("a frame built from this run's own grid fits it");
+        }
+
+        let mut map = BasinMap::default();
+        map.panels[Side::Left.index()]
+            .series
+            .select(&run, middle_point(&run));
+        assert_eq!(panel_series(&map, Side::Left).walks, 1);
+        assert_eq!(
+            panel_series(&map, Side::Left)
+                .shown()
+                .expect("a point was picked")
+                .samples()
+                .len(),
+            2
+        );
+
+        run.append_frame(&frame_of_value(grid, 2, 1.0))
+            .expect("a frame built from this run's own grid fits it");
+        map.panels[Side::Left.index()]
+            .series
+            .select(&run, middle_point(&run));
+        assert_eq!(
+            panel_series(&map, Side::Left).walks,
+            2,
+            "the run grew under the series and it was not walked again"
+        );
+        let series = panel_series(&map, Side::Left)
+            .shown()
+            .expect("a point was picked");
+        #[allow(clippy::cast_precision_loss)]
+        let expected: Vec<f64> = (0..run.frame_count()).map(|index| index as f64).collect();
+        assert_eq!(
+            series
+                .samples()
+                .iter()
+                .map(SeriesSample::h_m)
+                .collect::<Vec<f64>>(),
+            expected
+        );
     }
 }

@@ -1,12 +1,30 @@
 # visualizer
 
-Reads the engine's output files and renders them: basin maps, cross-sections,
-time series, playback. Never touches the physics and never links against the
-engine's simulation code ([ADR-0001](../docs/planning/adr/0001-engine-visualizer-split.md)).
+Renders a run: basin maps, cross-sections, time series, playback.
 
-Binary: `termocline-viz`. It loads a run — dropped files, a `?run=` URL, or a
-directory natively — and, with *Compare two runs* ticked, a second one beside
-it (`?compare=`, or a second directory on the command line). It draws the thermocline depth anomaly `h` of one chosen
+Where the run comes from is the one thing that differs between the two targets.
+Natively it is read — a directory, a pair of dropped files, or a URL — and the
+visualizer never touches the physics. In a browser it is **computed**: per
+[ADR-0012](../docs/planning/adr/0012-the-browser-runs-the-engine.md) the web
+build links the engine, holds one of the scenarios in `scenarios/` and steps it
+in the tab, because the run format is not served to the web at all. Both
+origins end in the same `LoadedRun`, so every view below is the same code
+either way.
+
+A computed run is stepped between repaints, never in one call: `src/compute.rs`
+steps until a wall-clock deadline — half of a 60 Hz frame, checked every eight
+steps — so the tab keeps drawing and the run is watched as it develops. What it
+may retain is capped: a run holds at most 33.6 MB of frames, checked against
+the scenario's header before the first step, because with nothing downloaded it
+is memory rather than bandwidth that a tab dies of. The browser scenarios are
+the engine's coarsened to fit — 80 × 25 cells, 244 frames, 19.9 MB — and the
+colour scale of a run still being computed covers the frames so far and widens
+as it develops, which the shell says on screen rather than leaving to be
+guessed.
+
+Binary: `termocline-viz`. With *Compare two runs* ticked a second run opens
+beside the first — another scenario computed, or another directory on the
+command line. It draws the thermocline depth anomaly `h` of one chosen
 frame as a colour map over the basin, with the wind stress `τ` that forced it
 drawn over the top as arrows — or plays the run through. Time series and
 cross-sections land in Epic 09.

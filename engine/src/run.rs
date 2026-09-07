@@ -1,50 +1,29 @@
 //! Running a scenario forward in time and writing what it produced.
 //!
 //! This is the join between the five epics behind it: [`Scenario`] loads the
-//! config (T-03.4) and builds the [`Basin`](crate::Basin) (T-04.1) and the
-//! wind forcing (Epic 03), [`Solver`] takes the RK4 steps at the CFL-checked
-//! timestep (Epics 01–02), and [`RunWriter`] saves the ones the
-//! [`OutputSchedule`] asks for (T-05.2). Nothing physical or numerical is
-//! decided here — every bound was checked by whichever constructor owns it,
-//! and this module's whole job is the order the pieces go in.
+//! config (T-03.4), [`RunLoop`] builds the basin, the solver and the wind
+//! forcing and takes the steps (Epics 01-04), and [`RunWriter`] saves the ones
+//! the schedule asks for (T-05.2). Nothing physical or numerical is decided
+//! here — every bound was checked by whichever constructor owns it, and this
+//! module's whole job is to drive the loop into a directory.
 //!
 //! # The loop
 //!
-//! A run of `total_steps` steps visits `total_steps + 1` states: the initial
-//! one and the one after each step. Each is offered to the schedule, which
-//! keeps the multiples of the output cadence, so the frame at index `k` is the
-//! state after `k · N` steps at model time `k · N · dt`. The step is taken
-//! *after* the state is offered, which is what puts the initial condition in
-//! the file as frame zero and leaves the final state as the last frame.
-//!
-//! Model time is `step · dt` rather than an accumulator advanced by `dt` each
-//! iteration: the product is one rounding, the accumulator is one per step,
-//! and the frame times a reader plots against have to be the times the forcing
-//! was actually sampled at.
-//!
-//! # The SST coupling
-//!
-//! A scenario's `[sst]` section is read here and nowhere else: it decides
-//! which solver is built, which state is allocated, which of the two
-//! [`RunForcing`] shapes the winds take, and — since T-05.4 — whether the
-//! run's header declares `T'` among its variables and its frames carry one.
-//! The time loop is the same either way. A coupled run's forcing is a
-//! [`CoupledWind`](crate::CoupledWind): the prescribed `[[wind]]` entries plus
-//! the atmospheric response to `T'` (T-12.2), so the stress a step reads — and
-//! the stress a frame records — is the one the ocean actually felt, feedback
-//! included. A run *without* the section writes the five variables of the
-//! linear core and says so; a reader of such a run finds `T'` absent rather
-//! than zero ([ADR-0004], ADR-0011).
-//!
-//! [ADR-0004]: ../../docs/planning/adr/0004-data-interchange-format.md
+//! The loop itself is [`RunLoop`]'s, and lives there because the browser takes
+//! the same steps without a filesystem to write them to (ADR-0012). What this
+//! module adds is the two things a *file* needs: the writer the frames go to,
+//! and the observer that reports progress to a terminal (T-06.2). A run of
+//! `total_steps` steps therefore visits `total_steps + 1` states here exactly
+//! as it does there, and the frame at index `k` is the state after `k · N`
+//! steps at model time `k · N · dt`.
 //!
 //! # What is allocated, and when
 //!
 //! The state, the solver's stage buffers, the composite wind and the stress
-//! field written into the frames are all built before the first step and
-//! reused (CODING_STANDARDS.md § *Performance*). What remains per *frame* is
-//! the frame itself, which [`RunWriter::append`] builds — at the output
-//! cadence, not in the time-stepping loop.
+//! field written into the frames are all built by [`RunLoop::of_scenario`]
+//! before the first step and reused (CODING_STANDARDS.md § *Performance*).
+//! What remains per *frame* is the frame itself, which [`RunWriter::append`]
+//! builds — at the output cadence, not in the time-stepping loop.
 //!
 //! # Failure
 //!
@@ -57,17 +36,13 @@
 use std::fmt;
 use std::path::Path;
 
-use termocline_format::{FormatError, GridSpec, RunHeader};
+use termocline_format::FormatError;
 
-use crate::basin::Basin;
-use crate::coriolis::BetaPlane;
-use crate::forcing::{CompositeWind, StageForcing, WindForcing, WindStressField};
 use crate::progress::{RunObserver, RunReport};
+use crate::run_loop::{RunLoop, RunLoopError};
 use crate::run_writer::{RunWriteError, RunWriter};
 use crate::scenario::{Scenario, ScenarioError};
-use crate::solver::{Solver, SolverError};
-use crate::state::OceanState;
-use crate::wind_response::{CoupledWind, SstWindResponse};
+use crate::solver::SolverError;
 
 /// Why a run could not be made.
 ///
@@ -131,6 +106,20 @@ impl From<SolverError> for RunError {
 impl From<RunWriteError> for RunError {
     fn from(source: RunWriteError) -> Self {
         Self::Write(source)
+    }
+}
+
+/// The two ways a run refuses to start, as the `run` command reports them.
+///
+/// [`RunLoop`] is the portable half of this module (ADR-0012) and objects
+/// before a directory is opened; its two errors are two of this one's four,
+/// under the same names.
+impl From<RunLoopError> for RunError {
+    fn from(source: RunLoopError) -> Self {
+        match source {
+            RunLoopError::Grid(source) => Self::Grid(source),
+            RunLoopError::Solver(source) => Self::Solver(source),
+        }
     }
 }
 
@@ -202,119 +191,29 @@ pub fn run_scenario_observed(
     directory: &Path,
     observer: &mut dyn RunObserver,
 ) -> Result<RunReport, RunError> {
-    let basin = scenario.basin();
-    let grid = basin.grid();
-    let params = scenario.physical_params();
-    let schedule = scenario.output_schedule();
+    let mut run = RunLoop::of_scenario(scenario, description)?;
+    let schedule = run.schedule();
 
-    // The beta-plane is placed by the basin's southern boundary rather than
-    // centred on the grid, so a scenario that does not straddle the equator
-    // gets the rotation of the latitudes it actually covers. It is the same
-    // plane the scenario loader checked the rotation bound against, because
-    // both ask the basin for it.
-    let plane = BetaPlane::of_basin(params, basin);
-    // The Epic 12 switch, and the whole of it: a scenario with an `[sst]`
-    // section integrates the mixed-layer anomaly `T'` alongside the core, one
-    // without integrates the three-variable model of Epics 01-07. The two
-    // branches differ in one term of the right-hand side and one field of the
-    // state; everything below is the same loop (T-12.1).
-    let mut solver = match scenario.sst_params() {
-        Some(sst) => {
-            Solver::coupled_to_sst(grid, basin.spacing(), params, plane, schedule.dt_s(), sst)?
-        }
-        None => Solver::new(grid, basin.spacing(), params, plane, schedule.dt_s())?,
-    };
-
-    let header = RunHeader::new(
-        GridSpec::new(grid.nx(), grid.ny(), scenario.bounds().into())?,
-        params.into(),
-        description,
-        schedule.timing(),
-    );
-    // The header's variable list and the state's fields come from the same
-    // switch, one line apart, so a run cannot promise a `T'` it does not
-    // integrate or integrate one it does not promise.
-    let header = if solver.couples_sst() {
-        header.with_sst_anomaly()
-    } else {
-        header
-    };
-
-    let mut state = if solver.couples_sst() {
-        OceanState::at_rest_with_sst_anomaly(grid)
-    } else {
-        OceanState::at_rest(grid)
-    };
-    // The run's forcing: the scenario's wind and the one field it is sampled
-    // into, held here rather than inside the solver so that it survives the
-    // whole time loop. A steady wind is therefore sampled once for the run
-    // (T-10.5, `docs/performance-notes.md`), and the field a frame records is
-    // the very field that stage of the integration read — the same instant,
-    // and now literally the same buffer.
-    let mut forcing = match scenario.wind_response_params() {
-        Some(response) => RunForcing::Coupled(Box::new(CoupledWind::new(
-            basin,
-            scenario.wind(),
-            SstWindResponse::new(basin, response),
-        ))),
-        None => RunForcing::Prescribed(WindForcing::new(basin, scenario.wind())),
-    };
-
-    let mut writer = RunWriter::create(directory, &header)?;
+    let mut writer = RunWriter::create(directory, run.header())?;
     observer.run_started(description, schedule);
     let mut frames_written = 0;
-    for step in 0..=schedule.total_steps() {
-        let t_s = schedule.model_time_at_step(step);
-        if schedule.writes_at_step(step) {
-            writer.append(t_s, &state, forcing.at(t_s, &state))?;
-            observer.frame_written(frames_written, t_s);
+    loop {
+        if let Some(saved) = run.take_frame() {
+            writer.append(saved.t_s, saved.state, saved.wind_stress)?;
+            observer.frame_written(frames_written, saved.t_s);
             frames_written += 1;
         }
-        if step < schedule.total_steps() {
-            solver.step_with_forcing(&mut state, t_s, &mut forcing);
-            // The step just taken is `step + 1` of the run, and it reached the
-            // model time of the *next* iteration — which is what the observer
-            // reports, so the time on screen is the time the state is at.
-            observer.step_taken(step + 1, schedule.model_time_at_step(step + 1));
+        if !run.take_step() {
+            break;
         }
+        // The step just taken reached the model time the loop is now at —
+        // which is what the observer reports, so the time on screen is the
+        // time the state is at.
+        observer.step_taken(run.steps_taken(), run.model_time_s());
     }
     writer.finish()?;
 
     let report = RunReport::new(schedule.total_steps(), frames_written);
     observer.run_finished(&report);
     Ok(report)
-}
-
-/// The forcing of one run: the scenario's prescribed winds, and — when the
-/// `[sst]` section switched the Epic 12 coupling on — the atmospheric response
-/// added to them.
-///
-/// A closed enum rather than a `Box<dyn StageForcing>` for the same reason
-/// [`ScenarioWind`](crate::ScenarioWind) is one: a run has exactly these two
-/// shapes, and which one it has is decided once, before the first step. The
-/// coupled arm is boxed because it is much the larger of the two and only one
-/// scenario in the format has it.
-enum RunForcing {
-    /// The three-variable model of Epics 01-07: whatever the `[[wind]]`
-    /// entries prescribe, and nothing else.
-    Prescribed(WindForcing<CompositeWind>),
-    /// The coupled model of Epic 12: the same winds, plus the wind response to
-    /// the SST anomaly of the stage being evaluated.
-    Coupled(Box<CoupledWind<CompositeWind>>),
-}
-
-impl StageForcing for RunForcing {
-    fn basin(&self) -> Basin {
-        match self {
-            Self::Prescribed(forcing) => forcing.basin(),
-            Self::Coupled(forcing) => forcing.basin(),
-        }
-    }
-
-    fn at(&mut self, t_s: f64, state: &OceanState) -> &WindStressField {
-        match self {
-            Self::Prescribed(forcing) => forcing.at(t_s),
-            Self::Coupled(forcing) => forcing.at(t_s, state),
-        }
-    }
 }

@@ -5,9 +5,16 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Reads the engine's output files and renders them. Never touches the physics."
+description = "Renders a run: one computed in the browser, or one the engine wrote to disk."
 
 [dependencies]
+# ADR-0012: on the web the visualizer *is* the engine's caller — it holds a
+# `Scenario` and steps it, because a browser has nothing to download. Default
+# features off: `fs` is the filesystem half of the engine and `cli` is an
+# argument parser, and a browser has neither. Natively the workspace turns both
+# back on for the `termocline` binary, which is why this is a `default-features
+# = false` and not a `no-default-features` build of two different engines.
+engine = { path = "../engine", default-features = false }
 termocline-format.workspace = true
 # Named for the C-grid staggering the wind overlay averages across; the crate
 # is data structures and indexing only, so it costs the browser build nothing
@@ -27,17 +34,20 @@ egui = "0.33"
 # does not compile for `wasm32` at all. Named here so the browser build has a
 # backend; nothing in this crate calls into it directly.
 egui-wgpu = "0.33"
-# One HTTP client for both targets, so `?run=` on the web and a typed URL
-# natively take the same code path.
-ehttp = "0.7"
 log = "0.4"
+# `std::time::Instant` panics on `wasm32-unknown-unknown`, and the compute loop
+# needs a clock: it steps until a wall-clock deadline so that the tab keeps
+# drawing (ADR-0012). `web-time` is `performance.now()` in a browser and a
+# re-export of `std::time` everywhere else, so one line of code times both.
+web-time = "1"
 
-# The folder picker and the logger only mean something where there is a
-# filesystem and a terminal (ADR-0006). `termocline-format`'s `fs` feature is
-# deliberately *not* enabled: the visualizer reads a directory into the same
-# byte buffers the web hands it, so both targets take one code path and neither
-# depends on `RunReader::open`.
+# The three ways a *written* run reaches the shell — a directory, a fetch, a
+# drop — are native-only, because ADR-0012 does not serve the file format to
+# the browser at all: the web build computes its runs and has nothing to load.
+# `termocline-format`'s `fs` feature is deliberately still not enabled: the
+# visualizer reads a directory into the same byte buffers a drop hands it.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ehttp = "0.7"
 env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
 rfd = "0.17"
 

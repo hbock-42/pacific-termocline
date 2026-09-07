@@ -45,7 +45,12 @@ mod reader;
 mod variable;
 
 pub use error::FormatError;
-pub use frame::Frame;
+
+/// Re-exported so a caller of [`encode_frame`] can name what it refused
+/// without depending on `bincode` itself: the encoding is this crate's choice
+/// (ADR-0004), and so is the error it fails with.
+pub use bincode::error::EncodeError;
+pub use frame::{encode_frame, Frame};
 pub use header::{BasinExtent, GridSpec, OutputTiming, PhysicalParams, RunHeader};
 pub use reader::{decode_frame, RunReadError, RunReader};
 pub use variable::{Variable, VariableSpec};

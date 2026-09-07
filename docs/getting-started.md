@@ -167,8 +167,10 @@ reach for a bigger run:
 
 ## 6. See it in a browser
 
-The visualizer also runs as a web app. A browser has no filesystem, so the run
-reaches it either by drag-and-drop or over HTTP ([ADR-0006](planning/adr/0006-web-visualizer.md)).
+The visualizer also runs as a web app, and there it does not open a run at all:
+it *computes* one. A browser has no filesystem and 941 MB is not a download, so
+per [ADR-0012](planning/adr/0012-the-browser-runs-the-engine.md) the page links
+the engine, holds a scenario and steps it in the tab.
 [trunk](https://trunkrs.dev) builds and serves it:
 
 ```sh
@@ -178,32 +180,29 @@ cd visualizer && trunk serve
 ```
 
 The first build takes a couple of minutes; when it prints `server listening
-at: http://127.0.0.1:8080/`, open <http://localhost:8080> and drop the run's
-two files on the page.
+at: http://127.0.0.1:8080/`, open <http://localhost:8080>. The control
+scenario starts computing on load and the map fills in as it goes — a progress
+bar counts the frames, and the frame chooser follows the newest one until you
+scrub back into the run. Nothing is downloaded and nothing is dropped on the
+page: the run on screen was produced by the same engine `termocline run` is.
 
-To skip the dropping, serve the run from the same place and name it in the
-URL. `trunk serve` serves `visualizer/dist/`, so a run copied in there is
-already being served — in another terminal, from the repository root:
+The scenarios the page offers are in `visualizer/scenarios/`, and they are the
+engine's own coarsened to fit a tab: 80 × 25 cells at 2°, a frame every three
+days, 244 frames — 19.9 MB of frames against the control run's 941 MB. That
+limit is enforced rather than hoped for: a scenario whose frames would not fit
+is refused before the first step, with the size it would have needed. Two
+degrees still resolves the equatorial waveguide (`Le` ≈ 361 km), but a
+*validated* run is a native run of `engine/scenarios/` — nothing scientific
+rests on the browser.
 
-```sh
-cp -r /tmp/run-quick visualizer/dist/run-quick
-```
+Tick **Compare two runs** and each panel gets its own scenario picker, so the
+trades and the trades-plus-a-westerly-burst compute side by side on one frame
+index and one colour scale. That is the same comparison the native build gives
+two run directories: `termocline-viz /tmp/run-quick /tmp/run-burst`.
 
-Open <http://localhost:8080/?run=run-quick/> and the page fetches it on load.
-The parameter is the base URL of a directory holding `header.json` and
-`frames.bin` — a trailing slash is added if you leave it off — and the page
-has a box for the same URL if you would rather paste it than edit the address
-bar.
-
-Two runs open side by side with `?compare=` beside `?run=` —
-<http://localhost:8080/?run=run-quick/&compare=run-burst/> — or, natively, by
-naming both directories: `termocline-viz /tmp/run-quick /tmp/run-burst`. The
-two panels share one frame index and one colour scale, so the difference
-between the runs is what the picture shows.
-
-The browser fetches the entire run before drawing it, so use a small one:
-`/tmp/run-quick` is the 28 MB run of section 5, while `/tmp/run-demo` would be
-a 941 MB download.
+Natively nothing about loading a written run has changed: a directory on the
+command line, the **Open run directory…** button, a `?run=`-style URL in the
+Run URL box, or the run's two files dropped on the window.
 
 From here, the two other shipped scenarios are the interesting ones —
 `seasonal-cycle.toml` breathes the trades with the year, and `wind-burst.toml`

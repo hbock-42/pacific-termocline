@@ -1,5 +1,6 @@
 //! One saved timestep of a run.
 
+use bincode::error::EncodeError;
 use serde::{Deserialize, Serialize};
 
 use crate::{FormatError, GridSpec, RunHeader, Variable};
@@ -264,4 +265,24 @@ impl From<FrameV1> for Frame {
             sst: None,
         }
     }
+}
+
+/// `frame` as the bytes a run holds it in: exactly what a run's frame file
+/// carries at that frame's offset, and what [`decode_frame`] reads back.
+///
+/// The mirror of [`decode_frame`], and here for the reason that one is: the
+/// `bincode` configuration is not recoverable from the bytes, so a caller that
+/// picked its own would write frames nothing in this workspace reads
+/// (ADR-0004). It is what puts a computed run into the same bytes as a written
+/// one — the browser builds frames and has no file to put them in (ADR-0012) —
+/// and unlike `decode_frame` it does not check the frame against a header:
+/// [`Frame::validate_against`] is that check, and a caller encoding a run
+/// frame by frame makes it once per frame rather than once per field.
+///
+/// # Errors
+/// [`EncodeError`] if the frame could not be encoded.
+///
+/// [`decode_frame`]: crate::decode_frame
+pub fn encode_frame(frame: &Frame) -> Result<Vec<u8>, EncodeError> {
+    bincode::serde::encode_to_vec(frame, crate::frame_encoding())
 }

@@ -1,6 +1,7 @@
 # `trunk serve` from this directory builds the browser visualizer and serves
-# it at http://localhost:8080. Runs are handed to it by drag-and-drop, or
-# fetched with `?run=<url>` — a browser has no filesystem (ADR-0006).
+# it at http://localhost:8080. There is no run to hand it: the page computes
+# one itself from a scenario in `scenarios/`, because the run format is not
+# served to the browser at all (ADR-0012).
 [build]
 target = "index.html"
 

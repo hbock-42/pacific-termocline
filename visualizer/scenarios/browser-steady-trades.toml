@@ -1,0 +1,49 @@
+# Control scenario: steady easterly alizes over the equatorial Pacific basin.
+#
+# The browser's copy of `engine/scenarios/steady-trades.toml`, coarsened to fit a tab.
+#
+# ADR-0012 makes memory the binding constraint rather than bandwidth: at the
+# parent's half-degree resolution a frame of this basin is 1.29 MB and a
+# two-year run of them is 941 MB, which is not a thing to hold in a browser.
+# Two degrees is 80 x 25 cells and a frame every three days is 244 frames,
+# which is 19.8 MB of retained frames — inside the budget
+# `visualizer::FrameBudget::browser` enforces, and the run the halted T-08.4
+# work measured at 0.7 s natively.
+#
+# Nothing physical is changed. Coarsening the grid coarsens the answer — the
+# deformation radius Le is 361 km, so a 2 deg cell of ~222 km still resolves
+# the waveguide, but a validated run is a native run of the parent file
+# (docs/validation-report.md), never this one.
+
+[basin]
+# The equatorial Pacific of CONTEXT.md, *Basin*: 120 deg E - 80 deg W by
+# 25 deg S - 25 deg N, in cells of two degrees (~222 km of arc), which is
+# 80 x 25 cells.
+western_longitude_deg = 120.0
+eastern_longitude_deg = -80.0
+southern_latitude_deg = -25.0
+northern_latitude_deg = 25.0
+resolution_deg = 2.0
+
+[physics]
+# g' = 0.06 m/s^2 and H = 150 m give c = sqrt(g'H) = 3.0 m/s, the observed
+# first-baroclinic Kelvin speed of the equatorial Pacific (CONTEXT.md).
+reduced_gravity_m_per_s2 = 0.06
+mean_thermocline_depth_m = 150.0
+# r^-1 ~ 116 days, the weak damping of docs/planning/01-scientific-model.md.
+rayleigh_damping_per_s = 1.0e-7
+
+[run]
+# dt = 1 h is far inside the CFL bound of 0.8*dx/c ~ 59 200 s for this grid.
+dt_s = 3600.0
+# 17 520 steps of 1 h = 730 days, two years of spin-up.
+total_steps = 17520
+# A frame every three days, against the parent file's one a day: the same run,
+# sampled three times less often, because it is the frames that cost memory.
+output_every_n_steps = 72
+
+[[wind]]
+type = "steady_trade_winds"
+# tau_0 = -0.05 Pa, the mean easterly stress over the equatorial Pacific.
+equatorial_zonal_stress_pa = -0.05
+meridional_decay_scale_m = 361000.0

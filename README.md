@@ -47,12 +47,13 @@ cargo install trunk
 cd visualizer && trunk serve
 ```
 
-A browser has no filesystem, so a run reaches the web build by dragging its
-`header.json` and `frames.bin` onto the page, or over HTTP: serve a run
-directory and open `?run=<url>`, e.g. `http://localhost:8080/?run=run-demo/`
-with the run copied into `visualizer/dist/run-demo/`. A second run named in
-`?compare=<url>` opens beside the first, so a comparison of two scenarios is a
-link.
+The web build has no run to open: per
+[ADR-0012](docs/planning/adr/0012-the-browser-runs-the-engine.md) it links the
+engine and computes one in the tab, stepping between repaints so the page stays
+live and the run is watched as it develops. Pick a scenario, press **Compute
+run**, or just open the page — the control scenario starts on load. Tick
+*Compare two runs* and two scenarios compute side by side. Natively the
+visualizer still opens a run the engine wrote: a directory, a drop, or a URL.
 
 ## Where to start reading
 

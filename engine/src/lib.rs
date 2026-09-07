@@ -15,6 +15,11 @@
 //! on the CLI side, the scenario runner behind `run` and the `inspect` command
 //! that reports a written run's header back to a terminal.
 //!
+//! A run is driven either way through [`RunLoop`], which holds everything a
+//! scenario needs to take its next step and hands out the frames the schedule
+//! saves. `run` is that loop driven to completion into a directory; a browser
+//! is the same loop driven a chunk at a time so the tab stays live (ADR-0012).
+//!
 //! [`benchmark`], [`profiling`] and [`precision`] are the odd ones out: they
 //! compute nothing the simulation needs. [`benchmark`] holds the workloads
 //! `benches/` measures (`docs/benchmarks.md`), [`profiling`] the instrument
@@ -73,6 +78,7 @@ pub mod profiling;
 pub mod progress;
 #[cfg(feature = "fs")]
 pub mod run;
+pub mod run_loop;
 pub mod run_writer;
 pub mod scenario;
 pub mod shallow_water;
@@ -105,7 +111,12 @@ pub use progress::{
     LogLevel, ProgressReport, ProgressStyle, RunObserver, RunProgress, RunReport, Verbosity,
 };
 
-pub use run_writer::{OutputSchedule, OutputScheduleError, RunWriteError, RunWriter};
+/// Re-exported so the CLI and the visualizer name one run loop: [`RunLoop`]
+/// is a run taken a step at a time, which is what the browser holds
+/// (ADR-0012), and [`run_loop::SavedStep`] one of the timesteps it saves.
+pub use run_loop::{RunLoop, RunLoopError, SavedStep};
+
+pub use run_writer::{frame_of, OutputSchedule, OutputScheduleError, RunWriteError, RunWriter};
 
 /// Re-exported so a scenario, the solver and its tests name one set of
 /// physical parameters and one state type.
