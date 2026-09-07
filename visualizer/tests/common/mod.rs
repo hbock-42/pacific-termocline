@@ -39,6 +39,12 @@ pub const WESTERN_WALL_H_M: f64 = 38.2;
 /// west-to-east drop is therefore 66.4 m.
 pub const EASTERN_WALL_H_M: f64 = -28.2;
 
+/// T-07.4's measured equilibrium `h` at the middle of the steady-trades basin,
+/// in metres. With the two wall values above it is the third station of the
+/// equilibrium profile T-13.1 states as its ground truth: +38.2 m in the west,
+/// +8.4 m mid-basin, −28.2 m in the east.
+pub const MID_BASIN_H_M: f64 = 8.4;
+
 /// The physical parameters of `steady-trades.toml`: g' = 0.06 m s^-2 and
 /// H = 150 m give c = √(g'H) = 3.0 m s^-1, the observed first-baroclinic
 /// Kelvin speed of the equatorial Pacific (CONTEXT.md).

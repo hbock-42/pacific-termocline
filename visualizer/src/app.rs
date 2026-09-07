@@ -16,9 +16,9 @@
 //! run they opened, and under it the basin map of one chosen frame.
 //!
 //! Everything with a value in it lives in [`crate::run`], [`crate::heatmap`],
-//! [`crate::wind`], [`crate::cross_section`], [`crate::time_series`] and
-//! [`crate::pending`]; this module is the part that needs a
-//! GPU, and so is deliberately thin. What it adds on top of them is a texture
+//! [`crate::wind`], [`crate::cross_section`], [`crate::side_view`],
+//! [`crate::time_series`] and [`crate::pending`]; this module is the part
+//! that needs a GPU, and so is deliberately thin. What it adds on top of them is a texture
 //! cache and a layout, and neither is where a wrong basin map would come from.
 
 use egui::{Color32, RichText};
@@ -31,8 +31,8 @@ use crate::loading::Loaded;
 use crate::run::SECONDS_PER_DAY;
 use crate::{
     BasinPoint, BrowserScenario, Comparison, ComputedRun, CrossSection, DivergingScale,
-    FrameBudget, Heatmap, InMegabytes, LoadedRun, Mismatch, Playback, PointSeries, Scrubber,
-    StressScale, WindOverlay, STEP_BUDGET,
+    FrameBudget, Heatmap, InMegabytes, LayerBand, LoadedRun, Mismatch, Playback, PointSeries,
+    Scrubber, SideView, StressScale, WindOverlay, SEA_SURFACE_RGB, STEP_BUDGET,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{Loader, PendingRun};
@@ -827,6 +827,17 @@ const OVERLAY_CASING_COLOR: Color32 = Color32::from_rgb(245, 245, 245);
 /// bulk of a window: the chart says how much, the map says where.
 const CROSS_SECTION_HEIGHT_PT: f32 = 120.0;
 
+/// Width of the line marking the sea surface, in points.
+const SEA_SURFACE_WIDTH_PT: f32 = 1.5;
+
+/// Height of the equatorial side view, in points.
+///
+/// Half again the height of a chart. It is a picture of a water column rather
+/// than a plot of a value, so its height is depth: too short and the ~60 m of
+/// tilt across a 190 m water column is a few points of slope, which is the
+/// thing the view exists to show.
+const SIDE_VIEW_HEIGHT_PT: f32 = 180.0;
+
 /// Width of a line on either chart, in points.
 const CHART_LINE_WIDTH_PT: f32 = 1.6;
 
@@ -982,6 +993,9 @@ struct Layers {
     wind: bool,
     /// Whether the equatorial cross-section is drawn under the maps.
     section: bool,
+    /// Whether the teaching panel's equatorial side view is drawn under the
+    /// maps.
+    side_view: bool,
     /// Whether the point time series is drawn under the maps.
     series: bool,
 }
@@ -1004,6 +1018,10 @@ impl Default for BasinMap {
                 // section is the view that states it as a number rather than
                 // as a colour (T-09.3).
                 section: true,
+                // On by default: it is the one view a reader who does not
+                // already know what a thermocline is can read, and it is the
+                // first of the teaching panel (T-13.1).
+                side_view: true,
                 // On by default, with nothing selected: the chart says how to
                 // pick a point, and a reader who does not know the map is
                 // clickable never finds out (T-09.4).
@@ -1132,6 +1150,13 @@ struct DrawnFrame {
     /// section is the frame's, so a repaint that lands on the frame already
     /// drawn rebuilds nothing, and toggling the chart cannot reach the map.
     section: CrossSection,
+    /// The same equator, drawn as an ocean: the teaching panel's side view of
+    /// this frame (T-13.1).
+    ///
+    /// Built with the frame like everything else here, and out of the section
+    /// beside it rather than out of the frame again — it is the same
+    /// extraction of the equator, so there is one of it.
+    side_view: SideView,
 }
 
 /// The colour bar of what is on screen, and the scale it was sampled from.
@@ -1201,7 +1226,7 @@ impl FramePanel {
                 ui.label("east");
             });
         });
-        let reserved_pt = reserved_below_map_pt(ui, layers.section, layers.series);
+        let reserved_pt = reserved_below_map_pt(ui, layers);
         let map_area = draw_texture_fitted(ui, &drawn.map, reserved_pt);
         let map = map_area.rect;
         if layers.wind {
@@ -1225,6 +1250,12 @@ impl FramePanel {
         // says where by pointing at it.
         if let Some(shown) = series.shown() {
             draw_selected_cell(ui, map, shown.point());
+        }
+        // The teaching view goes first among the panels under the map, and
+        // across exactly its width: the two share a zonal axis, so a longitude
+        // of the ocean sits under the column of the map it came from.
+        if layers.side_view {
+            draw_side_view(ui, &drawn.side_view, map);
         }
         // Directly under the map and across exactly its width, so a longitude
         // on the chart sits under the column of the map it came from. The
@@ -1419,6 +1450,7 @@ impl BasinMap {
         // the map is built from depends on these.
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.layers.wind, "Wind stress τ");
+            ui.checkbox(&mut self.layers.side_view, "Ocean side view");
             ui.checkbox(&mut self.layers.section, "Equatorial cross-section");
             ui.checkbox(&mut self.layers.series, "Point time series");
         });
@@ -1521,11 +1553,16 @@ fn build(ui: &egui::Ui, run: &LoadedRun, chosen: Chosen) -> Result<DrawnFrame, S
         .map_err(|error| error.to_string())?;
     let section = CrossSection::of_frame(run.header().grid, &frame, scale)
         .map_err(|error| error.to_string())?;
+    // `H` is a scenario parameter and lives in the header, so the side view
+    // can put the interface at the total depth `H + h` rather than at an
+    // anomaly about zero (`CONTEXT.md`).
+    let side_view = SideView::of_section(&section, run.header().physical_params.mean_depth_m);
     let image = egui::ColorImage::from_rgb([heatmap.width(), heatmap.height()], heatmap.rgb());
     Ok(DrawnFrame {
         t_s: frame.t_s(),
         wind,
         section,
+        side_view,
         // Nearest, not linear: a texel is a cell of the model, and
         // smoothing between them would draw an anomaly the run never
         // produced.
@@ -1561,6 +1598,128 @@ fn draw_color_bar(ui: &mut egui::Ui, bar: &ColorBar) {
             ui.label(format!("{half_range_m:+.1} m (deeper)"));
         });
     });
+}
+
+/// Where a view of the equator was read, in words: "along the equator" for the
+/// basin every scenario declares, and the latitude itself for one laid out
+/// some other way.
+///
+/// Shared by the cross-section and the side view because they are the same
+/// reading: the side view is the section's own data drawn as an ocean
+/// (`crate::side_view`), so the two must not be able to name different places.
+fn latitude_phrase(latitude_deg_north: f64) -> String {
+    if latitude_deg_north == 0.0 {
+        "along the equator".to_owned()
+    } else {
+        format!(
+            "along {:.2}°{}",
+            latitude_deg_north.abs(),
+            if latitude_deg_north < 0.0 { 'S' } else { 'N' }
+        )
+    }
+}
+
+/// Draw the equatorial side view: the ocean along the equator, seen side-on.
+///
+/// The first view of the teaching panel (T-13.1), and the one a reader who has
+/// never met a thermocline can read: warm water above the interface, cold
+/// water below it, the interface at the depth the model puts it at. Everything
+/// that decides what the picture *is* — where the interface sits, which layer
+/// is which, what colour each one is — is [`crate::side_view`], which knows
+/// nothing about a GPU; this turns each of its bands into a rectangle and
+/// nothing more.
+///
+/// It is drawn across `map`, the rectangle the basin map landed in, for the
+/// reason the cross-section is: the two share a zonal axis, and an ocean wider
+/// than the map would put a longitude under the wrong column of it.
+///
+/// The bands go into one mesh rather than one filled rectangle each: adjacent
+/// rectangles are drawn with antialiased edges, and a seam between every pair
+/// of columns would draw a grid the ocean does not have.
+///
+/// A column whose `h` is not a number is left empty — no water at all — rather
+/// than filled at some depth the run never produced. Nothing is drawn along
+/// the bottom edge either: the model's abyss is unbounded (`CONTEXT.md`,
+/// *Upper layer*), so a sea floor there would be a claim about the ocean that
+/// the run does not make.
+fn draw_side_view(ui: &mut egui::Ui, view: &SideView, map: egui::Rect) {
+    ui.label(format!(
+        "The ocean {}, seen from the side — warm upper layer above the thermocline, cold \
+         water below",
+        latitude_phrase(view.latitude_deg_north())
+    ));
+    let (row, _response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), SIDE_VIEW_HEIGHT_PT),
+        egui::Sense::hover(),
+    );
+    let panel = egui::Rect::from_min_max(
+        egui::pos2(map.left(), row.top()),
+        egui::pos2(map.right(), row.bottom()),
+    );
+    let painter = ui.painter().with_clip_rect(panel);
+
+    // The columns tile the panel edge to edge, so column `index` runs from
+    // `index` widths east of the western wall to `index + 1`. Taken from the
+    // index rather than from each column's centre so that neighbouring columns
+    // share an edge exactly and the mesh has no cracks in it.
+    let width_fraction = view.column_width_fraction();
+    let mut mesh = egui::Mesh::default();
+    for (index, column) in view.columns().iter().enumerate() {
+        let Some(bands) = column.bands() else {
+            continue;
+        };
+        #[allow(clippy::cast_precision_loss)]
+        let west = index as f64 * width_fraction;
+        #[allow(clippy::cast_precision_loss)]
+        let east = (index + 1) as f64 * width_fraction;
+        for band in bands {
+            add_band(&mut mesh, panel, (west, east), band);
+        }
+    }
+    painter.add(egui::Shape::mesh(mesh));
+
+    // The sea surface, across the top: without it the top edge of the warm
+    // layer reads as the edge of the drawing rather than as the top of the
+    // ocean.
+    painter.line_segment(
+        [panel.left_top(), panel.right_top()],
+        egui::Stroke::new(SEA_SURFACE_WIDTH_PT, color_of(SEA_SURFACE_RGB)),
+    );
+
+    // The depth axis, and the one thing about it a reader could otherwise get
+    // wrong: the foot of the panel is where the picture stops, not where the
+    // ocean does. It is stated per panel because in a comparison the two runs
+    // may declare different mean depths, and so be drawn to different axes.
+    ui.label(format!(
+        "0 m at the sea surface, {:.0} m at the foot of the panel — the model's deep ocean has \
+         no floor",
+        view.deepest_drawn_depth_m()
+    ));
+}
+
+/// Add one band of one column of the side view to `mesh`, as the rectangle it
+/// covers of `panel`.
+///
+/// `zonal` is the band's west and east edges as fractions of the panel's
+/// width; the band carries its own top and bottom as fractions of its depth.
+fn add_band(mesh: &mut egui::Mesh, panel: egui::Rect, zonal: (f64, f64), band: LayerBand) {
+    #[allow(clippy::cast_possible_truncation)]
+    let x = |fraction: f64| panel.left() + (fraction * f64::from(panel.width())) as f32;
+    #[allow(clippy::cast_possible_truncation)]
+    let y = |fraction: f64| panel.top() + (fraction * f64::from(panel.height())) as f32;
+    let (west, east) = zonal;
+    mesh.add_colored_rect(
+        egui::Rect::from_min_max(
+            egui::pos2(x(west), y(band.top_fraction)),
+            egui::pos2(x(east), y(band.bottom_fraction)),
+        ),
+        color_of(band.rgb),
+    );
+}
+
+/// An opaque [`Color32`] of an RGB triple one of the device-free views chose.
+const fn color_of(rgb: [u8; 3]) -> Color32 {
+    Color32::from_rgb(rgb[0], rgb[1], rgb[2])
 }
 
 /// Draw the equatorial cross-section: `h` along the equator against longitude.
@@ -1808,16 +1967,7 @@ fn place_label(point: BasinPoint) -> String {
 /// their mean is the equator itself. A basin that is not says so rather than
 /// having its off-equator line labelled as the equator.
 fn section_latitude(section: &CrossSection) -> String {
-    let latitude_deg_north = section.latitude_deg_north();
-    let read_at = if latitude_deg_north == 0.0 {
-        "along the equator".to_owned()
-    } else {
-        format!(
-            "along {:.2}°{}",
-            latitude_deg_north.abs(),
-            if latitude_deg_north < 0.0 { 'S' } else { 'N' }
-        )
-    };
+    let read_at = latitude_phrase(section.latitude_deg_north());
     match section.rows_averaged() {
         1 => format!("{read_at}, on the row of cells there"),
         rows => format!("{read_at}, the mean of the {rows} rows nearest it"),
@@ -1867,19 +2017,18 @@ fn draw_texture_fitted(
 /// It comes out of the height the map would otherwise have taken, so that
 /// turning a chart on shrinks the map rather than pushing the colour bar off a
 /// short window.
-fn reserved_below_map_pt(ui: &egui::Ui, show_section: bool, show_series: bool) -> f32 {
+fn reserved_below_map_pt(ui: &egui::Ui, layers: Layers) -> f32 {
     let text_pt = ui.text_style_height(&egui::TextStyle::Body) * 2.0;
-    let section_pt = if show_section {
-        CROSS_SECTION_HEIGHT_PT + text_pt
-    } else {
-        0.0
+    let height_pt = |shown: bool, chart_pt: f32| {
+        if shown {
+            chart_pt + text_pt
+        } else {
+            0.0
+        }
     };
-    let series_pt = if show_series {
-        TIME_SERIES_HEIGHT_PT + text_pt
-    } else {
-        0.0
-    };
-    section_pt + series_pt
+    height_pt(layers.side_view, SIDE_VIEW_HEIGHT_PT)
+        + height_pt(layers.section, CROSS_SECTION_HEIGHT_PT)
+        + height_pt(layers.series, TIME_SERIES_HEIGHT_PT)
 }
 
 /// Draw a ring round the cell `point` names on the map occupying `map`.
@@ -2186,6 +2335,45 @@ mod tests {
         assert_eq!(repaint(&ctx, &mut map, &run), first);
         map.layers.section = !map.layers.section;
         assert_eq!(repaint(&ctx, &mut map, &run), first);
+    }
+
+    #[test]
+    fn toggling_the_side_view_rebuilds_nothing() {
+        // The teaching view is built with the frame, out of the section built
+        // beside it, and drawn from its own geometry — so there is no path
+        // from the toggle to the texture under it, the same structural claim
+        // T-09.1 makes for the wind overlay and T-09.3 for the section.
+        let (ctx, run) = (egui::Context::default(), run());
+        let mut map = BasinMap::default();
+        let first = repaint(&ctx, &mut map, &run);
+        map.layers.side_view = !map.layers.side_view;
+        assert_eq!(repaint(&ctx, &mut map, &run), first);
+        map.layers.side_view = !map.layers.side_view;
+        assert_eq!(repaint(&ctx, &mut map, &run), first);
+    }
+
+    #[test]
+    fn the_side_view_draws_the_frame_the_map_draws_at_its_total_depth() {
+        // The two halves of T-13.1 that only show up once the view is in a
+        // panel: it is of the frame on screen, and it is at `H + h` rather
+        // than at the anomaly. This run's `h` is everywhere the frame's own
+        // index in metres, so the interface depth says which frame it was
+        // built from.
+        let (ctx, run) = (egui::Context::default(), run());
+        let mean_depth_m = run.header().physical_params.mean_depth_m;
+        let mut map = BasinMap::default();
+        for index in 0..run.header().output.frame_count {
+            map.scrubber.set_index(index);
+            let _ = repaint(&ctx, &mut map, &run);
+            let drawn = panel_frame(&map, Side::Left);
+            #[allow(clippy::cast_precision_loss)]
+            let expected_m = mean_depth_m + index as f64;
+            assert!(drawn
+                .side_view
+                .columns()
+                .iter()
+                .all(|column| column.interface_depth_m() == expected_m));
+        }
     }
 
     #[test]

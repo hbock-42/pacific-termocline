@@ -14,10 +14,10 @@
 //! loop.
 //!
 //! Both origins end in the same [`LoadedRun`], which is why the heatmap, the
-//! scrubber, playback, the wind overlay, the cross-section, the point time
-//! series and the comparison are unchanged by any of it: they consume a run,
-//! not a file. And as before, the parts with a value in them are testable
-//! without a GPU.
+//! scrubber, playback, the wind overlay, the cross-section, the equatorial
+//! side view, the point time series and the comparison are unchanged by any of
+//! it: they consume a run, not a file. And as before, the parts with a value
+//! in them are testable without a GPU.
 //!
 //! [ADR-0006]: ../../docs/planning/adr/0006-web-visualizer.md
 //! [ADR-0012]: ../../docs/planning/adr/0012-the-browser-runs-the-engine.md
@@ -35,6 +35,7 @@ mod pending;
 mod playback;
 mod run;
 mod scrubber;
+mod side_view;
 mod time_series;
 mod wind;
 
@@ -55,6 +56,9 @@ pub use pending::PendingRun;
 pub use playback::{Playback, MAX_STALL_S, PLAYBACK_SPEEDS_FPS};
 pub use run::{FrameAppendError, LoadedRun, MetadataRow, RunBytes};
 pub use scrubber::Scrubber;
+pub use side_view::{
+    LayerBand, SideView, SideViewColumn, COLD_LAYER_RGB, SEA_SURFACE_RGB, WARM_LAYER_RGB,
+};
 pub use time_series::{BasinPoint, PointSeries, SeriesSample, SstScale};
 pub use wind::{
     StressScale, WindArrow, WindOverlay, ARROW_SPACING_CELLS, MAX_ARROW_LENGTH_CELLS,
