@@ -229,7 +229,7 @@ impl CrossSection {
 /// [`GridSpec`]. The rows are the field's own, not the grid's cell count, so
 /// nothing here has to assume the two agree.
 #[derive(Debug, Clone, Copy)]
-struct MeridionalAxis {
+pub(crate) struct MeridionalAxis {
     /// Rows of cell centres on the axis.
     rows: usize,
     /// The basin's southern boundary, in degrees north.
@@ -240,7 +240,7 @@ struct MeridionalAxis {
 
 impl MeridionalAxis {
     /// The axis of a field `rows` rows tall over `extent`.
-    fn of(rows: usize, extent: BasinExtent) -> Self {
+    pub(crate) fn of(rows: usize, extent: BasinExtent) -> Self {
         #[allow(clippy::cast_precision_loss)]
         let spacing_deg = (extent.north_deg_north - extent.south_deg_north) / rows as f64;
         Self {
@@ -259,7 +259,7 @@ impl MeridionalAxis {
 
     /// The rows nearest the equator: one where a row sits on it, or the two
     /// that straddle it.
-    fn rows_nearest_the_equator(self) -> Vec<usize> {
+    pub(crate) fn rows_nearest_the_equator(self) -> Vec<usize> {
         let mut nearest = Vec::new();
         let mut smallest_deg = f64::INFINITY;
         let same_deg = self.spacing_deg.abs() * SAME_DISTANCE_FRACTION;

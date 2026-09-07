@@ -18,7 +18,7 @@
 //! Everything with a value in it lives in [`crate::run`], [`crate::heatmap`],
 //! [`crate::wind`], [`crate::cross_section`], [`crate::side_view`],
 //! [`crate::geography`], [`crate::clock`], [`crate::wording`],
-//! [`crate::time_series`] and [`crate::pending`]; this module is the part
+//! [`crate::captions`], [`crate::time_series`] and [`crate::pending`]; this module is the part
 //! that needs a GPU, and so is deliberately thin. What it adds on top of them is a texture
 //! cache and a layout, and neither is where a wrong basin map would come from.
 
@@ -32,9 +32,10 @@ use crate::geography::{latitude_phrase, Coast};
 use crate::loading::Loaded;
 use crate::run::SECONDS_PER_DAY;
 use crate::{
-    BasinPoint, Comparison, ComputedRun, CrossSection, DivergingScale, FrameBudget, Heatmap,
-    InMegabytes, LayerBand, LoadedRun, Mismatch, Playback, PointSeries, RunClock, ScenarioPreset,
-    Scrubber, SideView, StressScale, WindOverlay, PLAIN_WORDS, SEA_SURFACE_RGB, STEP_BUDGET,
+    BasinPoint, Caption, Comparison, ComputedRun, CrossSection, DivergingScale, EquatorialReading,
+    FrameBudget, Heatmap, InMegabytes, LayerBand, LoadedRun, Mismatch, Playback, PointSeries,
+    RunClock, ScenarioPreset, Scrubber, SideView, StressScale, WindOverlay, MAX_CAPTIONS,
+    PLAIN_WORDS, SEA_SURFACE_RGB, STEP_BUDGET,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{Loader, PendingRun};
@@ -1210,6 +1211,13 @@ struct DrawnFrame {
     /// beside it rather than out of the frame again — it is the same
     /// extraction of the equator, so there is one of it.
     side_view: SideView,
+    /// What the run is doing at this frame, in sentences (T-13.4).
+    ///
+    /// Built with the frame like everything else here, and out of the run
+    /// rather than out of this index: a caption is a function of what was
+    /// measured along the equator, so nothing about it can be keyed to where
+    /// in the run the reader happens to be (`crate::captions`).
+    captions: Vec<Caption>,
 }
 
 /// The colour bar of what is on screen, and the scale it was sampled from.
@@ -1306,7 +1314,7 @@ impl FramePanel {
         // across exactly its width: the two share a zonal axis, so a longitude
         // of the ocean sits under the column of the map it came from.
         if layers.side_view {
-            draw_side_view(ui, &drawn.side_view, map);
+            draw_side_view(ui, drawn, map);
         }
         // Directly under the map and across exactly its width, so a longitude
         // on the chart sits under the column of the map it came from. The
@@ -1623,12 +1631,19 @@ fn build(ui: &egui::Ui, run: &LoadedRun, chosen: Chosen) -> Result<DrawnFrame, S
     // can put the interface at the total depth `H + h` rather than at an
     // anomaly about zero (`CONTEXT.md`).
     let side_view = SideView::of_section(&section, run.header().physical_params.mean_depth_m);
+    // The reading walks back into the run for the frame a month of model time
+    // ago, which is why it takes the run rather than the frame already in
+    // hand: what a caption says is a change, and a change is two frames.
+    let captions = EquatorialReading::of_run(run, index)
+        .map_err(|error| error.to_string())?
+        .captions();
     let image = egui::ColorImage::from_rgb([heatmap.width(), heatmap.height()], heatmap.rgb());
     Ok(DrawnFrame {
         t_s: frame.t_s(),
         wind,
         section,
         side_view,
+        captions,
         // Nearest, not linear: a texel is a cell of the model, and
         // smoothing between them would draw an anomaly the run never
         // produced.
@@ -1698,7 +1713,12 @@ fn draw_color_bar(ui: &mut egui::Ui, bar: &ColorBar) {
 /// (`crate::clock`) rather than repeating it here. Every one of them is a value the view or
 /// the clock computed, so what they say is asserted in
 /// `tests/teaching_labels.rs`.
-fn draw_side_view(ui: &mut egui::Ui, view: &SideView, map: egui::Rect) {
+///
+/// Under all of it go the captions (T-13.4): what the ocean is *doing*, in
+/// sentences read off the run rather than off the frame index
+/// (`crate::captions`), asserted in `tests/captions.rs`.
+fn draw_side_view(ui: &mut egui::Ui, drawn: &DrawnFrame, map: egui::Rect) {
+    let view = &drawn.side_view;
     ui.label(view.caption());
     let (row, _response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), SIDE_VIEW_HEIGHT_PT),
@@ -1751,6 +1771,17 @@ fn draw_side_view(ui: &mut egui::Ui, view: &SideView, map: egui::Rect) {
     ui.label(view.depth_axis_note());
     if let Some(note) = view.coast_depth_note() {
         ui.label(note);
+    }
+
+    // And last, what the ocean is *doing* (T-13.4): sentences read off the run
+    // itself. Under the picture rather than over it, in the panel's ordinary
+    // body text — a caption laid across the ocean would hide the thing it is
+    // describing, and one that leant on a colour would say nothing to a reader
+    // who cannot see it. Room for them is reserved above the map
+    // ([`SIDE_VIEW_TEXT_ROWS`]), so turning the teaching panel on shrinks the
+    // map rather than pushing the colour bar off a short window.
+    for caption in &drawn.captions {
+        ui.label(caption.text());
     }
 }
 
@@ -2177,10 +2208,13 @@ const CHART_TEXT_ROWS: f32 = 2.0;
 
 /// And the rows the side view carries: the caption above it, then the axis of
 /// longitude, the two coasts, the depth note and the coast depths below
-/// (T-13.2). Six rather than five because the last two are sentences, and one
-/// of them wraps onto a second line on a narrow window — a picture a stranger
-/// can read costs more words than a chart a specialist can.
-const SIDE_VIEW_TEXT_ROWS: f32 = 6.0;
+/// (T-13.2), and under those the sentences saying what the run is doing
+/// (T-13.4). Six for the first group rather than five because the last two are
+/// sentences, and one of them wraps onto a second line on a narrow window — a
+/// picture a stranger can read costs more words than a chart a specialist can.
+/// The captions are counted the same way: [`MAX_CAPTIONS`] of them, and one
+/// spare row for the one that wraps.
+const SIDE_VIEW_TEXT_ROWS: f32 = 6.0 + MAX_CAPTIONS as f32 + 1.0;
 
 /// Height the charts under the map need, in points: each is a chart and the
 /// rows of text around it.
@@ -2553,6 +2587,118 @@ mod tests {
                 .iter()
                 .all(|column| column.interface_depth_m() == expected_m));
         }
+    }
+
+    #[test]
+    fn the_captions_describe_the_frame_on_screen_rather_than_the_frame_number() {
+        // T-13.4 in a panel. This run's tilt grows frame by frame, so the
+        // sentences under the ocean have to grow with it — and they are read
+        // off the frame the reader scrubbed to, not off its index. The same
+        // index of the *level* run above says the opposite, which is the whole
+        // of the claim: nothing here is scripted.
+        let (ctx, tilting) = (egui::Context::default(), tilting_run());
+        let mut map = BasinMap::default();
+        // The first pass is what fits the scrubber to the run, so the frame is
+        // chosen after it and drawn by the pass that follows.
+        let _ = repaint(&ctx, &mut map, &tilting);
+        map.scrubber.set_index(tilting.frame_count() - 1);
+        let _ = repaint(&ctx, &mut map, &tilting);
+        let tilted: Vec<String> = panel_frame(&map, Side::Left)
+            .captions
+            .iter()
+            .map(|caption| caption.text().to_owned())
+            .collect();
+        assert!(
+            tilted
+                .iter()
+                .any(|text| text.contains("deeper in the west")),
+            "the last frame of a tilting run is tilted: {tilted:?}"
+        );
+        assert!(
+            tilted.iter().any(|text| text.contains("growing")),
+            "and it got that way over the frames behind it: {tilted:?}"
+        );
+
+        let level = run();
+        let mut map = BasinMap::default();
+        let _ = repaint(&ctx, &mut map, &level);
+        map.scrubber.set_index(level.frame_count() - 1);
+        let _ = repaint(&ctx, &mut map, &level);
+        let level_captions: Vec<String> = panel_frame(&map, Side::Left)
+            .captions
+            .iter()
+            .map(|caption| caption.text().to_owned())
+            .collect();
+        assert!(
+            level_captions
+                .iter()
+                .any(|text| text.contains("nearly the same depth")),
+            "the same index of a level run is level: {level_captions:?}"
+        );
+        assert!(
+            level_captions
+                .iter()
+                .all(|text| !text.contains("deeper in the west")),
+            "{level_captions:?}"
+        );
+    }
+
+    /// A run of the same shape as [`run`] whose `h` tilts down towards the west
+    /// and steepens frame by frame: cell `i` of frame `index` holds
+    /// `index · (nx − 1 − i)` metres, so the western column is the deep end and
+    /// the difference between the two ends grows with the run.
+    fn tilting_run() -> LoadedRun {
+        let grid = grid();
+        let (nx, ny) = (grid.grid().nx(), grid.grid().ny());
+        let header = RunHeader::new(
+            grid,
+            PhysicalParams {
+                mean_depth_m: 150.0,
+                reduced_gravity_m_per_s2: 0.06,
+                beta_per_m_per_s: 2.3e-11,
+                rayleigh_damping_per_s: 1.0e-7,
+                reference_density_kg_per_m3: 1025.0,
+            },
+            "tilting",
+            OutputTiming {
+                frame_count: 6,
+                interval_s: INTERVAL_S,
+            },
+        );
+        let field = |variable| vec![0.0; grid.field_len(variable)];
+        let mut frames = Vec::new();
+        for index in 0..header.output.frame_count {
+            let mut h_m = Vec::with_capacity(nx * ny);
+            for _ in 0..ny {
+                for i in 0..nx {
+                    #[allow(clippy::cast_precision_loss)]
+                    h_m.push(index as f64 * (nx - 1 - i) as f64);
+                }
+            }
+            #[allow(clippy::cast_precision_loss)]
+            let t_s = index as f64 * INTERVAL_S;
+            let frame = Frame::new(
+                t_s,
+                &grid,
+                h_m,
+                field(Variable::ZonalCurrentAnomaly),
+                field(Variable::MeridionalCurrentAnomaly),
+                field(Variable::ZonalWindStress),
+                field(Variable::MeridionalWindStress),
+            )
+            .expect("fields sized from the grid fit it");
+            frames.extend(
+                bincode::serde::encode_to_vec(&frame, frame_encoding()).expect("a frame encodes"),
+            );
+        }
+        LoadedRun::from_bytes(
+            "tilting",
+            RunBytes {
+                header: serde_json::to_vec(&header).expect("a header serializes"),
+                frames,
+            },
+        )
+        .expect("a run written from its own header loads")
     }
 
     #[test]

@@ -30,10 +30,17 @@
 //! panels cannot do without. All three are values, so what the screen says is
 //! asserted rather than looked at.
 //!
+//! [`captions`] is the fourth and the one with a rule on it: the sentences
+//! that say what the ocean is *doing* are functions of an
+//! [`EquatorialReading`] — what was measured along this run's equator — and
+//! never of a frame index, so a scenario a reader switched to at runtime
+//! cannot be narrated with another scenario's story.
+//!
 //! [ADR-0006]: ../../docs/planning/adr/0006-web-visualizer.md
 //! [ADR-0012]: ../../docs/planning/adr/0012-the-browser-runs-the-engine.md
 
 mod app;
+mod captions;
 mod chart;
 mod clock;
 mod comparison;
@@ -55,6 +62,9 @@ mod wind;
 mod wording;
 
 pub use app::VisualizerApp;
+pub use captions::{
+    Caption, CaptionTopic, Departure, EquatorialReading, ReadingError, MAX_CAPTIONS,
+};
 pub use clock::RunClock;
 pub use comparison::{Comparison, Difference, Mismatch, Side};
 pub use compute::{

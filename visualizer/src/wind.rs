@@ -295,9 +295,9 @@ impl WindOverlay {
 /// The wind stress at one point: the two components, together, because
 /// nothing reads one without the other and the magnitude is of the pair.
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct Stress {
+pub(crate) struct Stress {
     /// Zonal stress, in pascals. Easterly — the alizés — is negative.
-    tau_x_pa: f64,
+    pub(crate) tau_x_pa: f64,
     /// Meridional stress, in pascals. Northward is positive.
     tau_y_pa: f64,
 }
@@ -315,7 +315,7 @@ impl Stress {
 /// It borrows the frame rather than building a field of its own: the whole of
 /// a run is walked this way at load to find the stress scale, and one frame of
 /// it again for every frame drawn.
-struct CellCentreStress<'a> {
+pub(crate) struct CellCentreStress<'a> {
     /// The basin, in cells.
     cells: Grid,
     /// `τx`, on the cells' east/west faces.
@@ -329,7 +329,7 @@ impl<'a> CellCentreStress<'a> {
     ///
     /// # Errors
     /// [`FormatError::FieldShape`] if `frame` does not fit `grid`.
-    fn of_frame(grid: GridSpec, frame: &'a Frame) -> Result<Self, FormatError> {
+    pub(crate) fn of_frame(grid: GridSpec, frame: &'a Frame) -> Result<Self, FormatError> {
         frame.validate(&grid)?;
         let cells = grid.grid();
         Ok(Self {
@@ -340,18 +340,18 @@ impl<'a> CellCentreStress<'a> {
     }
 
     /// Cells along x.
-    const fn width(&self) -> usize {
+    pub(crate) const fn width(&self) -> usize {
         self.cells.nx()
     }
 
     /// Cells along y.
-    const fn height(&self) -> usize {
+    pub(crate) const fn height(&self) -> usize {
         self.cells.ny()
     }
 
     /// The stress at the centre of cell `(i, j)`, with `j` counted northward
     /// from the southern edge of the basin.
-    fn at(&self, i: usize, j: usize) -> Stress {
+    pub(crate) fn at(&self, i: usize, j: usize) -> Stress {
         Stress {
             tau_x_pa: self.tau_x.at_cell(i, j),
             tau_y_pa: self.tau_y.at_cell(i, j),

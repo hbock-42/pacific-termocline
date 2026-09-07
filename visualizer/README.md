@@ -83,6 +83,24 @@ There is no sea floor in it, and there is none in the model either: the
 panel simply ends. A column whose `h` is not a number is drawn as no water at
 all. `src/side_view.rs` has the rest.
 
+Under it are the **captions**: a few sentences saying what the ocean is doing
+— how much deeper the thermocline is at one end of the basin than at the
+other, whether that difference is growing or closing, what the wind along the
+equator is doing, and how far east a recent change has reached. Every one of
+them is a function of what was *measured* along this run's equator, never of a
+frame index: the scenario is a button, the grid, the physics and the length of
+a run are all a reader's to change, and a sentence keyed to "frame 40" would go
+on narrating a collapse the run on screen is not having.
+
+They also say less than a reader might like. Nothing there speaks of an ENSO
+period, of a 2–7 year cycle, or of what the ocean is about to do — the coupled
+model's own measured period is 1.03 years and `docs/enso-oscillation-report.md`
+records that acceptance criterion as unmet, so a caption claiming the cycle
+would contradict the project's own validation ledger. Every number a caption
+quotes is the run's: metres off its equator, pascals off its wind stress, days
+off its own cadence, longitudes off the basin its header declares.
+`src/captions.rs` has the rest.
+
 Two runs are drawn side by side on **one** colour scale — the one that covers
 both of them — because two runs each on its own scale would look identical
 however far apart they are: each would reach the ends of the same ramp. The
