@@ -1047,8 +1047,11 @@ struct Layers {
     wind: bool,
     /// Whether the equatorial cross-section is drawn under the maps.
     section: bool,
-    /// Whether the teaching panel's equatorial side view is drawn under the
-    /// maps.
+    /// Whether the teaching panel is drawn under the maps: the equatorial
+    /// side view and, beneath it, the captions saying what the run is doing.
+    /// One toggle for the two because the captions describe the ocean the view
+    /// draws, and a sentence about a picture that is not on screen explains
+    /// nothing.
     side_view: bool,
     /// Whether the point time series is drawn under the maps.
     series: bool,
@@ -1314,7 +1317,7 @@ impl FramePanel {
         // across exactly its width: the two share a zonal axis, so a longitude
         // of the ocean sits under the column of the map it came from.
         if layers.side_view {
-            draw_side_view(ui, drawn, map);
+            draw_side_view(ui, &drawn.side_view, &drawn.captions, map);
         }
         // Directly under the map and across exactly its width, so a longitude
         // on the chart sits under the column of the map it came from. The
@@ -1519,7 +1522,7 @@ impl BasinMap {
         // the map is built from depends on these.
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.layers.wind, "Wind stress τ");
-            ui.checkbox(&mut self.layers.side_view, "Ocean side view");
+            ui.checkbox(&mut self.layers.side_view, "Ocean side view and captions");
             ui.checkbox(&mut self.layers.section, "Equatorial cross-section");
             ui.checkbox(&mut self.layers.series, "Point time series");
         });
@@ -1634,9 +1637,14 @@ fn build(ui: &egui::Ui, run: &LoadedRun, chosen: Chosen) -> Result<DrawnFrame, S
     // The reading walks back into the run for the frame a month of model time
     // ago, which is why it takes the run rather than the frame already in
     // hand: what a caption says is a change, and a change is two frames.
+    //
+    // A reading that cannot be taken costs the sentences and not the picture:
+    // the frame in hand has already been drawn as a map, a section and an
+    // ocean by the time this runs, and blanking all three over a caption would
+    // take away more than it could ever explain.
     let captions = EquatorialReading::of_run(run, index)
-        .map_err(|error| error.to_string())?
-        .captions();
+        .map(|reading| reading.captions())
+        .unwrap_or_default();
     let image = egui::ColorImage::from_rgb([heatmap.width(), heatmap.height()], heatmap.rgb());
     Ok(DrawnFrame {
         t_s: frame.t_s(),
@@ -1717,8 +1725,7 @@ fn draw_color_bar(ui: &mut egui::Ui, bar: &ColorBar) {
 /// Under all of it go the captions (T-13.4): what the ocean is *doing*, in
 /// sentences read off the run rather than off the frame index
 /// (`crate::captions`), asserted in `tests/captions.rs`.
-fn draw_side_view(ui: &mut egui::Ui, drawn: &DrawnFrame, map: egui::Rect) {
-    let view = &drawn.side_view;
+fn draw_side_view(ui: &mut egui::Ui, view: &SideView, captions: &[Caption], map: egui::Rect) {
     ui.label(view.caption());
     let (row, _response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), SIDE_VIEW_HEIGHT_PT),
@@ -1780,7 +1787,7 @@ fn draw_side_view(ui: &mut egui::Ui, drawn: &DrawnFrame, map: egui::Rect) {
     // who cannot see it. Room for them is reserved above the map
     // ([`SIDE_VIEW_TEXT_ROWS`]), so turning the teaching panel on shrinks the
     // map rather than pushing the colour bar off a short window.
-    for caption in &drawn.captions {
+    for caption in captions {
         ui.label(caption.text());
     }
 }

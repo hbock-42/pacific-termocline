@@ -45,7 +45,7 @@ use std::fmt;
 
 use termocline_format::FormatError;
 
-use crate::cross_section::{CrossSection, MeridionalAxis};
+use crate::cross_section::CrossSection;
 use crate::geography::longitude_text;
 use crate::wind::CellCentreStress;
 use crate::wording::{PlainTerm, THERMOCLINE, TRADE_WINDS};
@@ -82,8 +82,8 @@ const LOOKBACK_DAYS: f64 = 30.0;
 /// tilt reaches 66 m and one whose wind is a tenth as strong.
 const LEVEL_FRACTION: f64 = 0.1;
 
-/// Below this share of the strongest stress the run reaches, the wind counts
-/// as slack.
+/// Below this share of the strongest easterly its equator carries, the run's
+/// wind counts as slack.
 ///
 /// What the threshold has to do is separate a wind merely breathing with the
 /// year from one that has actually let go, and the two presets that do those
@@ -97,8 +97,10 @@ const LEVEL_FRACTION: f64 = 0.1;
 /// relaxation the equatorial wind is 0.027 Pa, which is 0.54 of the strongest.
 ///
 /// Six tenths sits between the two, near enough the middle of them: above
-/// every point of a seasonal cycle and below the peak of a relaxation. It is a
-/// share of the run's own strongest wind rather than a count of pascals, so a
+/// every point of a seasonal cycle and below the peak of a relaxation. Both
+/// figures are ratios of the *same* quantity the comparison is made on — the
+/// mean zonal stress along the equator, against the strongest that mean
+/// reaches in the run — and it is a share rather than a count of pascals, so a
 /// scenario forced ten times harder is judged by its own scale.
 const SLACK_FRACTION: f64 = 0.6;
 
@@ -199,10 +201,12 @@ impl Caption {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Departure {
     /// The largest change in thermocline depth anywhere along the equator over
-    /// the window, in metres.
+    /// the window, in metres, with its sign: positive where the thermocline
+    /// deepened, negative where it shoaled.
     pub peak_change_m: f64,
-    /// The longitude of the easternmost point whose change is still at least
-    /// half that peak, in degrees east of the prime meridian.
+    /// The longitude of the easternmost point that changed by at least half
+    /// that peak *in the same direction*, in degrees east of the prime
+    /// meridian.
     pub half_peak_longitude_deg_east: f64,
     /// Whether that point is the easternmost column of the basin — in which
     /// case the change has run out of ocean and there is no leading edge left
@@ -238,12 +242,18 @@ pub struct EquatorialReading {
     pub lookback_days: f64,
     /// The mean zonal wind stress along the equator, in pascals. Negative is
     /// easterly — the trade winds, which blow east to west (`CONTEXT.md`).
-    pub equatorial_stress_pa: f64,
-    /// The strongest wind stress this run reaches anywhere, in pascals: the
-    /// magnitude [`crate::StressScale`] covers the whole run with. What "slack"
-    /// is measured against, so that a run driven by a weak wind is not
-    /// permanently described as slack.
-    pub strongest_stress_pa: f64,
+    /// `None` where the run gave no wind to read, which is a different thing
+    /// from a wind of zero and is captioned as nothing at all.
+    pub equatorial_stress_pa: Option<f64>,
+    /// The strongest easterly wind this run's equator carries, in pascals, as
+    /// a magnitude ([`crate::LoadedRun::strongest_equatorial_easterly_pa`]).
+    ///
+    /// What "slack" is measured against, so that a run driven by a weak wind
+    /// is not permanently described as slack. It is the same quantity
+    /// [`EquatorialReading::equatorial_stress_pa`] is — the mean zonal stress
+    /// along the equator — taken in the frame where it is strongest, so the
+    /// two can honestly be quoted against each other in one sentence.
+    pub strongest_easterly_pa: f64,
     /// Half the run's anomaly range, in metres: the same
     /// [`crate::DivergingScale`] every view of the run is drawn on. What a
     /// difference is judged large or small against.
@@ -278,7 +288,7 @@ impl EquatorialReading {
         })?;
         let now = CrossSection::of_frame(grid, &frame, scale)?;
         let equatorial_stress_pa =
-            equatorial_zonal_stress_pa(&CellCentreStress::of_frame(grid, &frame)?, grid.extent());
+            CellCentreStress::of_frame(grid, &frame)?.equatorial_zonal_mean_pa(grid.extent());
 
         let earlier_index = index.saturating_sub(frames_in_lookback(header.output.interval_s));
         let earlier = if earlier_index == index {
@@ -300,7 +310,7 @@ impl EquatorialReading {
             }),
             lookback_days: clock.day_of_frame(index) - clock.day_of_frame(earlier_index),
             equatorial_stress_pa,
-            strongest_stress_pa: run.wind_stress_scale().max_magnitude_pa(),
+            strongest_easterly_pa: run.strongest_equatorial_easterly_pa(),
             anomaly_half_range_m: scale.half_range_m(),
             departure: earlier
                 .as_ref()
@@ -352,32 +362,49 @@ impl EquatorialReading {
         captions
     }
 
+    /// `fraction` of the run's full anomaly range, in metres — twice the
+    /// half-range the run's scale carries.
+    ///
+    /// The two thresholds that judge a number of metres large or small are
+    /// both shares of this, so they move with the run rather than with the
+    /// scenario that happened to be written first.
+    fn fraction_of_range_m(&self, fraction: f64) -> f64 {
+        fraction * 2.0 * self.anomaly_half_range_m
+    }
+
     /// The metres below which a difference between the two ends of the basin
-    /// is no difference at all: [`LEVEL_FRACTION`] of the run's full anomaly
-    /// range, which is twice the half-range the scale carries.
+    /// is no difference at all.
     fn level_tilt_m(&self) -> f64 {
-        LEVEL_FRACTION * 2.0 * self.anomaly_half_range_m
+        self.fraction_of_range_m(LEVEL_FRACTION)
     }
 
     /// The metres a difference has to move over the window before anything is
-    /// said to have changed: [`MOVING_FRACTION`] of the run's full anomaly
-    /// range.
+    /// said to have changed.
     fn moving_m(&self) -> f64 {
-        MOVING_FRACTION * 2.0 * self.anomaly_half_range_m
+        self.fraction_of_range_m(MOVING_FRACTION)
     }
 
-    /// The pascals below which the wind counts as slack.
-    fn slack_stress_pa(&self) -> f64 {
-        SLACK_FRACTION * self.strongest_stress_pa
-    }
-
-    /// Whether the wind measured on the equator has gone slack or turned
-    /// around — the two states in which it is no longer holding water in the
-    /// west.
-    fn wind_has_let_go(&self) -> bool {
-        self.equatorial_stress_pa.is_finite()
-            && (self.equatorial_stress_pa >= 0.0
-                || self.equatorial_stress_pa.abs() < self.slack_stress_pa())
+    /// What the wind along the equator is doing, or `None` where the run gave
+    /// no wind to read.
+    ///
+    /// Classified once. Two sentences below turn on which of the four states
+    /// this is, and deciding it twice is two places for them to come to
+    /// disagree about the same run.
+    fn wind_state(&self) -> Option<WindState> {
+        let stress_pa = self.equatorial_stress_pa?;
+        if !stress_pa.is_finite() {
+            return None;
+        }
+        if stress_pa > 0.0 {
+            return Some(WindState::Reversed);
+        }
+        if stress_pa == 0.0 {
+            return Some(WindState::Calm);
+        }
+        if stress_pa.abs() < SLACK_FRACTION * self.strongest_easterly_pa {
+            return Some(WindState::Slack);
+        }
+        Some(WindState::Blowing)
     }
 
     /// How much the *size* of the difference between the two ends has changed
@@ -392,34 +419,34 @@ impl EquatorialReading {
     }
 
     /// The wind, in one sentence, or `None` where no stress was measured.
+    ///
+    /// Each arm glosses the trade winds for itself rather than ahead of the
+    /// match, because the one that names no wind names no trade winds either,
+    /// and a term glossed into a sentence it does not appear in is a gloss
+    /// spent.
     fn wind_sentence(&self, words: &mut Glossary) -> Option<String> {
-        let stress_pa = self.equatorial_stress_pa;
-        if !stress_pa.is_finite() {
-            return None;
-        }
-        let trades = words.say(TRADE_WINDS);
-        if stress_pa > 0.0 {
-            return Some(format!(
+        let stress_pa = self.equatorial_stress_pa?;
+        Some(match self.wind_state()? {
+            WindState::Calm => "No wind is blowing on the equator in this frame.".to_owned(),
+            WindState::Reversed => format!(
                 "The wind over the equator has turned around: {stress_pa:.2} Pa blowing west to \
-                 east, the opposite of the {trades}."
-            ));
-        }
-        if stress_pa == 0.0 {
-            return Some("No wind is blowing on the equator in this frame.".to_owned());
-        }
-        if stress_pa.abs() < self.slack_stress_pa() {
-            return Some(format!(
-                "The {trades} have gone slack along the equator: {:.2} Pa, against {:.2} Pa at \
-                 their strongest in this run.",
+                 east, the opposite of the {}.",
+                words.say(TRADE_WINDS),
+            ),
+            WindState::Slack => format!(
+                "The {} have gone slack along the equator: {:.2} Pa, against {:.2} Pa at their \
+                 strongest along this run's equator.",
+                words.say(TRADE_WINDS),
                 stress_pa.abs(),
-                self.strongest_stress_pa,
-            ));
-        }
-        Some(format!(
-            "The {trades} are blowing east to west along the equator at {:.2} Pa, piling warm \
-             water into the west.",
-            stress_pa.abs(),
-        ))
+                self.strongest_easterly_pa,
+            ),
+            WindState::Blowing => format!(
+                "The {} are blowing east to west along the equator at {:.2} Pa, piling warm \
+                 water into the west.",
+                words.say(TRADE_WINDS),
+                stress_pa.abs(),
+            ),
+        })
     }
 
     /// The difference between the two ends, in one sentence.
@@ -480,16 +507,10 @@ impl EquatorialReading {
     /// "blowing the other way" are different states and the run measured which
     /// one this is.
     fn running_back_east_sentence(&self, tilt_m: f64, spread_change_m: f64) -> Option<String> {
-        if !self.wind_has_let_go() || spread_change_m >= -self.moving_m() || tilt_m <= 0.0 {
+        let wind = self.wind_state()?.no_longer_holding_the_west()?;
+        if spread_change_m >= -self.moving_m() || tilt_m <= 0.0 {
             return None;
         }
-        let wind = if self.equatorial_stress_pa > 0.0 {
-            "With the wind pushing the other way"
-        } else if self.equatorial_stress_pa == 0.0 {
-            "With no wind holding it there"
-        } else {
-            "With the winds slack"
-        };
         Some(format!(
             "{wind}, the warm water piled up in the west is sliding back east."
         ))
@@ -517,6 +538,42 @@ impl EquatorialReading {
     }
 }
 
+/// What the wind along the equator is doing, as the measurements classify it.
+///
+/// Four states rather than a number, because the sentences turn on which of
+/// them it is: whether the trades are described as piling water west, as
+/// having gone slack against the strongest this run reaches, as having turned
+/// around, or as absent. Two captions read it, and this is where the reading
+/// happens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindState {
+    /// Easterly, and at a good share of the strongest stress the run reaches.
+    Blowing,
+    /// Easterly, but well below that — [`SLACK_FRACTION`] of it.
+    Slack,
+    /// No stress on the equator at all.
+    Calm,
+    /// Westerly: blowing the opposite way to the trades.
+    Reversed,
+}
+
+impl WindState {
+    /// How to open a sentence about water running back east, or `None` where
+    /// the wind is still holding it in the west.
+    ///
+    /// A wind that has let go has let go in one of three ways, and which one
+    /// was measured is part of what the caption says: "slack" and "blowing the
+    /// other way" are different states of the ocean's forcing.
+    const fn no_longer_holding_the_west(self) -> Option<&'static str> {
+        match self {
+            Self::Blowing => None,
+            Self::Slack => Some("With the winds slack"),
+            Self::Calm => Some("With no wind holding it there"),
+            Self::Reversed => Some("With the wind pushing the other way"),
+        }
+    }
+}
+
 impl Departure {
     /// The change between two equatorial sections of the same run, reduced to
     /// what a caption can say about it, or `None` where nothing finite was
@@ -535,17 +592,35 @@ impl Departure {
             .zip(after)
             .map(|(before, after)| after.h_m() - before.h_m())
             .collect();
-        let peak_change_m = change_m
-            .iter()
-            .filter(|metres| metres.is_finite())
-            .fold(0.0_f64, |peak, metres| peak.max(metres.abs()));
+        // The peak keeps its sign, and the leading edge is looked for in that
+        // same sign: a relaxation deepens the east while it shoals the west,
+        // and an edge picked on magnitude alone would point at whichever of
+        // the two happened to reach furthest — a longitude belonging to the
+        // other half of the signal.
+        let peak_change_m =
+            change_m
+                .iter()
+                .filter(|metres| metres.is_finite())
+                .fold(0.0_f64, |peak, metres| {
+                    if metres.abs() > peak.abs() {
+                        *metres
+                    } else {
+                        peak
+                    }
+                });
         if peak_change_m == 0.0 {
             return None;
         }
         let edge = FRONT_FRACTION * peak_change_m;
-        let index = change_m
-            .iter()
-            .rposition(|metres| metres.is_finite() && metres.abs() >= edge)?;
+        let reached = |metres: f64| {
+            metres.is_finite()
+                && if peak_change_m > 0.0 {
+                    metres >= edge
+                } else {
+                    metres <= edge
+                }
+        };
+        let index = change_m.iter().rposition(|&metres| reached(metres))?;
         Some(Self {
             peak_change_m,
             half_peak_longitude_deg_east: after[index].longitude_deg_east(),
@@ -575,30 +650,6 @@ fn end_depth(section: &CrossSection, end: End, mean_depth_m: f64) -> Option<f64>
     }?;
     let depth_m = mean_depth_m + point.h_m();
     (depth_m.is_finite() && depth_m > 0.0).then_some(depth_m)
-}
-
-/// The mean zonal wind stress along the rows nearest the equator, in pascals.
-///
-/// The same rows [`CrossSection`] averages `h` over — the waveguide the model
-/// is about (`crate::cross_section`) — so the wind a caption describes is the
-/// wind over the ocean the picture draws.
-fn equatorial_zonal_stress_pa(
-    stress: &CellCentreStress<'_>,
-    extent: termocline_format::BasinExtent,
-) -> f64 {
-    let rows = MeridionalAxis::of(stress.height(), extent).rows_nearest_the_equator();
-    let width = stress.width();
-    if rows.is_empty() || width == 0 {
-        return f64::NAN;
-    }
-    let sum_pa: f64 = rows
-        .iter()
-        .flat_map(|&j| (0..width).map(move |i| (i, j)))
-        .map(|(i, j)| stress.at(i, j).tau_x_pa)
-        .sum();
-    #[allow(clippy::cast_precision_loss)]
-    let count = (rows.len() * width) as f64;
-    sum_pa / count
 }
 
 /// How many frames of a run written every `interval_s` seconds span

@@ -38,10 +38,10 @@
 mod common;
 
 use common::{
-    encoded_frames_with_fields, steady_trades_header, FrameFields, EASTERN_WALL_H_M, MID_BASIN_H_M,
-    NX, NY, STEADY_TRADES_PARAMS, WESTERN_WALL_H_M,
+    encoded_frames_with_fields, header_on, steady_trades_header, FrameFields, EASTERN_WALL_H_M,
+    MID_BASIN_H_M, NX, NY, PACIFIC, STEADY_TRADES_PARAMS, WESTERN_WALL_H_M,
 };
-use termocline_format::{RunHeader, Variable};
+use termocline_format::{GridSpec, RunHeader, Variable};
 use visualizer::{
     Caption, CaptionTopic, ComputedRun, Departure, EquatorialReading, FrameBudget, LoadedRun,
     RunBytes, ScenarioPreset,
@@ -86,8 +86,8 @@ fn at_rest() -> EquatorialReading {
         east_depth_m: Some(MEAN_DEPTH_M),
         earlier_tilt_m: None,
         lookback_days: 30.0,
-        equatorial_stress_pa: TRADE_STRESS_PA,
-        strongest_stress_pa: TRADE_STRESS_PA.abs(),
+        equatorial_stress_pa: Some(TRADE_STRESS_PA),
+        strongest_easterly_pa: TRADE_STRESS_PA.abs(),
         anomaly_half_range_m: HALF_RANGE_M,
         departure: None,
     }
@@ -144,13 +144,13 @@ fn the_wind_caption_follows_the_stress_that_was_measured() {
     // A fifth of the strongest stress in the run: the relaxation preset's own
     // floor, and below anything the seasonal cycle's ±20 % reaches.
     let slack = EquatorialReading {
-        equatorial_stress_pa: TRADE_STRESS_PA * 0.2,
+        equatorial_stress_pa: Some(TRADE_STRESS_PA * 0.2),
         ..at_rest()
     };
     let text = caption_on(&slack, CaptionTopic::Wind).expect("a slack wind is still a wind");
     assert!(
         text.contains("slack") && text.contains("0.01 Pa") && text.contains("0.05 Pa"),
-        "the slack wind is stated against the strongest the run reached: {text}"
+        "the slack wind is stated against the strongest this run's equator reached: {text}"
     );
     assert!(
         !text.contains("piling warm water into the west"),
@@ -158,7 +158,7 @@ fn the_wind_caption_follows_the_stress_that_was_measured() {
     );
 
     let reversed = EquatorialReading {
-        equatorial_stress_pa: 0.04,
+        equatorial_stress_pa: Some(0.04),
         ..at_rest()
     };
     let text = caption_on(&reversed, CaptionTopic::Wind).expect("a reversed wind is a wind");
@@ -168,8 +168,8 @@ fn the_wind_caption_follows_the_stress_that_was_measured() {
     );
 
     let calm = EquatorialReading {
-        equatorial_stress_pa: 0.0,
-        strongest_stress_pa: 0.0,
+        equatorial_stress_pa: Some(0.0),
+        strongest_easterly_pa: 0.0,
         ..at_rest()
     };
     let text = caption_on(&calm, CaptionTopic::Wind).expect("no wind is also a state");
@@ -295,7 +295,7 @@ fn the_warm_water_slides_back_east_only_when_both_halves_of_that_are_measured() 
     // caption is silent, because the sentence would then be describing
     // something the run is not doing.
     let sliding = EquatorialReading {
-        equatorial_stress_pa: TRADE_STRESS_PA * 0.2,
+        equatorial_stress_pa: Some(TRADE_STRESS_PA * 0.2),
         earlier_tilt_m: Some(66.4),
         ..tilted(MEAN_DEPTH_M + 10.0, MEAN_DEPTH_M)
     };
@@ -308,7 +308,7 @@ fn the_warm_water_slides_back_east_only_when_both_halves_of_that_are_measured() 
     // How the wind let go is measured too: a wind blowing the other way is not
     // a slack one, and the sentence says which was read.
     let reversed = EquatorialReading {
-        equatorial_stress_pa: 0.04,
+        equatorial_stress_pa: Some(0.04),
         ..sliding
     };
     let text = caption_on(&reversed, CaptionTopic::WarmWaterEast).expect("both halves hold");
@@ -318,7 +318,7 @@ fn the_warm_water_slides_back_east_only_when_both_halves_of_that_are_measured() 
     );
 
     let winds_still_blowing = EquatorialReading {
-        equatorial_stress_pa: TRADE_STRESS_PA,
+        equatorial_stress_pa: Some(TRADE_STRESS_PA),
         ..sliding
     };
     assert_eq!(
@@ -400,6 +400,65 @@ fn the_front_caption_says_how_far_east_the_change_has_reached() {
         caption_on(&at_rest(), CaptionTopic::Front),
         None,
         "nothing was measured, so nothing is claimed"
+    );
+}
+
+#[test]
+fn the_leading_edge_is_looked_for_in_the_direction_the_change_went() {
+    // A relaxation shoals the west while it deepens the east, so a change
+    // profile has lobes of both signs in it. The leading edge belongs to the
+    // lobe the peak is in: picking the easternmost point by magnitude alone
+    // would let a small opposite-sign change at the far wall stand in for the
+    // edge of the signal, and the caption would name a longitude belonging to
+    // the other half of the picture.
+    //
+    // This run shoals by 20 m across its western half and deepens by 12 m in
+    // its easternmost cell. Half the peak is 10 m, which 12 m clears — so on
+    // magnitude the edge would be the eastern wall and the caption would fall
+    // silent; on sign it is the last shoaling cell, well inside the basin.
+    let grid = GridSpec::new(20, 2, PACIFIC).expect("a 20 x 2 basin is a valid grid");
+    let header = header_on(grid, "two-lobed", 3);
+    let run = run_of(&header, |index| {
+        let mut h_m = Vec::with_capacity(40);
+        for _ in 0..2 {
+            for i in 0..20 {
+                #[allow(clippy::cast_precision_loss)]
+                let settled = f64::from(index > 0);
+                h_m.push(
+                    settled
+                        * if i < 10 {
+                            -20.0
+                        } else if i == 19 {
+                            12.0
+                        } else {
+                            0.0
+                        },
+                );
+            }
+        }
+        FrameFields {
+            h_m,
+            ..FrameFields::calm(&header)
+        }
+    });
+
+    let reading = EquatorialReading::of_run(&run, 2).expect("a frame the run holds");
+    let departure = reading.departure.expect("the ocean changed");
+    assert!(
+        (departure.peak_change_m - -20.0).abs() < METRE_TOLERANCE,
+        "the peak keeps the sign of the change it is: {}",
+        departure.peak_change_m
+    );
+    assert!(
+        !departure.reaches_eastern_wall,
+        "the eastern wall's 12 m is the other lobe, not the edge of this one"
+    );
+    // Ten cells of 8° each from 120°E puts the last shoaling cell at 196°E,
+    // which folds to 164°W.
+    assert!(
+        (departure.half_peak_longitude_deg_east - -164.0).abs() < 1e-9,
+        "{}",
+        departure.half_peak_longitude_deg_east
     );
 }
 
@@ -515,8 +574,17 @@ fn a_reading_is_taken_from_the_run_rather_than_from_the_frame_index() {
             < METRE_TOLERANCE
     );
     assert!(
-        (reading.equatorial_stress_pa - TRADE_STRESS_PA).abs() < PASCAL_TOLERANCE,
+        (reading
+            .equatorial_stress_pa
+            .expect("the frames carry a wind stress")
+            - TRADE_STRESS_PA)
+            .abs()
+            < PASCAL_TOLERANCE,
         "the stress the frames carry, averaged along the equator"
+    );
+    assert!(
+        (reading.strongest_easterly_pa - TRADE_STRESS_PA.abs()).abs() < PASCAL_TOLERANCE,
+        "and the strongest that mean reaches in the run, which here is the only one it holds"
     );
     // The window is days of model time rather than a count of frames: this run
     // is daily and only nineteen days long, so nineteen days is as far back as
@@ -588,12 +656,19 @@ fn a_growing_tilt_is_read_as_growing_wherever_in_the_run_it_happens() {
 
 /// Every state the caption module can be asked about, for the sweeps above.
 ///
-/// The winds at full strength, slack, reversed and absent, crossed with an
-/// ocean level, tilted west-deep, tilted east-deep and broken down, crossed
-/// with a tilt growing, shrinking, holding and unmeasured, plus a front
-/// travelling and a front arrived.
+/// The winds at full strength, slack, reversed, calm, diverged and unread,
+/// crossed with an ocean level, tilted west-deep, tilted east-deep and broken
+/// down, crossed with a tilt growing, shrinking, holding and unmeasured, plus
+/// a change deepening, shoaling, arrived and too small to see.
 fn every_state() -> Vec<EquatorialReading> {
-    let winds = [TRADE_STRESS_PA, TRADE_STRESS_PA * 0.2, 0.04, 0.0, f64::NAN];
+    let winds = [
+        Some(TRADE_STRESS_PA),
+        Some(TRADE_STRESS_PA * 0.2),
+        Some(0.04),
+        Some(0.0),
+        Some(f64::NAN),
+        None,
+    ];
     let oceans = [
         (Some(MEAN_DEPTH_M), Some(MEAN_DEPTH_M)),
         (
@@ -613,6 +688,11 @@ fn every_state() -> Vec<EquatorialReading> {
         Some(Departure {
             peak_change_m: 20.0,
             half_peak_longitude_deg_east: -170.0,
+            reaches_eastern_wall: false,
+        }),
+        Some(Departure {
+            peak_change_m: -20.0,
+            half_peak_longitude_deg_east: -150.0,
             reaches_eastern_wall: false,
         }),
         Some(Departure {

@@ -35,8 +35,10 @@
 //!
 //! [ADR-0006]: ../../docs/planning/adr/0006-web-visualizer.md
 
-use termocline_format::{FormatError, Frame, GridSpec, Variable};
+use termocline_format::{BasinExtent, FormatError, Frame, GridSpec, Variable};
 use termocline_grid::{Grid, Staggering};
+
+use crate::cross_section::MeridionalAxis;
 
 /// How far the scale reaches when there is no wind at all.
 const CALM_PA: f64 = 0.0;
@@ -295,9 +297,9 @@ impl WindOverlay {
 /// The wind stress at one point: the two components, together, because
 /// nothing reads one without the other and the magnitude is of the pair.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct Stress {
+struct Stress {
     /// Zonal stress, in pascals. Easterly — the alizés — is negative.
-    pub(crate) tau_x_pa: f64,
+    tau_x_pa: f64,
     /// Meridional stress, in pascals. Northward is positive.
     tau_y_pa: f64,
 }
@@ -340,18 +342,18 @@ impl<'a> CellCentreStress<'a> {
     }
 
     /// Cells along x.
-    pub(crate) const fn width(&self) -> usize {
+    const fn width(&self) -> usize {
         self.cells.nx()
     }
 
     /// Cells along y.
-    pub(crate) const fn height(&self) -> usize {
+    const fn height(&self) -> usize {
         self.cells.ny()
     }
 
     /// The stress at the centre of cell `(i, j)`, with `j` counted northward
     /// from the southern edge of the basin.
-    pub(crate) fn at(&self, i: usize, j: usize) -> Stress {
+    fn at(&self, i: usize, j: usize) -> Stress {
         Stress {
             tau_x_pa: self.tau_x.at_cell(i, j),
             tau_y_pa: self.tau_y.at_cell(i, j),
@@ -361,6 +363,31 @@ impl<'a> CellCentreStress<'a> {
     /// The stress at the centre of every cell of the basin.
     fn every_cell(&self) -> impl Iterator<Item = Stress> + '_ {
         (0..self.height()).flat_map(move |j| (0..self.width()).map(move |i| self.at(i, j)))
+    }
+
+    /// The mean zonal stress along the rows nearest the equator, in pascals,
+    /// or `None` where there are no cells to read it from.
+    ///
+    /// Negative is easterly — the alizés (`CONTEXT.md`). The rows are the ones
+    /// [`crate::CrossSection`] averages `h` over, the waveguide the model is
+    /// about, so the wind this reports is the wind over the ocean the
+    /// equatorial views draw. It lives here rather than beside its one caller
+    /// ([`crate::captions`]) because it reads nothing but this type's own
+    /// field.
+    pub(crate) fn equatorial_zonal_mean_pa(&self, extent: BasinExtent) -> Option<f64> {
+        let rows = MeridionalAxis::of(self.height(), extent).rows_nearest_the_equator();
+        let width = self.width();
+        if rows.is_empty() || width == 0 {
+            return None;
+        }
+        let sum_pa: f64 = rows
+            .iter()
+            .flat_map(|&j| (0..width).map(move |i| (i, j)))
+            .map(|(i, j)| self.at(i, j).tau_x_pa)
+            .sum();
+        #[allow(clippy::cast_precision_loss)]
+        let count = (rows.len() * width) as f64;
+        Some(sum_pa / count)
     }
 }
 
