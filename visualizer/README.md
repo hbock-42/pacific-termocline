@@ -66,6 +66,21 @@ the thermocline under them tilts. The layer is drawn over the map rather than
 into it, so turning it off leaves the map untouched; `src/wind.rs` has the
 rest.
 
+The **ocean side view** is the first of the teaching panel (Epic 13), and the
+one view that does not plot `h` at all. It draws the equator side-on: the warm
+upper layer above the thermocline, cold water below it, and the interface at
+the depth the model puts it at — the total depth `H + h`, so under the steady
+trades it is about 188 m down at the western wall and 122 m down at the
+eastern, rather than an anomaly of ±38 m about a line. It is the same
+extraction of the equator the cross-section chart draws as a line, so the two
+cannot disagree, and it shares the map's zonal axis so a longitude sits under
+the same column of both.
+
+There is no sea floor in it, and there is none in the model either: the
+1.5-layer ocean sits its active layer on an abyss of infinite depth, so the
+panel simply ends. A column whose `h` is not a number is drawn as no water at
+all. `src/side_view.rs` has the rest.
+
 Two runs are drawn side by side on **one** colour scale — the one that covers
 both of them — because two runs each on its own scale would look identical
 however far apart they are: each would reach the ends of the same ramp. The
