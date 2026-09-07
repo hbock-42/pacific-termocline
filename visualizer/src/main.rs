@@ -6,6 +6,10 @@
 //! side by side (T-09.5). In a browser there is no command line and no
 //! filesystem, and [`visualizer::VisualizerApp`] is started from `src/web.rs`
 //! instead (ADR-0006).
+//!
+//! It opens on the scientific views. Whoever started this binary went looking
+//! for it, and may have named a run on the line above; the teaching view is a
+//! button in the corner for when it is wanted (`visualizer::Mode`).
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
@@ -21,7 +25,7 @@ fn main() -> eframe::Result {
         visualizer::APP_NAME,
         options,
         Box::new(move |_cc| {
-            let mut app = visualizer::VisualizerApp::new();
+            let mut app = visualizer::VisualizerApp::opening_on(visualizer::Platform::Desktop);
             if let Some(directory) = directory {
                 app.load_directory(&directory);
             }

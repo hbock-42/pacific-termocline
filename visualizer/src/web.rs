@@ -11,12 +11,17 @@
 //! the first scenario is started here so a visitor sees the ocean answering
 //! the alizés without having pressed anything.
 //!
+//! Which is also why the page opens on the teaching view: the visitor who
+//! typed a URL is the one Epic 13 was built for, and the instrument is one
+//! named button away (`crate::mode`). Both facts come from the one
+//! [`Platform::Browser`] this module passes.
+//!
 //! [ADR-0012]: ../../docs/planning/adr/0012-the-browser-runs-the-engine.md
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
-use crate::VisualizerApp;
+use crate::{Platform, VisualizerApp};
 
 /// Id of the canvas in `index.html` that the app draws on.
 const CANVAS_ID: &str = "termocline_canvas";
@@ -125,8 +130,7 @@ pub fn start() {
                 canvas,
                 eframe::WebOptions::default(),
                 Box::new(|cc| {
-                    let mut app = VisualizerApp::new();
-                    app.compute_default_run();
+                    let app = VisualizerApp::opening_on(Platform::Browser);
                     Ok(Box::new(TimedFirstFrame {
                         app,
                         backend: backend_of(cc),

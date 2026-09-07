@@ -36,6 +36,16 @@
 //! never of a frame index, so a scenario a reader switched to at runtime
 //! cannot be narrated with another scenario's story.
 //!
+//! # Two readings of one run, and which one a reader arrives at
+//!
+//! Everything above is a second *reading* of the same run, beside the
+//! instrument Epics 08-09 built. [`mode`] is which of the two is on screen and
+//! nothing else: no view is removed by either, both are drawn from the same
+//! [`LoadedRun`], and one control moves between them. What differs is where a
+//! reader starts — a browser on the story, a desktop on the instrument — and
+//! that is a function of [`Platform`] rather than a `cfg!` read at the point of
+//! use, so both halves of the rule are testable from either build.
+//!
 //! [ADR-0006]: ../../docs/planning/adr/0006-web-visualizer.md
 //! [ADR-0012]: ../../docs/planning/adr/0012-the-browser-runs-the-engine.md
 
@@ -50,6 +60,7 @@ mod geography;
 mod heatmap;
 #[cfg(not(target_arch = "wasm32"))]
 mod loading;
+mod mode;
 #[cfg(not(target_arch = "wasm32"))]
 mod pending;
 mod playback;
@@ -77,6 +88,7 @@ pub use heatmap::{DivergingScale, Heatmap};
 /// its runs, and the file format is not served to it at all.
 #[cfg(not(target_arch = "wasm32"))]
 pub use loading::{native::read_run_directory, Loader};
+pub use mode::{Mode, Platform, ScientificView};
 #[cfg(not(target_arch = "wasm32"))]
 pub use pending::PendingRun;
 pub use playback::{Playback, MAX_STALL_S, PLAYBACK_SPEEDS_FPS};
