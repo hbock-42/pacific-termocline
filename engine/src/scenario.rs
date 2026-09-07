@@ -80,7 +80,9 @@
 //! of `docs/planning/01-scientific-model.md`.
 
 use std::fmt;
+#[cfg(feature = "fs")]
 use std::fs;
+#[cfg(feature = "fs")]
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -115,6 +117,10 @@ use crate::wind_response::{
 #[derive(Debug)]
 pub enum ScenarioError {
     /// The scenario file could not be read from disk.
+    ///
+    /// Only a build with the `fs` feature can reach a file to fail to read
+    /// (ADR-0012); parsing a scenario from text cannot produce this.
+    #[cfg(feature = "fs")]
     Unreadable {
         /// The path that was asked for.
         path: PathBuf,
@@ -164,6 +170,7 @@ pub enum ScenarioError {
 impl fmt::Display for ScenarioError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            #[cfg(feature = "fs")]
             Self::Unreadable { path, source } => {
                 write!(
                     f,
@@ -260,6 +267,7 @@ const MAX_RESIDENT_STATE_BYTES: u64 = 2 * BYTES_PER_GIB;
 impl std::error::Error for ScenarioError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            #[cfg(feature = "fs")]
             Self::Unreadable { source, .. } => Some(source),
             Self::Malformed(source) => Some(source),
             Self::Unwritable(source) => Some(source),
@@ -853,6 +861,7 @@ impl Scenario {
     /// [`ScenarioError::Unreadable`] naming `path` if the file cannot be read,
     /// otherwise whatever [`ScenarioConfig::from_toml`] or
     /// [`ScenarioConfig::build`] objected to.
+    #[cfg(feature = "fs")]
     pub fn load(path: &Path) -> Result<Self, ScenarioError> {
         let source = fs::read_to_string(path).map_err(|source| ScenarioError::Unreadable {
             path: path.to_path_buf(),

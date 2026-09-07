@@ -73,7 +73,8 @@ use termocline_grid::{Field2D, Grid, Staggering, H_STAGGERING, U_STAGGERING};
 
 use crate::basin::Basin;
 use crate::forcing::WindStressField;
-use crate::run::{run_scenario, RunError, RunReport};
+use crate::progress::RunReport;
+use crate::run::{run_scenario, RunError};
 use crate::scenario::{Scenario, ScenarioConfig};
 use crate::shallow_water::ShallowWaterRhs;
 use crate::state::OceanState;

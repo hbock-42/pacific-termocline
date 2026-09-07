@@ -22,12 +22,26 @@ description = "Headless simulation core: runs a scenario forward in time and wri
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(f32_storage_probe)'] }
 
+# `fs` is what a filesystem buys: loading a scenario from a path, writing a run
+# into a directory, reading one back, and the benchmark harness that does both.
+# It is off in the browser, which has none of them (ADR-0012); `engine/src/lib.rs`
+# § *The `fs` feature* is the account of what is behind it and what is not.
+#
+# `cli` is the `termocline` binary's own dependencies, and the binary's
+# `required-features`. It is separate because `clap` is not a filesystem: a
+# caller who wants `Scenario::load` in a library should not be made to build an
+# argument parser for it.
+[features]
+default = ["cli", "fs"]
+fs = ["termocline-format/fs"]
+cli = ["fs", "dep:clap"]
+
 [dependencies]
 bincode = { version = "2", features = ["serde"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
-termocline-format = { workspace = true, features = ["fs"] }
+termocline-format = { workspace = true }
 termocline-grid.workspace = true
 termocline-numerics.workspace = true
 toml = { version = "0.9", default-features = false, features = ["parse", "display", "serde"] }
@@ -42,6 +56,10 @@ criterion = "0.8"
 name = "termocline"
 path = "src/main.rs"
 bench = false
+# The CLI is a native program: it parses arguments, loads a scenario from a
+# path and writes a run to a directory. `cargo build -p engine
+# --no-default-features` skips it rather than failing to compile it.
+required-features = ["cli"]
 
 [lib]
 name = "engine"

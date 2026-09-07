@@ -51,8 +51,48 @@ use std::fmt::Write as _;
 use std::io::{self, IsTerminal, Write};
 use std::time::{Duration, Instant};
 
-use crate::run::RunReport;
 use crate::run_writer::OutputSchedule;
+
+/// What a finished run wrote: the numbers the CLI reports back and a test
+/// asserts on.
+///
+/// Kept beside [`RunObserver`], which is handed one when a run ends, rather
+/// than beside the run loop that fills it in: the loop is native-only
+/// (ADR-0012), and what a run reports about itself is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunReport {
+    /// Steps the run took from its initial state.
+    steps_taken: u64,
+    /// Frames written, including the one holding the initial state.
+    frames_written: u64,
+}
+
+impl RunReport {
+    /// A report of `steps_taken` steps and `frames_written` frames.
+    ///
+    /// Behind the `fs` feature because the only time loop that finishes a run
+    /// is [`crate::run`]'s, which is native. A caller that steps a scenario
+    /// itself — the browser of ADR-0012 — has no run to report on yet.
+    #[cfg(feature = "fs")]
+    pub(crate) const fn new(steps_taken: u64, frames_written: u64) -> Self {
+        Self {
+            steps_taken,
+            frames_written,
+        }
+    }
+
+    /// Steps the run took from its initial state.
+    #[must_use]
+    pub const fn steps_taken(self) -> u64 {
+        self.steps_taken
+    }
+
+    /// Frames written, including the one holding the initial state.
+    #[must_use]
+    pub const fn frames_written(self) -> u64 {
+        self.frames_written
+    }
+}
 
 /// How often an in-place progress bar redraws, at most.
 ///

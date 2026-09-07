@@ -62,7 +62,7 @@ use termocline_format::{FormatError, GridSpec, RunHeader};
 use crate::basin::Basin;
 use crate::coriolis::BetaPlane;
 use crate::forcing::{CompositeWind, StageForcing, WindForcing, WindStressField};
-use crate::progress::RunObserver;
+use crate::progress::{RunObserver, RunReport};
 use crate::run_writer::{RunWriteError, RunWriter};
 use crate::scenario::{Scenario, ScenarioError};
 use crate::solver::{Solver, SolverError};
@@ -131,30 +131,6 @@ impl From<SolverError> for RunError {
 impl From<RunWriteError> for RunError {
     fn from(source: RunWriteError) -> Self {
         Self::Write(source)
-    }
-}
-
-/// What a finished run wrote: the numbers the CLI reports back and a test
-/// asserts on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RunReport {
-    /// Steps the run took from its initial state.
-    steps_taken: u64,
-    /// Frames written, including the one holding the initial state.
-    frames_written: u64,
-}
-
-impl RunReport {
-    /// Steps the run took from its initial state.
-    #[must_use]
-    pub const fn steps_taken(self) -> u64 {
-        self.steps_taken
-    }
-
-    /// Frames written, including the one holding the initial state.
-    #[must_use]
-    pub const fn frames_written(self) -> u64 {
-        self.frames_written
     }
 }
 
@@ -304,10 +280,7 @@ pub fn run_scenario_observed(
     }
     writer.finish()?;
 
-    let report = RunReport {
-        steps_taken: schedule.total_steps(),
-        frames_written,
-    };
+    let report = RunReport::new(schedule.total_steps(), frames_written);
     observer.run_finished(&report);
     Ok(report)
 }
