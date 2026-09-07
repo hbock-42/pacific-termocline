@@ -168,7 +168,15 @@ pub use wind_response::{
 /// Re-exported so the CLI, the tests and the example files name one scenario
 /// format: [`scenario::ScenarioConfig`] is the TOML record on disk, and
 /// [`scenario::Scenario`] the validated result the engine runs.
-pub use scenario::{Scenario, ScenarioConfig, ScenarioError, ScenarioWind};
+///
+/// The sections come with it because a scenario need not have been written
+/// down to be run: the visualizer's teaching presets (T-13.3) assemble a
+/// [`scenario::ScenarioConfig`] in code out of these, so that a reader picking
+/// a scenario in a browser never meets a file (ADR-0012).
+pub use scenario::{
+    BasinSection, PhysicsSection, RunSection, Scenario, ScenarioConfig, ScenarioError,
+    ScenarioWind, SstSection, WindSection,
+};
 
 /// Re-exported so binaries and the visualizer agree on one format version, on
 /// where a run's two files live, and on the one reader that opens them

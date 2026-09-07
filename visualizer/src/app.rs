@@ -32,10 +32,9 @@ use crate::geography::{latitude_phrase, Coast};
 use crate::loading::Loaded;
 use crate::run::SECONDS_PER_DAY;
 use crate::{
-    BasinPoint, BrowserScenario, Comparison, ComputedRun, CrossSection, DivergingScale,
-    FrameBudget, Heatmap, InMegabytes, LayerBand, LoadedRun, Mismatch, Playback, PointSeries,
-    RunClock, Scrubber, SideView, StressScale, WindOverlay, PLAIN_WORDS, SEA_SURFACE_RGB,
-    STEP_BUDGET,
+    BasinPoint, Comparison, ComputedRun, CrossSection, DivergingScale, FrameBudget, Heatmap,
+    InMegabytes, LayerBand, LoadedRun, Mismatch, Playback, PointSeries, RunClock, ScenarioPreset,
+    Scrubber, SideView, StressScale, WindOverlay, PLAIN_WORDS, SEA_SURFACE_RGB, STEP_BUDGET,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{Loader, PendingRun};
@@ -95,8 +94,9 @@ impl Shown {
 struct Panel {
     /// What this panel is showing.
     shown: Shown,
-    /// The scenario this panel computes when asked to (ADR-0012).
-    scenario: BrowserScenario,
+    /// The scenario this panel computes when asked to (ADR-0012), as the
+    /// teaching panel offers it (T-13.3).
+    scenario: ScenarioPreset,
     /// Dropped files seen so far, waiting for their pair. Native only.
     #[cfg(not(target_arch = "wasm32"))]
     pending: PendingRun,
@@ -109,7 +109,7 @@ impl Default for Panel {
     fn default() -> Self {
         Self {
             shown: Shown::default(),
-            scenario: BrowserScenario::default_scenario(),
+            scenario: ScenarioPreset::default_preset(),
             #[cfg(not(target_arch = "wasm32"))]
             pending: PendingRun::default(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -340,19 +340,32 @@ impl VisualizerApp {
     /// message the refusal came with, because "too big" a reader cannot act on
     /// and "941 MB against 33.6 MB allowed" they can.
     fn compute_into(&mut self, side: Side) {
-        let scenario = self.panels[side.index()].scenario;
+        let preset = self.panels[side.index()].scenario;
         // Whatever this panel was showing is gone, and in a comparison the
         // scale is both runs', so the other panel's map is no longer its map
         // either.
         self.basin_map.forget();
         self.panels[side.index()].shown =
-            match ComputedRun::start(scenario.toml, scenario.name, FrameBudget::browser()) {
+            match ComputedRun::of_preset(preset, FrameBudget::browser()) {
                 Ok(computed) => Shown::Computing(Box::new(computed)),
                 Err(error) => Shown::Failed {
-                    source: scenario.name.to_owned(),
+                    source: preset.name().to_owned(),
                     message: error.to_string(),
                 },
             };
+    }
+
+    /// Choose `preset` for `side`'s panel and start computing it — what
+    /// pressing one of the scenario buttons does (T-13.3).
+    ///
+    /// Public because it is the whole of the teaching panel's entry point,
+    /// and because "switching scenario restarts the computation cleanly" is a
+    /// claim about *this* function: it replaces the panel's run rather than
+    /// resetting one, and forgets everything the shell held about the run that
+    /// was there.
+    pub fn compute_preset(&mut self, side: Side, preset: ScenarioPreset) {
+        self.panels[side.index()].scenario = preset;
+        self.compute_into(side);
     }
 
     /// Step every run still being computed, for as long as this repaint can
@@ -477,30 +490,35 @@ impl VisualizerApp {
     /// there is a filesystem to read one from — the ways a written run
     /// reaches it.
     fn draw_side_controls(&mut self, ui: &mut egui::Ui, side: Side) -> bool {
-        ui.horizontal(|ui| {
-            if self.comparing {
-                ui.label(RichText::new(format!("Run {}", side.label())).strong());
-            }
-            egui::ComboBox::from_id_salt(format!("scenario-{}", side.label()))
-                .selected_text(self.panels[side.index()].scenario.name)
-                .show_ui(ui, |ui| {
-                    for scenario in BrowserScenario::ALL {
-                        ui.selectable_value(
-                            &mut self.panels[side.index()].scenario,
-                            scenario,
-                            scenario.name,
-                        )
-                        .on_hover_text(scenario.summary);
+        ui.vertical(|ui| {
+            let url_has_keyboard = ui
+                .horizontal(|ui| {
+                    if self.comparing {
+                        ui.label(RichText::new(format!("Run {}", side.label())).strong());
                     }
-                });
-            if ui
-                .button("Compute run")
-                .on_hover_text(self.panels[side.index()].scenario.summary)
-                .clicked()
-            {
-                self.compute_into(side);
-            }
-            self.draw_loading_controls(ui, side)
+                    // One button per scenario, and pressing one runs it: a
+                    // reader choosing "the winds relax" has asked to watch the
+                    // winds relax, and a second click on a *Compute* button is
+                    // a step between them and the ocean (T-13.3).
+                    for preset in ScenarioPreset::ALL {
+                        let chosen = preset == self.panels[side.index()].scenario;
+                        if ui
+                            .selectable_label(chosen, preset.name())
+                            .on_hover_text(format!(
+                                "{}\n{}",
+                                preset.summary(),
+                                preset.cost().line()
+                            ))
+                            .clicked()
+                        {
+                            self.compute_preset(side, preset);
+                        }
+                    }
+                    self.draw_loading_controls(ui, side)
+                })
+                .inner;
+            draw_preset_notes(ui, self.panels[side.index()].scenario);
+            url_has_keyboard
         })
         .inner
     }
@@ -541,14 +559,31 @@ impl VisualizerApp {
     }
 }
 
+/// What the chosen scenario shows, what it costs, and — where there is one —
+/// what it is *not*.
+///
+/// Three rows under the buttons rather than a tooltip, because all three are
+/// things a reader needs while the run is on screen and not only while they
+/// are choosing: the story is what to look for, the cost is why the run is the
+/// size it is, and the caveat is the sentence that keeps the teaching mode
+/// from claiming more than the model does (`crate::presets`). The caveat is
+/// drawn in the same weight as the story rather than tucked away, because a
+/// disclaimer nobody reads is a disclaimer that is not there.
+fn draw_preset_notes(ui: &mut egui::Ui, preset: ScenarioPreset) {
+    ui.label(preset.story());
+    ui.label(RichText::new(preset.cost().line()).weak());
+    if let Some(caveat) = preset.caveat() {
+        ui.label(RichText::new(caveat).italics());
+    }
+}
+
 /// What to show when a panel has no run yet, or its last one failed.
 fn draw_instructions(ui: &mut egui::Ui, panel: &Panel) {
     ui.label(format!(
-        "Pick a scenario and press Compute run: {} is computed here, step by step, and drawn as \
-         it develops.",
-        panel.scenario.name
+        "Press a scenario above: {} is computed here, step by step, and drawn as it develops.",
+        panel.scenario.name()
     ));
-    ui.label(RichText::new(panel.scenario.summary).weak());
+    ui.label(RichText::new(panel.scenario.summary()).weak());
     #[cfg(not(target_arch = "wasm32"))]
     {
         ui.add_space(6.0);
@@ -2276,8 +2311,13 @@ mod tests {
         Variable,
     };
 
-    use super::{BasinMap, DrawnFrame, LoadedRun, Side};
-    use crate::{BasinPoint, Comparison, RunBytes, RunClock, SeriesSample};
+    use super::{BasinMap, DrawnFrame, LoadedRun, Shown, Side, VisualizerApp};
+    use crate::{BasinPoint, Comparison, RunBytes, RunClock, ScenarioPreset, SeriesSample};
+
+    /// Steps taken before the reader is imagined to look away: enough of the
+    /// control preset for frames to exist and the chooser to have somewhere to
+    /// be.
+    const STEPS_WATCHED: u64 = 500;
 
     /// Model time between the frames of these runs, in seconds: a day, as
     /// `steady-trades.toml` writes them.
@@ -2906,6 +2946,64 @@ mod tests {
                 .map(SeriesSample::h_m)
                 .collect::<Vec<f64>>(),
             expected
+        );
+    }
+
+    /// Switching scenario starts the new run clean: nothing the shell held
+    /// about the last one survives it (T-13.3).
+    ///
+    /// The panel's run is replaced rather than reset — a preset produces a new
+    /// `ComputedRun` (`crate::compute`) — and what this adds is the other half,
+    /// which lives here and nowhere else: the frame the reader had scrubbed
+    /// to, the cell they had picked, the clock they had started and the
+    /// textures cached for the frame on screen are all facts about the run that
+    /// has gone. A chooser left at frame 200 would open the next scenario two
+    /// years in.
+    #[test]
+    fn switching_scenario_leaves_nothing_of_the_previous_run_in_the_shell() {
+        let mut app = VisualizerApp::new();
+        app.compute_preset(Side::Left, ScenarioPreset::default_preset());
+
+        // A reader who has watched some of it: frames computed, the chooser
+        // moved to the end, a cell picked and the clock running.
+        let Shown::Computing(computed) = &mut app.panels[Side::Left.index()].shown else {
+            panic!("the panel is computing the preset it was given");
+        };
+        computed
+            .advance_steps(STEPS_WATCHED)
+            .expect("the preset computes");
+        let watched = computed.run().frame_count();
+        let point = middle_point(computed.run());
+        assert!(watched > 1, "nothing was watched, so nothing could carry");
+        app.basin_map.scrubber.fit_to(watched);
+        app.basin_map.selected = Some(point);
+        // Started before the chooser is moved: playing from the last frame
+        // rewinds to the first, which is `Playback`'s own business.
+        app.basin_map.playback.play(&mut app.basin_map.scrubber);
+        app.basin_map.scrubber.to_last();
+        assert!(app.basin_map.scrubber.index() > 0);
+
+        let next = ScenarioPreset::ALL[1];
+        app.compute_preset(Side::Left, next);
+
+        let Shown::Computing(computed) = &app.panels[Side::Left.index()].shown else {
+            panic!("the panel is computing the preset it was just given");
+        };
+        assert_eq!(computed.run().source(), next.name());
+        assert_eq!(computed.run().frame_count(), 0, "a frame of the last run");
+        assert_eq!(computed.progress(), (0, next.cost().frame_count));
+        assert_eq!(
+            app.basin_map.scrubber.index(),
+            0,
+            "the chooser is still where the last run left it"
+        );
+        assert_eq!(app.basin_map.scrubber.last(), None);
+        assert_eq!(app.basin_map.selected, None, "a cell of the last basin");
+        assert!(!app.basin_map.playback.is_playing());
+        assert!(app.basin_map.bar.is_none(), "the last run's colour bar");
+        assert!(
+            app.panels[Side::Left.index()].scenario.eq(&next),
+            "the panel did not take the preset it was given"
         );
     }
 }

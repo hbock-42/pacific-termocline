@@ -15,8 +15,8 @@
 
 use termocline_format::{RunHeader, Variable};
 use visualizer::{
-    BrowserScenario, Comparison, ComputeError, ComputedRun, CrossSection, FrameBudget, Heatmap,
-    LoadedRun, PointSeries, WindOverlay,
+    Comparison, ComputeError, ComputedRun, CrossSection, FrameBudget, Heatmap, LoadedRun,
+    PointSeries, ScenarioPreset, WindOverlay,
 };
 
 /// A run small enough to compute inside a test: a 40° × 10° box at 1° under a
@@ -60,9 +60,25 @@ const MERIDIONAL_DECAY_SCALE_M: f64 = 361_000.0;
 /// Steps enough to reach the end of `SCENARIO_TOML` however they are chunked.
 const ENOUGH_STEPS: u64 = 100;
 
+/// The scenario of `SCENARIO_TOML`, parsed and validated.
+///
+/// Written as TOML rather than assembled in code, unlike the presets the shell
+/// offers (`ScenarioPreset`): what is under test here is the loop, and a
+/// scenario a test can read at a glance is what makes the values asserted
+/// against it readable. The engine's two paths end in the same `Scenario`.
+fn test_scenario() -> engine::Scenario {
+    engine::Scenario::from_toml(SCENARIO_TOML).expect("the scenario text is valid")
+}
+
+/// A run of `toml` started under `description`, held to the browser's budget.
+fn started(toml: &str, description: &str) -> Result<ComputedRun, ComputeError> {
+    let scenario = engine::Scenario::from_toml(toml).expect("the scenario text is valid");
+    ComputedRun::of_scenario(&scenario, description, FrameBudget::browser())
+}
+
 /// A run computed to the end of its schedule, in chunks of `chunk` steps.
 fn computed_in_chunks(chunk: u64) -> ComputedRun {
-    let mut run = ComputedRun::start(SCENARIO_TOML, "test scenario", FrameBudget::browser())
+    let mut run = started(SCENARIO_TOML, "test scenario")
         .expect("the scenario is inside the browser's budget");
     while !run.is_finished() {
         run.advance_steps(chunk).expect("the run computes");
@@ -114,7 +130,7 @@ fn the_engine_produces_the_frames_and_the_header_counts_them() {
 /// which is what the wind overlay draws.
 #[test]
 fn a_computed_frame_carries_the_stress_that_drove_it() {
-    let scenario = engine::Scenario::from_toml(SCENARIO_TOML).expect("the scenario text is valid");
+    let scenario = test_scenario();
     let basin = scenario.basin();
     let scaled = basin.y_of_row_m(engine::U_STAGGERING, EXPECTED_NY / 2) / MERIDIONAL_DECAY_SCALE_M;
     let expected_pa = EQUATORIAL_ZONAL_STRESS_PA * (-scaled * scaled).exp();
@@ -175,8 +191,8 @@ fn frames_of(run: &LoadedRun) -> Vec<(f64, Vec<f64>, Vec<f64>)> {
 /// count they are bounded by is the run's own.
 #[test]
 fn a_run_being_computed_holds_only_the_frames_it_has_produced() {
-    let mut computed = ComputedRun::start(SCENARIO_TOML, "partial", FrameBudget::browser())
-        .expect("the scenario is inside the browser's budget");
+    let mut computed =
+        started(SCENARIO_TOML, "partial").expect("the scenario is inside the browser's budget");
     assert_eq!(computed.run().frame_count(), 0);
     assert!(!computed.run().is_complete());
 
@@ -201,8 +217,8 @@ fn a_run_being_computed_holds_only_the_frames_it_has_produced() {
 /// of every frame taken together.
 #[test]
 fn the_scale_widens_as_frames_arrive_and_ends_run_wide() {
-    let mut computed = ComputedRun::start(SCENARIO_TOML, "widening", FrameBudget::browser())
-        .expect("the scenario is inside the browser's budget");
+    let mut computed =
+        started(SCENARIO_TOML, "widening").expect("the scenario is inside the browser's budget");
     let mut widths_m = Vec::new();
     while !computed.is_finished() {
         computed
@@ -291,7 +307,7 @@ fn a_run_too_big_for_a_tab_is_refused_before_it_starts() {
         .replace("total_steps = 12", "total_steps = 17520")
         .replace("output_every_n_steps = 4", "output_every_n_steps = 24");
 
-    let refused = ComputedRun::start(&control, "control", FrameBudget::browser())
+    let refused = started(&control, "control")
         .err()
         .expect("the control run does not fit in a tab");
     let ComputeError::Budget(exceeded) = refused else {
@@ -329,20 +345,20 @@ fn a_run_too_big_for_a_tab_is_refused_before_it_starts() {
 /// files are coarser than the engine's.
 #[test]
 fn every_shipped_scenario_fits_the_browser_budget() {
-    for scenario in BrowserScenario::ALL {
-        let computed = ComputedRun::start(scenario.toml, scenario.name, FrameBudget::browser())
-            .unwrap_or_else(|error| panic!("{} does not start: {error}", scenario.name));
+    for preset in ScenarioPreset::ALL {
+        let computed = ComputedRun::of_preset(preset, FrameBudget::browser())
+            .unwrap_or_else(|error| panic!("{} does not start: {error}", preset.name()));
         let header = computed.run().header();
         assert_eq!(
             (header.grid.nx(), header.grid.ny()),
             (80, 25),
             "{} is not on the browser grid",
-            scenario.name
+            preset.name()
         );
         assert!(
             FrameBudget::bytes_of(header) <= FrameBudget::browser().max_bytes(),
             "{} does not fit the browser's frame budget",
-            scenario.name
+            preset.name()
         );
     }
 }
@@ -357,12 +373,8 @@ fn every_shipped_scenario_fits_the_browser_budget() {
 /// to add up exactly rather than to agree to within something.
 #[test]
 fn the_estimated_size_of_a_run_accounts_for_the_size_it_writes() {
-    let computed = ComputedRun::start(
-        BrowserScenario::default_scenario().toml,
-        "sizing",
-        FrameBudget::browser(),
-    )
-    .expect("the browser scenario fits");
+    let computed = ComputedRun::of_preset(ScenarioPreset::default_preset(), FrameBudget::browser())
+        .expect("the control preset fits");
     let header = computed.run().header();
     let estimated = FrameBudget::bytes_of(header);
 
@@ -372,8 +384,10 @@ fn the_estimated_size_of_a_run_accounts_for_the_size_it_writes() {
     /// each at these field lengths, which is what `bincode`'s standard
     /// configuration spends on a length of 251..=65 535.
     const FORMAT_BYTES_PER_FRAME: u64 = 8 + 1 + 5 * 3;
-    /// `frames.bin` of `scenarios/browser-steady-trades.toml`, as written by
-    /// `termocline run` on the native engine.
+    /// `frames.bin` of the control preset's scenario, as written by
+    /// `termocline run` on the native engine from the file that preset
+    /// replaced (`visualizer/scenarios/browser-steady-trades.toml`, deleted in
+    /// T-13.3 — the scenario it held is now `ScenarioPreset::ALL[0]`).
     const MEASURED_BYTES: u64 = 19_935_776;
 
     assert_eq!(

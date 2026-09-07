@@ -38,7 +38,7 @@ use common::{
 };
 use termocline_format::{BasinExtent, GridSpec, OutputTiming, RunHeader};
 use visualizer::{
-    BrowserScenario, CrossSection, LoadedRun, RunBytes, RunClock, SideView, Wall, PLAIN_WORDS,
+    CrossSection, LoadedRun, RunBytes, RunClock, ScenarioPreset, SideView, Wall, PLAIN_WORDS,
 };
 
 /// How far a tick's computed position may sit from the fraction of the basin
@@ -431,8 +431,15 @@ fn the_scenarios_are_offered_in_words_the_key_explains() {
     // the trade winds in French ("alizés", `CONTEXT.md`) — a term the project's
     // own glossary defines and a visitor does not. Nothing the picker says now
     // uses a word the plain-language key does not cover.
-    for scenario in BrowserScenario::ALL {
-        let text = format!("{} — {}", scenario.name, scenario.summary).to_lowercase();
+    for preset in ScenarioPreset::ALL {
+        let text = format!(
+            "{} — {} {} {}",
+            preset.name(),
+            preset.summary(),
+            preset.story(),
+            preset.caveat().unwrap_or_default()
+        )
+        .to_lowercase();
         assert!(
             !text.contains("aliz"),
             "the picker speaks the reader's language: {text}"

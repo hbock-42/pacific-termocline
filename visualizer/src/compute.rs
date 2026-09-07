@@ -44,18 +44,18 @@
 use core::fmt;
 
 use engine::{RunLoop, RunLoopError, Scenario, ScenarioError};
-use termocline_format::RunHeader;
+use termocline_format::{GridSpec, RunHeader, Variable};
 use web_time::{Duration, Instant};
 
 use crate::run::FrameAppendError;
-use crate::LoadedRun;
+use crate::{LoadedRun, ScenarioPreset};
 
 /// Steps taken between two reads of the clock.
 ///
 /// The deadline of [`ComputedRun::advance_within`] can only be honoured to
 /// within one slice, so this is how far past it a chunk may run. One step of
-/// the browser scenario's 80 × 25 grid takes **41 µs** natively (measured:
-/// 17 520 steps of `scenarios/browser-steady-trades.toml` in 0.72 s, release
+/// the presets' 80 × 25 grid takes **41 µs** natively (measured:
+/// 17 520 steps of the control preset ([`ScenarioPreset::ALL`]) in 0.72 s, release
 /// build, Apple M1 Pro — the same 0.7 s the halted T-08.4 work reported), so
 /// eight steps is 0.33 ms there and 1.3 ms even at four times that cost, which
 /// is what a wasm build is assumed to be until one is profiled. Both are
@@ -68,7 +68,7 @@ pub const STEPS_PER_SLICE: u64 = 8;
 /// Half of a 60 Hz frame's 16.7 ms, leaving the other half for what the tab
 /// exists to do — decode the newest frame, colour-map it, and draw. At the 41
 /// µs a step costs natively that is around 195 steps a frame, so the 17 520 of
-/// the browser scenario take about 90 displayed frames, or 1.5 s. A browser is
+/// the control preset take about 90 displayed frames, or 1.5 s. A browser is
 /// slower than that by some factor nothing here has measured, and what the
 /// factor changes is how long the run takes, not whether the tab keeps
 /// drawing: that is what taking the budget in *time* buys.
@@ -85,10 +85,11 @@ const BYTES_PER_VALUE: u64 = 8;
 ///
 /// A limit rather than a hope, and per *run* rather than per tab: the shell
 /// shows at most two (T-09.5), so the worst case is twice this. Thirty-two
-/// mebibytes leaves the browser scenario — 244 frames of an 80 × 25 basin,
-/// 19.9 MB — at 59 % of its budget, which is room for a longer or finer
-/// scenario without room for a careless one: the 941 MB control run is
-/// refused twenty-eight times over.
+/// mebibytes leaves the control preset — 244 frames of an 80 × 25 basin,
+/// 19.9 MB — at 59 % of its budget, and the wind burst, which buys a daily
+/// frame so the wave can be followed, at 89 % of it (`crate::presets`). That
+/// is room for a longer or a more finely sampled scenario without room for a
+/// careless one: the 941 MB control run is refused twenty-eight times over.
 ///
 /// It is deliberately far below what a tab can technically allocate. What a
 /// browser will let a page keep before it kills the tab is neither documented
@@ -128,7 +129,7 @@ impl FrameBudget {
     /// The sum over the run's variables of one `f64` per point of that
     /// variable's staggered position, times the frames the header promises.
     /// The encoding adds a few bytes a frame on top — a length prefix per
-    /// field and the frame's own model time — which for the browser scenario
+    /// field and the frame's own model time — which for the control preset
     /// is 24 bytes in 81 704, or 0.03 %: far inside the headroom the budget
     /// leaves, and not worth modelling `bincode`'s varints in the visualizer
     /// to recover.
@@ -140,6 +141,24 @@ impl FrameBudget {
             .map(|spec| header.grid.field_len(spec.variable) as u64 * BYTES_PER_VALUE)
             .sum();
         per_frame * header.output.frame_count
+    }
+
+    /// The same, for a run that has not started: `frame_count` frames over
+    /// `grid`, carrying the five variables of the linear core.
+    ///
+    /// What lets a [`ScenarioPreset`] state its size before it is pressed
+    /// (`crate::presets`): a header exists only once a run has been started,
+    /// and a visitor deserves the number before that. The variables are
+    /// [`Variable::LINEAR_CORE`] because a preset is an uncoupled scenario;
+    /// `tests/scenario_presets.rs` holds the estimate against
+    /// [`FrameBudget::bytes_of`] of the header each preset actually produces.
+    #[must_use]
+    pub fn bytes_of_linear_core(grid: GridSpec, frame_count: u64) -> u64 {
+        let per_frame: u64 = Variable::LINEAR_CORE
+            .iter()
+            .map(|variable| grid.field_len(*variable) as u64 * BYTES_PER_VALUE)
+            .sum();
+        per_frame * frame_count
     }
 
     /// Whether a run with this header fits, and by how much it does not.
@@ -300,28 +319,42 @@ pub struct ComputedRun {
 }
 
 impl ComputedRun {
-    /// Start computing the scenario in `scenario_toml`, under the name
-    /// `description`, holding it to `budget`.
+    /// Start computing `scenario`, under the name `description`, holding it
+    /// to `budget`.
     ///
     /// Nothing is stepped: the returned run holds no frames yet, and the first
     /// call to [`ComputedRun::advance_within`] produces the initial state as
     /// frame zero.
     ///
     /// # Errors
-    /// [`ComputeError::Scenario`] if the text is not a scenario this engine
-    /// runs, [`ComputeError::Engine`] if the engine refuses to start it, and
+    /// [`ComputeError::Engine`] if the engine refuses to start the run, and
     /// [`ComputeError::Budget`] if its frames would not fit in the tab — the
     /// last checked before a single step is taken.
-    pub fn start(
-        scenario_toml: &str,
+    pub fn of_scenario(
+        scenario: &Scenario,
         description: &str,
         budget: FrameBudget,
     ) -> Result<Self, ComputeError> {
-        let scenario = Scenario::from_toml(scenario_toml)?;
-        let stepping = RunLoop::of_scenario(&scenario, description)?;
+        let stepping = RunLoop::of_scenario(scenario, description)?;
         budget.admits(stepping.header())?;
         let run = LoadedRun::computing(description, stepping.header().clone());
         Ok(Self { stepping, run })
+    }
+
+    /// Start computing what `preset` describes, under the preset's own name.
+    ///
+    /// The whole of what pressing a scenario button does (T-13.3), and the
+    /// reason nothing carries over between two of them: a preset produces a
+    /// *new* [`ComputedRun`], holding a new [`RunLoop`] over a new
+    /// [`LoadedRun`], so the run that was being computed is dropped rather
+    /// than reset.
+    ///
+    /// # Errors
+    /// [`ComputeError::Scenario`] if the preset does not describe a scenario
+    /// the engine will run, plus the errors of
+    /// [`ComputedRun::of_scenario`].
+    pub fn of_preset(preset: ScenarioPreset, budget: FrameBudget) -> Result<Self, ComputeError> {
+        Self::of_scenario(&preset.scenario()?, preset.name(), budget)
     }
 
     /// The run as far as it has been computed.
@@ -402,53 +435,5 @@ impl ComputedRun {
             .map_err(|error| ComputeError::Frame(FrameAppendError::Mismatch(error)))?;
         self.run.append_frame(&frame)?;
         Ok(())
-    }
-}
-
-/// One of the scenarios the browser build ships with.
-///
-/// A browser has no filesystem to read a scenario from and — since ADR-0012 —
-/// nothing to fetch, so the text is compiled in. They are the engine's own
-/// scenarios coarsened to fit [`FrameBudget::browser`]; each file says what
-/// was changed and what was not.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BrowserScenario {
-    /// What the run is called, in the panel and in the run's header.
-    pub name: &'static str,
-    /// What it shows, in one line, for a reader choosing between them.
-    pub summary: &'static str,
-    /// The scenario itself, as TOML text.
-    pub toml: &'static str,
-}
-
-impl BrowserScenario {
-    /// The scenarios the browser offers, in the order it offers them.
-    ///
-    /// Three rather than one because ADR-0012's argument for computing runs is
-    /// that the interesting thing is not any single run but what happens when
-    /// the wind changes — and two panels showing two of these side by side is
-    /// that comparison (T-09.5).
-    pub const ALL: [Self; 3] = [
-        Self {
-            name: "Steady trades",
-            summary: "The control: steady trade winds tilting the thermocline",
-            toml: include_str!("../scenarios/browser-steady-trades.toml"),
-        },
-        Self {
-            name: "Westerly wind burst",
-            summary: "The trade winds with a ten-day westerly burst a year in",
-            toml: include_str!("../scenarios/browser-wind-burst.toml"),
-        },
-        Self {
-            name: "Seasonal cycle",
-            summary: "The trade winds breathing with the year, ±20 %",
-            toml: include_str!("../scenarios/browser-seasonal-cycle.toml"),
-        },
-    ];
-
-    /// The scenario a panel starts on.
-    #[must_use]
-    pub const fn default_scenario() -> Self {
-        Self::ALL[0]
     }
 }
