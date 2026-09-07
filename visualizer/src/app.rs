@@ -17,6 +17,7 @@
 //!
 //! Everything with a value in it lives in [`crate::run`], [`crate::heatmap`],
 //! [`crate::wind`], [`crate::cross_section`], [`crate::side_view`],
+//! [`crate::geography`], [`crate::clock`], [`crate::wording`],
 //! [`crate::time_series`] and [`crate::pending`]; this module is the part
 //! that needs a GPU, and so is deliberately thin. What it adds on top of them is a texture
 //! cache and a layout, and neither is where a wrong basin map would come from.
@@ -26,13 +27,15 @@ use egui::{Color32, RichText};
 use termocline_format::GridSpec;
 
 use crate::comparison::Side;
+use crate::geography::latitude_phrase;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::loading::Loaded;
 use crate::run::SECONDS_PER_DAY;
 use crate::{
     BasinPoint, BrowserScenario, Comparison, ComputedRun, CrossSection, DivergingScale,
     FrameBudget, Heatmap, InMegabytes, LayerBand, LoadedRun, Mismatch, Playback, PointSeries,
-    Scrubber, SideView, StressScale, WindOverlay, SEA_SURFACE_RGB, STEP_BUDGET,
+    RunClock, Scrubber, SideView, StressScale, WindOverlay, PLAIN_WORDS, SEA_SURFACE_RGB,
+    STEP_BUDGET,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{Loader, PendingRun};
@@ -830,6 +833,21 @@ const CROSS_SECTION_HEIGHT_PT: f32 = 120.0;
 /// Width of the line marking the sea surface, in points.
 const SEA_SURFACE_WIDTH_PT: f32 = 1.5;
 
+/// Width of a depth line ruled across the side view, in points.
+///
+/// A hairline: the axis is there to be read off, not to be looked at, and a
+/// heavier rule over two blocks of colour would read as part of the ocean.
+const AXIS_HAIRLINE_WIDTH_PT: f32 = 0.5;
+
+/// How far in from the western edge of the panel a depth label is drawn, in
+/// points: enough that the text does not touch the edge of the ocean.
+const AXIS_LABEL_INSET_PT: f32 = 4.0;
+
+/// The depth axis, drawn over the ocean: a light grey that reads over the warm
+/// layer's orange and over the abyss's dark blue alike, the two colours
+/// `crate::side_view` chose for exactly their difference in luminance.
+const AXIS_OVER_OCEAN_COLOR: Color32 = Color32::from_gray(224);
+
 /// Height of the equatorial side view, in points.
 ///
 /// Half again the height of a chart. It is a picture of a water column rather
@@ -1208,6 +1226,10 @@ impl FramePanel {
         // which is of the whole run rather than of that frame — is picked and
         // built beside it.
         let Self { attempt, series } = self;
+        // This panel's own run's cadence: in a comparison the two runs may be
+        // written at different intervals, and then the same frame index is a
+        // different day in each of them (`crate::Mismatch::Cadence`).
+        let clock = RunClock::of_run(run.header().output);
         let drawn = match drawn_in(attempt, ui, run, chosen) {
             Ok(drawn) => drawn,
             Err(message) => {
@@ -1220,10 +1242,15 @@ impl FramePanel {
                 return;
             }
         };
+        // The two ends of the basin, named rather than merely "west" and
+        // "east": the wall the trade winds pile the warm water against is a
+        // coast a reader can find on a map (`crate::geography`), and it is
+        // derived from the basin this run's header declares.
+        let [west, east] = crate::geography::coasts(run.header().grid.extent());
         ui.horizontal(|ui| {
-            ui.label("west");
+            ui.label(west.label());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label("east");
+                ui.label(east.label());
             });
         });
         let reserved_pt = reserved_below_map_pt(ui, layers);
@@ -1255,7 +1282,7 @@ impl FramePanel {
         // across exactly its width: the two share a zonal axis, so a longitude
         // of the ocean sits under the column of the map it came from.
         if layers.side_view {
-            draw_side_view(ui, &drawn.side_view, map);
+            draw_side_view(ui, &drawn.side_view, map, &clock.moment(chosen.index));
         }
         // Directly under the map and across exactly its width, so a longitude
         // on the chart sits under the column of the map it came from. The
@@ -1353,8 +1380,13 @@ impl BasinMap {
         };
         // Counted from one, as the metadata panel counts the run's frames.
         // The scrubber's own index starts at zero, and it shows no number.
+        // The time first and in the reader's units — days of model time out of
+        // the run's own length (`crate::clock`) — and the frame index after
+        // it, because the index is what the scrubber moves and not what the
+        // ocean is doing.
         ui.label(format!(
-            "Frame {} of {frame_count} — thermocline depth anomaly h at {:.2} days",
+            "{} — thermocline depth anomaly h (frame {} of {frame_count}, stamped {:.2} days)",
+            RunClock::of_run(run.header().output).moment(index),
             index + 1,
             t_s / SECONDS_PER_DAY
         ));
@@ -1454,6 +1486,7 @@ impl BasinMap {
             ui.checkbox(&mut self.layers.section, "Equatorial cross-section");
             ui.checkbox(&mut self.layers.series, "Point time series");
         });
+        draw_plain_words(ui);
         Some(self.scrubber.index())
     }
 
@@ -1600,25 +1633,6 @@ fn draw_color_bar(ui: &mut egui::Ui, bar: &ColorBar) {
     });
 }
 
-/// Where a view of the equator was read, in words: "along the equator" for the
-/// basin every scenario declares, and the latitude itself for one laid out
-/// some other way.
-///
-/// Shared by the cross-section and the side view because they are the same
-/// reading: the side view is the section's own data drawn as an ocean
-/// (`crate::side_view`), so the two must not be able to name different places.
-fn latitude_phrase(latitude_deg_north: f64) -> String {
-    if latitude_deg_north == 0.0 {
-        "along the equator".to_owned()
-    } else {
-        format!(
-            "along {:.2}°{}",
-            latitude_deg_north.abs(),
-            if latitude_deg_north < 0.0 { 'S' } else { 'N' }
-        )
-    }
-}
-
 /// Draw the equatorial side view: the ocean along the equator, seen side-on.
 ///
 /// The first view of the teaching panel (T-13.1), and the one a reader who has
@@ -1642,12 +1656,19 @@ fn latitude_phrase(latitude_deg_north: f64) -> String {
 /// the bottom edge either: the model's abyss is unbounded (`CONTEXT.md`,
 /// *Upper layer*), so a sea floor there would be a claim about the ocean that
 /// the run does not make.
-fn draw_side_view(ui: &mut egui::Ui, view: &SideView, map: egui::Rect) {
-    ui.label(format!(
-        "The ocean {}, seen from the side — warm upper layer above the thermocline, cold \
-         water below",
-        latitude_phrase(view.latitude_deg_north())
-    ));
+///
+/// Around the ocean go the things that make it readable (T-13.2): `moment`,
+/// which is where in the run this frame is in days and months of model time;
+/// the depth axis in metres below the sea surface; the axis of longitude and
+/// the two coasts under it; and the notes saying what the depths are measured
+/// from and what the wind has done to the ocean in this frame. Every one of them is a value the view or
+/// the clock computed, so what they say is asserted in
+/// `tests/teaching_labels.rs`.
+fn draw_side_view(ui: &mut egui::Ui, view: &SideView, map: egui::Rect, moment: &str) {
+    // Where in the run this is, in days and months of model time rather than
+    // in frames (`crate::clock`), and then what the picture is.
+    ui.label(moment);
+    ui.label(view.caption());
     let (row, _response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), SIDE_VIEW_HEIGHT_PT),
         egui::Sense::hover(),
@@ -1686,15 +1707,95 @@ fn draw_side_view(ui: &mut egui::Ui, view: &SideView, map: egui::Rect) {
         egui::Stroke::new(SEA_SURFACE_WIDTH_PT, color_of(SEA_SURFACE_RGB)),
     );
 
-    // The depth axis, and the one thing about it a reader could otherwise get
-    // wrong: the foot of the panel is where the picture stops, not where the
-    // ocean does. It is stated per panel because in a comparison the two runs
-    // may declare different mean depths, and so be drawn to different axes.
-    ui.label(format!(
-        "0 m at the sea surface, {:.0} m at the foot of the panel — the model's deep ocean has \
-         no floor",
-        view.deepest_drawn_depth_m()
-    ));
+    // The two axes, over the ocean rather than beside it: the panel is as wide
+    // as the map above it and giving a depth axis its own gutter would narrow
+    // one of the two, after which a longitude on the map and a longitude on the
+    // ocean stop being the same place.
+    draw_depth_axis(&painter, ui, panel, view);
+    draw_longitude_axis(ui, panel, view);
+
+    // What the axis measures and where the picture stops, then what the wind
+    // has done to the ocean — measured off this frame, so a run with the
+    // trades switched off is not told it has a warm pool.
+    ui.label(view.depth_axis_note());
+    if let Some(note) = view.tilt_note() {
+        ui.label(note);
+    }
+}
+
+/// Rule and label the depth axis down the western edge of the side view.
+///
+/// The depths are [`SideView::depth_ticks`]'s: round metres below the sea
+/// surface, placed by their own share of the panel's depth. The hairlines run
+/// the width of the panel so a reader can carry a depth across to the eastern
+/// end, where the thermocline is 60 m shallower.
+fn draw_depth_axis(painter: &egui::Painter, ui: &egui::Ui, panel: egui::Rect, view: &SideView) {
+    let ticks = view.depth_ticks();
+    let font = egui::TextStyle::Small.resolve(ui.style());
+    for tick in ticks {
+        #[allow(clippy::cast_possible_truncation)]
+        let y = panel.top() + (tick.fraction() * f64::from(panel.height())) as f32;
+        // The sea surface already has its own line across the top of the
+        // panel, and a second one over it would only thicken it.
+        if tick.depth_m() > 0.0 {
+            painter.line_segment(
+                [egui::pos2(panel.left(), y), egui::pos2(panel.right(), y)],
+                egui::Stroke::new(AXIS_HAIRLINE_WIDTH_PT, AXIS_OVER_OCEAN_COLOR),
+            );
+        }
+        painter.text(
+            egui::pos2(panel.left() + AXIS_LABEL_INSET_PT, y),
+            egui::Align2::LEFT_TOP,
+            tick.label(),
+            font.clone(),
+            AXIS_OVER_OCEAN_COLOR,
+        );
+    }
+}
+
+/// Label the longitude axis in the row under the side view.
+///
+/// The meridians are [`SideView::longitude_ticks`]'s — derived from the basin
+/// the header declares, never from the scenario basin — and the two coasts are
+/// named at the ends of the row, so a reader knows which way round the ocean
+/// is before reading a single number off it.
+fn draw_longitude_axis(ui: &mut egui::Ui, panel: egui::Rect, view: &SideView) {
+    let (row, _response) = ui.allocate_exact_size(
+        egui::vec2(
+            ui.available_width(),
+            ui.text_style_height(&egui::TextStyle::Small),
+        ),
+        egui::Sense::hover(),
+    );
+    let painter = ui.painter();
+    let font = egui::TextStyle::Small.resolve(ui.style());
+    for tick in view.longitude_ticks() {
+        #[allow(clippy::cast_possible_truncation)]
+        let x = panel.left() + (tick.x_fraction() * f64::from(panel.width())) as f32;
+        // The end labels are pulled inside the panel: one centred on the
+        // western wall would hang off the left of the window.
+        let align = if tick.x_fraction() <= 0.0 {
+            egui::Align2::LEFT_TOP
+        } else if tick.x_fraction() >= 1.0 {
+            egui::Align2::RIGHT_TOP
+        } else {
+            egui::Align2::CENTER_TOP
+        };
+        painter.text(
+            egui::pos2(x, row.top()),
+            align,
+            tick.label(),
+            font.clone(),
+            ui.visuals().weak_text_color(),
+        );
+    }
+    let [west, east] = view.coasts();
+    ui.horizontal(|ui| {
+        ui.label(west.label());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(east.label());
+        });
+    });
 }
 
 /// Add one band of one column of the side view to `mesh`, as the rectangle it
@@ -1715,6 +1816,24 @@ fn add_band(mesh: &mut egui::Mesh, panel: egui::Rect, zonal: (f64, f64), band: L
         ),
         color_of(band.rgb),
     );
+}
+
+/// Draw the plain-language key: the words on this screen that a visitor may
+/// not have, each with what it means.
+///
+/// Above the views rather than inside any one of them, and drawn whatever
+/// layers are on, because the words appear on several of them: the map's
+/// colour bar and the cross-section both talk about a depth *anomaly*, and the
+/// side view is a picture of the *thermocline*. One key for the screen means
+/// one explanation per term (`crate::wording`), and no panel that can be
+/// turned off takes the explanation with it.
+fn draw_plain_words(ui: &mut egui::Ui) {
+    let key = PLAIN_WORDS
+        .iter()
+        .map(crate::PlainTerm::glossed)
+        .collect::<Vec<_>>()
+        .join(" · ");
+    ui.label(RichText::new(format!("In plain words — {key}")).weak());
 }
 
 /// An opaque [`Color32`] of an RGB triple one of the device-free views chose.
@@ -2011,14 +2130,24 @@ fn draw_texture_fitted(
     )
 }
 
+/// Rows of text a chart under the map carries: one above it and one below.
+const CHART_TEXT_ROWS: f32 = 2.0;
+
+/// And the rows the side view carries: the time and the caption above it, the
+/// axis of longitude, the two coasts, the depth note and the wind note below
+/// (T-13.2). A picture a stranger can read costs more words than a chart a
+/// specialist can.
+const SIDE_VIEW_TEXT_ROWS: f32 = 6.0;
+
 /// Height the charts under the map need, in points: each is a chart and the
-/// two rows of text around it.
+/// rows of text around it.
 ///
 /// It comes out of the height the map would otherwise have taken, so that
 /// turning a chart on shrinks the map rather than pushing the colour bar off a
 /// short window.
 fn reserved_below_map_pt(ui: &egui::Ui, layers: Layers) -> f32 {
-    let text_pt = ui.text_style_height(&egui::TextStyle::Body) * 2.0;
+    let row_pt = ui.text_style_height(&egui::TextStyle::Body);
+    let text_pt = row_pt * CHART_TEXT_ROWS;
     let height_pt = |shown: bool, chart_pt: f32| {
         if shown {
             chart_pt + text_pt
@@ -2026,8 +2155,10 @@ fn reserved_below_map_pt(ui: &egui::Ui, layers: Layers) -> f32 {
             0.0
         }
     };
-    height_pt(layers.side_view, SIDE_VIEW_HEIGHT_PT)
-        + height_pt(layers.section, CROSS_SECTION_HEIGHT_PT)
+    height_pt(
+        layers.side_view,
+        SIDE_VIEW_HEIGHT_PT + row_pt * (SIDE_VIEW_TEXT_ROWS - CHART_TEXT_ROWS),
+    ) + height_pt(layers.section, CROSS_SECTION_HEIGHT_PT)
         + height_pt(layers.series, TIME_SERIES_HEIGHT_PT)
 }
 

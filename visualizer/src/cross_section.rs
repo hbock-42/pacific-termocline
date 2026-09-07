@@ -101,6 +101,10 @@ impl CrossSectionPoint {
 pub struct CrossSection {
     /// One point per cell of the basin's zonal axis, west to east.
     points: Vec<CrossSectionPoint>,
+    /// The basin the section was read across, as the run's header declares it.
+    /// Carried so that a view built from the section can label its own axis
+    /// without being handed the header a second time.
+    extent: BasinExtent,
     /// The latitude the section was actually read at, in degrees north.
     latitude_deg_north: f64,
     /// How many rows of the field were averaged to get it: one where a row
@@ -151,6 +155,7 @@ impl CrossSection {
             });
         }
         Ok(Self {
+            extent: grid.extent(),
             latitude_deg_north: axis.mean_latitude_deg_north(&rows),
             rows_averaged: rows.len(),
             points,
@@ -162,6 +167,16 @@ impl CrossSection {
     #[must_use]
     pub fn points(&self) -> &[CrossSectionPoint] {
         &self.points
+    }
+
+    /// The basin the section was read across, as the run's header declares it.
+    ///
+    /// A scenario parameter (`CONTEXT.md`, *Basin*), which is why it is
+    /// carried rather than assumed: the longitudes a view labels itself with
+    /// are this basin's and not the scenario basin's.
+    #[must_use]
+    pub const fn extent(&self) -> BasinExtent {
+        self.extent
     }
 
     /// The latitude the section was read at, in degrees north. Zero for a
