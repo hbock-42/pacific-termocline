@@ -6,12 +6,29 @@
 //! from — a directory, a pair of dropped files, an HTTP fetch — is the
 //! caller's problem, which is what lets the same code serve the browser and
 //! the native build (ADR-0006).
+//!
+//! # Two origins, one run
+//!
+//! Since [ADR-0012] a run has a second origin: the browser computes one rather
+//! than downloading it, so frames arrive from the engine a few at a time
+//! instead of arriving whole. [`LoadedRun::computing`] starts such a run from
+//! the header the engine promises, and [`LoadedRun::append_frame`] adds each
+//! frame as it is produced. Past that point there is one run: the frames are
+//! held in the very bytes a written run holds them in, so
+//! [`LoadedRun::frame`], the scales, the metadata panel and every view above
+//! them cannot tell the two apart — which is the whole reason the browser
+//! needed no new views.
+//!
+//! [ADR-0012]: ../../docs/planning/adr/0012-the-browser-runs-the-engine.md
 
 use std::cell::Cell;
 use std::fmt;
 use std::io::Read;
 
-use termocline_format::{decode_frame, Frame, GridSpec, RunHeader, RunReadError, RunReader};
+use termocline_format::{
+    decode_frame, encode_frame, EncodeError, FormatError, Frame, GridSpec, RunHeader, RunReadError,
+    RunReader,
+};
 
 use crate::{DivergingScale, StressScale};
 
@@ -144,6 +161,69 @@ impl LoadedRun {
             scale,
             stress_scale,
         })
+    }
+
+    /// A run with no frames yet, which the engine's are appended to as it
+    /// computes them (ADR-0012).
+    ///
+    /// `header` is the run's promise about itself — the grid every frame is
+    /// held to, the parameters the panel reports, and the frame count the
+    /// progress is counted against — and comes from the engine before the
+    /// first step, exactly as a written run's does.
+    ///
+    /// The scales start closed, at no range at all, and are widened by each
+    /// frame appended. Until the run finishes they are therefore the scales of
+    /// *the frames so far*, not of the run: the colours settle as it develops,
+    /// which is what [`LoadedRun::is_complete`] is for saying out loud.
+    #[must_use]
+    pub fn computing(source: impl Into<String>, header: RunHeader) -> Self {
+        Self {
+            source: source.into(),
+            header,
+            frames: Vec::new(),
+            frame_offsets: Vec::new(),
+            scale: DivergingScale::symmetric_over(&[]),
+            stress_scale: StressScale::calm(),
+        }
+    }
+
+    /// Add `frame` to the end of the run, widening its scales to cover it.
+    ///
+    /// The frame is encoded into the same bytes a written run holds — one
+    /// encode, at the output cadence — so what the views read back is what
+    /// they would have read off a file, and what the tab holds is the
+    /// [`FrameBudget`](crate::FrameBudget) counted the cost of.
+    ///
+    /// # Errors
+    /// [`FrameAppendError::Mismatch`] if the frame does not fit the header
+    /// this run was started from — which is the check that keeps
+    /// [`LoadedRun::frame`]'s decode infallible — and
+    /// [`FrameAppendError::Encode`] if the frame could not be encoded.
+    pub fn append_frame(&mut self, frame: &Frame) -> Result<(), FrameAppendError> {
+        frame.validate_against(&self.header)?;
+        let bytes = encode_frame(frame)?;
+        self.frame_offsets.push(self.frames.len());
+        self.frames.extend_from_slice(&bytes);
+        self.scale = self
+            .scale
+            .widened(DivergingScale::symmetric_over(frame.h()));
+        self.stress_scale = self
+            .stress_scale
+            .widened(StressScale::covering(self.header.grid, frame)?);
+        Ok(())
+    }
+
+    /// Whether the run holds every frame its header promises.
+    ///
+    /// A run loaded from bytes is complete before it is shown — the reader
+    /// counted its frames against the header. A computed one is not, until the
+    /// engine has taken every step, and until then its scales are provisional:
+    /// they cover the frames so far and will widen if a later one is louder
+    /// (ADR-0012, and [`LoadedRun::anomaly_scale`] on why the scale is the
+    /// run's rather than the frame's).
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.frame_count() >= self.header.output.frame_count
     }
 
     /// A colour scale for the run's thermocline depth anomaly, reaching as far
@@ -293,6 +373,51 @@ impl LoadedRun {
         #[allow(clippy::cast_precision_loss)]
         let intervals = output.frame_count.saturating_sub(1) as f64;
         intervals * output.interval_s / SECONDS_PER_DAY
+    }
+}
+
+/// Why a computed frame could not be added to the run it belongs to.
+///
+/// Both variants mean this code disagrees with itself rather than that a user
+/// got something wrong — the frames come from the engine, against the header
+/// the engine wrote — but they are returned rather than panicked because the
+/// alternative is a browser tab that dies without saying why
+/// (CODING_STANDARDS.md § *Correctness and failure*).
+#[derive(Debug)]
+pub enum FrameAppendError {
+    /// The frame does not fit the header the run was started from.
+    Mismatch(FormatError),
+    /// The frame could not be encoded.
+    Encode(EncodeError),
+}
+
+impl fmt::Display for FrameAppendError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Mismatch(error) => error.fmt(f),
+            Self::Encode(error) => write!(f, "a computed frame could not be encoded: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for FrameAppendError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Mismatch(error) => Some(error),
+            Self::Encode(error) => Some(error),
+        }
+    }
+}
+
+impl From<FormatError> for FrameAppendError {
+    fn from(error: FormatError) -> Self {
+        Self::Mismatch(error)
+    }
+}
+
+impl From<EncodeError> for FrameAppendError {
+    fn from(error: EncodeError) -> Self {
+        Self::Encode(error)
     }
 }
 

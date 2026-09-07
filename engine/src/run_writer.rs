@@ -482,19 +482,7 @@ impl<W: Write> RunWriter<W> {
                 header_carries: self.carries_sst_anomaly,
             });
         }
-        let frame = Frame::new(
-            t_s,
-            &self.grid,
-            state.h().as_slice().to_vec(),
-            state.u().as_slice().to_vec(),
-            state.v().as_slice().to_vec(),
-            wind_stress.tau_x_pa().as_slice().to_vec(),
-            wind_stress.tau_y_pa().as_slice().to_vec(),
-        )?;
-        let frame = match state.sst_anomaly_k() {
-            Some(sst) => frame.with_sst_anomaly(&self.grid, sst.as_slice().to_vec())?,
-            None => frame,
-        };
+        let frame = frame_of(t_s, &self.grid, state, wind_stress)?;
         bincode::serde::encode_into_std_write(&frame, &mut self.frame_sink, frame_encoding())?;
         self.written += 1;
         Ok(())
@@ -515,6 +503,49 @@ impl<W: Write> RunWriter<W> {
         }
         self.frame_sink.flush()?;
         Ok(self.frame_sink)
+    }
+}
+
+/// The frame a run records for `state` at model time `t_s`, forced by
+/// `wind_stress`.
+///
+/// The one place the solver's fields cross into the format's, beside the two
+/// `From` conversions above: `h`, `u` and `v` from the state, `τx` and `τy`
+/// from the stress that drove the run to it, and — for a coupled run — the
+/// mixed-layer anomaly `T'` the state carries. An uncoupled run's frame
+/// records `T'` as absent rather than as a basin of zeros it never integrated
+/// (ADR-0004, ADR-0011).
+///
+/// Free, and outside the `fs` feature, because a browser builds frames too and
+/// has nowhere to write them (ADR-0012): [`RunWriter::append`] is this
+/// function plus a byte sink, so the frame a tab holds and the frame a file
+/// holds are built by the same code.
+///
+/// This allocates a copy of every field, so it belongs at the output cadence
+/// and not inside the time-stepping loop (CODING_STANDARDS.md §
+/// *Performance*).
+///
+/// # Errors
+/// [`FormatError`] if the state or the stress does not cover the basin `grid`
+/// describes.
+pub fn frame_of(
+    t_s: f64,
+    grid: &GridSpec,
+    state: &OceanState,
+    wind_stress: &WindStressField,
+) -> Result<Frame, FormatError> {
+    let frame = Frame::new(
+        t_s,
+        grid,
+        state.h().as_slice().to_vec(),
+        state.u().as_slice().to_vec(),
+        state.v().as_slice().to_vec(),
+        wind_stress.tau_x_pa().as_slice().to_vec(),
+        wind_stress.tau_y_pa().as_slice().to_vec(),
+    )?;
+    match state.sst_anomaly_k() {
+        Some(sst) => frame.with_sst_anomaly(grid, sst.as_slice().to_vec()),
+        None => Ok(frame),
     }
 }
 

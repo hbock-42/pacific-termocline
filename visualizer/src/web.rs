@@ -1,11 +1,17 @@
 //! The browser entry point.
 //!
 //! `wasm-bindgen` calls [`start`] as soon as the module is instantiated, so
-//! the page needs no JavaScript of its own beyond a canvas to draw on. The
-//! run to open is taken from the page's `?run=` query parameter — the HTTP
-//! fetch of ADR-0006, which is also what makes the browser build testable
-//! without a hand on a mouse. A second run named in `?compare=` opens beside
-//! it (T-09.5), so a comparison is a link a reader can be sent.
+//! the page needs no JavaScript of its own beyond a canvas to draw on.
+//!
+//! There is no run to open. Per [ADR-0012] the file format is not served to
+//! the browser at all — the control run is 941 MB against a 100 MB file cap —
+//! so the app links the engine and computes a run instead, and the `?run=`
+//! parameter this module used to read went with the fetch it named. What
+//! first paint costs is a compile and a few steps rather than a transfer, and
+//! the first scenario is started here so a visitor sees the ocean answering
+//! the alizés without having pressed anything.
+//!
+//! [ADR-0012]: ../../docs/planning/adr/0012-the-browser-runs-the-engine.md
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -14,13 +20,6 @@ use crate::VisualizerApp;
 
 /// Id of the canvas in `index.html` that the app draws on.
 const CANVAS_ID: &str = "termocline_canvas";
-
-/// Query parameter naming a run served over HTTP, as a base URL holding the
-/// run's two files.
-const RUN_PARAM: &str = "run";
-
-/// Query parameter naming a second run to show beside the first.
-const COMPARE_PARAM: &str = "compare";
 
 /// Start the app on the page's canvas. Called by `wasm-bindgen` on load.
 #[wasm_bindgen(start)]
@@ -31,19 +30,13 @@ pub fn start() {
 
     wasm_bindgen_futures::spawn_local(async {
         let canvas = canvas().expect("index.html defines the canvas the app draws on");
-        let (run_url, compare_url) = (url_from_query(RUN_PARAM), url_from_query(COMPARE_PARAM));
         let result = eframe::WebRunner::new()
             .start(
                 canvas,
                 eframe::WebOptions::default(),
-                Box::new(move |cc| {
+                Box::new(|_cc| {
                     let mut app = VisualizerApp::new();
-                    if let Some(url) = run_url {
-                        app.fetch_run(&url, &cc.egui_ctx);
-                    }
-                    if let Some(url) = compare_url {
-                        app.fetch_run_to_compare(&url, &cc.egui_ctx);
-                    }
+                    app.compute_default_run();
                     Ok(Box::new(app))
                 }),
             )
@@ -61,11 +54,4 @@ fn canvas() -> Option<web_sys::HtmlCanvasElement> {
         .get_element_by_id(CANVAS_ID)?
         .dyn_into::<web_sys::HtmlCanvasElement>()
         .ok()
-}
-
-/// The `name` parameter of the page's URL, if it has one.
-fn url_from_query(name: &str) -> Option<String> {
-    let search = web_sys::window()?.location().search().ok()?;
-    let params = web_sys::UrlSearchParams::new_with_str(&search).ok()?;
-    params.get(name).filter(|url| !url.is_empty())
 }

@@ -65,12 +65,15 @@ jobs:
         run: cargo build -p engine --no-default-features --target wasm32-unknown-unknown
 
       # The build above compiles the library, not the test targets, and the
-      # test run above compiles this one with every feature on. So the
-      # acceptance test for the split is also run in the configuration it is
-      # about: natively, so it can execute, with `fs` off, so an item behind
-      # the feature creeping into it is a compile error rather than a silence.
+      # test run above compiles these with every feature on. So the acceptance
+      # tests for the split are also run in the configuration they are about:
+      # natively, so they can execute, with `fs` off, so an item behind the
+      # feature creeping into them is a compile error rather than a silence.
+      # `run_loop` is the browser's loop (ADR-0012), and half of that file is
+      # skipped here because it holds the loop against the `run` command, which
+      # needs the filesystem this configuration does not have.
       - name: Run the engine's filesystem-free tests without that feature
-        run: cargo test -p engine --no-default-features --test filesystem_free_api
+        run: cargo test -p engine --no-default-features --test filesystem_free_api --test run_loop
 
   # Non-blocking by design (T-10.1): a benchmark is a measurement, and a
   # measurement taken on a shared runner whose neighbours we do not control is
