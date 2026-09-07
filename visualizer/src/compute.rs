@@ -431,17 +431,17 @@ impl BrowserScenario {
     pub const ALL: [Self; 3] = [
         Self {
             name: "Steady trades",
-            summary: "The control: steady easterly alizés tilting the thermocline",
+            summary: "The control: steady trade winds tilting the thermocline",
             toml: include_str!("../scenarios/browser-steady-trades.toml"),
         },
         Self {
             name: "Westerly wind burst",
-            summary: "The trades with a ten-day westerly burst a year in",
+            summary: "The trade winds with a ten-day westerly burst a year in",
             toml: include_str!("../scenarios/browser-wind-burst.toml"),
         },
         Self {
             name: "Seasonal cycle",
-            summary: "The trades breathing with the year, ±20 %",
+            summary: "The trade winds breathing with the year, ±20 %",
             toml: include_str!("../scenarios/browser-seasonal-cycle.toml"),
         },
     ];

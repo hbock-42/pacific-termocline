@@ -45,7 +45,12 @@
 //!
 //! [ADR-0006]: ../../docs/planning/adr/0006-web-visualizer.md
 
+use termocline_format::BasinExtent;
+
+use crate::chart::axis_ticks;
 use crate::cross_section::CrossSection;
+use crate::geography::{coasts, latitude_phrase, longitude_ticks, Coast, LongitudeTick};
+use crate::wording::THERMOCLINE;
 
 /// The colour of the warm upper layer.
 ///
@@ -176,7 +181,57 @@ pub struct LayerBand {
     pub bottom_fraction: f64,
 }
 
+/// The tick spacings the depth axis may use, in metres, coarsest last: the
+/// round depths a reader counts in. Which one the axis uses is
+/// [`axis_ticks`]'s to decide.
+const DEPTH_STEPS_M: [f64; 5] = [25.0, 50.0, 100.0, 200.0, 500.0];
+
+/// The most ticks the depth axis is drawn with, counting the sea surface.
+///
+/// Six across the panel's height leaves the labels a clear gap at the height a
+/// window gives the view, and six labels is already more than a reader of a
+/// teaching picture needs to place the interface.
+const MAX_DEPTH_TICKS: usize = 6;
+
+/// One labelled depth of the vertical axis.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DepthTick {
+    /// The depth below the sea surface, in metres.
+    depth_m: f64,
+    /// The same depth as a fraction of the panel's, measured down from the sea
+    /// surface — the convention every band and interface here is placed in.
+    fraction: f64,
+}
+
+impl DepthTick {
+    /// The depth below the sea surface, in metres.
+    #[must_use]
+    pub const fn depth_m(&self) -> f64 {
+        self.depth_m
+    }
+
+    /// Where it sits on the panel, as a fraction of the panel's depth measured
+    /// down from the sea surface.
+    #[must_use]
+    pub const fn fraction(&self) -> f64 {
+        self.fraction
+    }
+
+    /// The depth as a label: metres, with the unit on it.
+    #[must_use]
+    pub fn label(&self) -> String {
+        format!("{:.0} m", self.depth_m)
+    }
+}
+
 /// One frame's ocean along the equator, drawn side-on.
+///
+/// It says what it is in words as well as in colour: the sentences a panel
+/// puts around the picture are built here, out of the terms
+/// [`crate::wording`] defines, because each of them states something only this
+/// view knows — the depth it drew the interface at, the basin it read, the
+/// coasts it ends at. The terms have one home; the sentences that use them
+/// belong with the thing they describe.
 #[derive(Debug, Clone)]
 pub struct SideView {
     /// One column per cell of the basin's zonal axis, west to east.
@@ -190,6 +245,9 @@ pub struct SideView {
     /// The latitude the section this was built from was read at, in degrees
     /// north.
     latitude_deg_north: f64,
+    /// The basin the section was read across, as the header declares it: what
+    /// the longitude axis and the coast names are derived from.
+    extent: BasinExtent,
 }
 
 impl SideView {
@@ -232,6 +290,7 @@ impl SideView {
             mean_depth_m,
             deepest_drawn_depth_m,
             latitude_deg_north: section.latitude_deg_north(),
+            extent: section.extent(),
         }
     }
 
@@ -264,6 +323,108 @@ impl SideView {
     #[must_use]
     pub const fn latitude_deg_north(&self) -> f64 {
         self.latitude_deg_north
+    }
+
+    /// The two ends of the basin, west first: which coast each is, and where.
+    ///
+    /// Derived from the header's basin rather than named here, because the
+    /// basin is a scenario parameter (`CONTEXT.md`, *Basin*) — see
+    /// [`crate::geography`].
+    #[must_use]
+    pub fn coasts(&self) -> [Coast; 2] {
+        coasts(self.extent)
+    }
+
+    /// The meridians of the longitude axis under the ocean, west to east.
+    #[must_use]
+    pub fn longitude_ticks(&self) -> Vec<LongitudeTick> {
+        longitude_ticks(self.extent)
+    }
+
+    /// The labelled depths of the vertical axis, from the sea surface down.
+    ///
+    /// Round depths rather than the interface's own: the axis exists so a
+    /// reader can read a depth *off* it, which needs numbers they can
+    /// interpolate between. Which round depths is
+    /// [`crate::chart::axis_ticks`]'s to decide, the same arithmetic that
+    /// rules the meridians under the ocean.
+    #[must_use]
+    pub fn depth_ticks(&self) -> Vec<DepthTick> {
+        let deepest_m = self.deepest_drawn_depth_m;
+        if !deepest_m.is_finite() || deepest_m <= 0.0 {
+            return Vec::new();
+        }
+        axis_ticks(0.0, deepest_m, &DEPTH_STEPS_M, MAX_DEPTH_TICKS)
+            .into_iter()
+            .map(|depth_m| DepthTick {
+                depth_m,
+                fraction: depth_m / deepest_m,
+            })
+            .collect()
+    }
+
+    /// What the picture is, in one line a visitor can read without knowing any
+    /// of this project's vocabulary.
+    ///
+    /// It names the thermocline and explains it in the same breath: the word
+    /// is what the whole view is about, so it is glossed rather than avoided
+    /// (`crate::wording`).
+    #[must_use]
+    pub fn caption(&self) -> String {
+        format!(
+            "The ocean {}, seen from the side: warm water on top, cold water below, and the {} \
+             between them at the depth the model puts it",
+            latitude_phrase(self.latitude_deg_north),
+            THERMOCLINE.glossed()
+        )
+    }
+
+    /// What the vertical axis measures, and the one thing about it a reader
+    /// could otherwise get wrong: the foot of the panel is where the picture
+    /// stops, not where the ocean does.
+    ///
+    /// Stated per view because in a comparison the two runs may declare
+    /// different mean depths, and so be drawn to different axes.
+    #[must_use]
+    pub fn depth_axis_note(&self) -> String {
+        format!(
+            "Depth in metres below the sea surface: 0 m at the surface, {:.0} m at the foot of \
+             the panel — the model's deep ocean has no floor",
+            self.deepest_drawn_depth_m
+        )
+    }
+
+    /// How deep the thermocline is at each coast, in metres below the sea
+    /// surface: `… is 188 m below the surface at Indonesia / New Guinea and
+    /// 122 m at South America`.
+    ///
+    /// The depth a reader is owed. Every scientific view of this run states
+    /// `h`, an anomaly of tens of metres about a mean depth it does not print
+    /// (`CONTEXT.md`), and a stranger cannot turn "+38 m" into a depth without
+    /// knowing `H`. This states `H + h` where the picture draws it, at the two
+    /// places the picture is easiest to read.
+    ///
+    /// It describes and does not explain: what put the ocean in this shape is
+    /// a caption, and captions derived from run state are T-13.4's. A frame
+    /// whose ends are not both drawn — the model has broken down at one of
+    /// them ([`SideViewColumn::interface_fraction`]) — gets no note rather
+    /// than a depth read across a gap.
+    #[must_use]
+    pub fn coast_depth_note(&self) -> Option<String> {
+        let (west, east) = (self.columns.first()?, self.columns.last()?);
+        // Both ends have to be drawn: a depth stated for a column the model
+        // has broken down in is not a depth of anything.
+        west.interface_fraction()?;
+        east.interface_fraction()?;
+        let [west_coast, east_coast] = self.coasts();
+        Some(format!(
+            "The {} is {:.0} m below the surface at {} and {:.0} m at {}",
+            THERMOCLINE.glossed(),
+            west.interface_depth_m(),
+            west_coast.name(),
+            east.interface_depth_m(),
+            east_coast.name(),
+        ))
     }
 
     /// The width of one column, as a fraction of the panel: the columns tile

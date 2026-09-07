@@ -19,14 +19,25 @@
 //! it: they consume a run, not a file. And as before, the parts with a value
 //! in them are testable without a GPU.
 //!
+//! # Saying where, when and what in words a visitor has
+//!
+//! Three of those parts are about the *reader* rather than about the ocean.
+//! [`geography`] turns the basin the header declares into longitudes and coast
+//! names, [`clock`] turns a frame index into days and months of model time,
+//! and [`wording`] holds the plain-language meaning of the few terms the
+//! panels cannot do without. All three are values, so what the screen says is
+//! asserted rather than looked at.
+//!
 //! [ADR-0006]: ../../docs/planning/adr/0006-web-visualizer.md
 //! [ADR-0012]: ../../docs/planning/adr/0012-the-browser-runs-the-engine.md
 
 mod app;
 mod chart;
+mod clock;
 mod comparison;
 mod compute;
 mod cross_section;
+mod geography;
 mod heatmap;
 #[cfg(not(target_arch = "wasm32"))]
 mod loading;
@@ -38,14 +49,17 @@ mod scrubber;
 mod side_view;
 mod time_series;
 mod wind;
+mod wording;
 
 pub use app::VisualizerApp;
+pub use clock::RunClock;
 pub use comparison::{Comparison, Difference, Mismatch, Side};
 pub use compute::{
     BrowserScenario, BudgetExceeded, ComputeError, ComputedRun, FrameBudget, InMegabytes,
     STEP_BUDGET,
 };
 pub use cross_section::{CrossSection, CrossSectionPoint};
+pub use geography::{Coast, LongitudeTick, Wall};
 pub use heatmap::{DivergingScale, Heatmap};
 /// Reading a *written* run is native-only since ADR-0012: the browser computes
 /// its runs, and the file format is not served to it at all.
@@ -57,13 +71,14 @@ pub use playback::{Playback, MAX_STALL_S, PLAYBACK_SPEEDS_FPS};
 pub use run::{FrameAppendError, LoadedRun, MetadataRow, RunBytes};
 pub use scrubber::Scrubber;
 pub use side_view::{
-    LayerBand, SideView, SideViewColumn, COLD_LAYER_RGB, SEA_SURFACE_RGB, WARM_LAYER_RGB,
+    DepthTick, LayerBand, SideView, SideViewColumn, COLD_LAYER_RGB, SEA_SURFACE_RGB, WARM_LAYER_RGB,
 };
 pub use time_series::{BasinPoint, PointSeries, SeriesSample, SstScale};
 pub use wind::{
     StressScale, WindArrow, WindOverlay, ARROW_SPACING_CELLS, MAX_ARROW_LENGTH_CELLS,
     MIN_ARROW_LENGTH_CELLS,
 };
+pub use wording::{PlainTerm, ANOMALY, PLAIN_WORDS, THERMOCLINE, TRADE_WINDS};
 
 /// Re-exported so the visualizer and engine agree on one format version.
 pub use termocline_format::FORMAT_VERSION;

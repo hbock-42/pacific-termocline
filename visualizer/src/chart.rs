@@ -1,9 +1,10 @@
 //! The arithmetic every chart of the basin shares.
 //!
-//! Two pieces, both of them things more than one view needs and neither of
-//! them anything a view should re-derive: where a longitude falls across a
-//! basin that crosses the antimeridian, and where a value falls on an axis
-//! drawn symmetrically about zero.
+//! Three pieces, all of them things more than one view needs and none of them
+//! anything a view should re-derive: where a longitude falls across a basin
+//! that crosses the antimeridian, where a value falls on an axis drawn
+//! symmetrically about zero, and the round values a labelled axis is ruled
+//! at.
 //!
 //! Like the views that use it, none of this knows what a GPU is.
 
@@ -64,4 +65,51 @@ pub(crate) fn axis_fraction(value: f64, half_range: f64) -> Option<f64> {
         (value / half_range).clamp(-1.0, 1.0)
     };
     Some(0.5 - above_zero / 2.0)
+}
+
+/// The round values an axis is ruled at between `start` and `end`, in the
+/// axis's own unit.
+///
+/// `steps` are the spacings the axis may use, finest first — the round numbers
+/// a printed chart rules at — and the first that fits the span in `max_ticks`
+/// is the one used. So a wide axis is ruled coarsely and a narrow one finely
+/// without either being told which, and an axis of longitude and an axis of
+/// depth are the same arithmetic in two units: degrees for
+/// [`crate::geography::longitude_ticks`], metres for
+/// [`crate::SideView::depth_ticks`].
+///
+/// The ticks are multiples of the spacing rather than offsets from `start`,
+/// because that is what makes them round: an axis from 120°E ruled every 20°
+/// passes through 180°, which is a meridian a reader knows.
+pub(crate) fn axis_ticks(start: f64, end: f64, steps: &[f64], max_ticks: usize) -> Vec<f64> {
+    for &step in steps {
+        let count = tick_count(start, end, step);
+        if count <= max_ticks {
+            let first = first_tick(start, step);
+            return (0..count)
+                .map(|index| {
+                    #[allow(clippy::cast_precision_loss)]
+                    let value = (index as f64).mul_add(step, first);
+                    value
+                })
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
+/// How many multiples of `step` fall in `start..=end`.
+fn tick_count(start: f64, end: f64, step: f64) -> usize {
+    let first = first_tick(start, step);
+    if !first.is_finite() || first > end {
+        return 0;
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let count = ((end - first) / step).floor() as usize + 1;
+    count
+}
+
+/// The first multiple of `step` at or beyond `start`.
+fn first_tick(start: f64, step: f64) -> f64 {
+    (start / step).ceil() * step
 }
