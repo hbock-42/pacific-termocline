@@ -188,10 +188,26 @@ cd visualizer && trunk serve
 
 The first build takes a couple of minutes; when it prints `server listening
 at: http://127.0.0.1:8080/`, open <http://localhost:8080>. The control
-scenario starts computing on load and the map fills in as it goes — a progress
-bar counts the frames, and the frame chooser follows the newest one until you
-scrub back into the run. Nothing is downloaded and nothing is dropped on the
-page: the run on screen was produced by the same engine `termocline run` is.
+scenario starts computing on load — a progress bar counts the frames, and the
+view follows the newest one until you scrub back into the run. Nothing is
+downloaded and nothing is dropped on the page: the run on screen was produced
+by the same engine `termocline run` is.
+
+The page opens on the **teaching view**: the equatorial Pacific seen from the
+side, warm layer over cold, with the depths in metres below the sea surface,
+the longitudes in °E and °W, the two coasts named at either end, the date in
+months of model time, and a few sentences under it saying what the ocean is
+doing — every one of them read off this run rather than off the frame number.
+A **Scientific views** button in the top-right corner switches to the
+instrument the rest of this section describes: the basin map of `h` and its
+colour scale, the wind stress over it, the equatorial cross-section, the time
+series of a cell you click, and two runs side by side. **Teaching view** in the
+same corner switches back, on the frame you were on. Nothing is lost either
+way — both are drawings of the same computed run.
+
+The native build opens the other way round, on the scientific views: whoever
+started `termocline-viz` went looking for it, and may have named a run on the
+command line. The button is in the same corner there.
 
 The scenarios the page offers are presets built in code, in
 `visualizer/src/presets.rs`: there is no file to find, and each button states
@@ -205,17 +221,21 @@ degrees still resolves the equatorial waveguide (`Le` ≈ 361 km), but a
 *validated* run is a native run of `engine/scenarios/` — nothing scientific
 rests on the browser.
 
-One of the presets is the El Niño story — the trade winds relax and the warm
+The presets are the ocean of Epics 01–07 and nothing more: none of them turns
+on the Epic 12 SST coupling, so what a frame carries is `h`, `u`, `v` and the
+wind stress, and the teaching view's story is told in thermocline depth. One of
+the presets is the El Niño story — the trade winds relax and the warm
 water slides back east — and it is captioned for what it is: a *forced*
 response to a wind change the preset imposes, not this model producing ENSO.
 The coupled model's own oscillation runs at 1.03 years, outside the observed
 2–7 year band, and [`docs/enso-oscillation-report.md`](enso-oscillation-report.md)
 records that acceptance criterion as unmet.
 
-Tick **Compare two runs** and each panel gets its own scenario picker, so the
-trades and the trades-plus-a-westerly-burst compute side by side on one frame
-index and one colour scale. That is the same comparison the native build gives
-two run directories: `termocline-viz /tmp/run-quick /tmp/run-burst`.
+In the scientific views, tick **Compare two runs** and each panel gets its own
+scenario picker, so the trades and the trades-plus-a-westerly-burst compute
+side by side on one frame index and one colour scale. That is the same
+comparison the native build gives two run directories: `termocline-viz
+/tmp/run-quick /tmp/run-burst`.
 
 Natively nothing about loading a written run has changed: a directory on the
 command line, the **Open run directory…** button, a `?run=`-style URL in the

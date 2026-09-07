@@ -33,9 +33,9 @@ use crate::loading::Loaded;
 use crate::run::SECONDS_PER_DAY;
 use crate::{
     BasinPoint, Caption, Comparison, ComputedRun, CrossSection, DivergingScale, EquatorialReading,
-    FrameBudget, Heatmap, InMegabytes, LayerBand, LoadedRun, Mismatch, Playback, PointSeries,
-    RunClock, ScenarioPreset, Scrubber, SideView, StressScale, WindOverlay, MAX_CAPTIONS,
-    PLAIN_WORDS, SEA_SURFACE_RGB, STEP_BUDGET,
+    FrameBudget, Heatmap, InMegabytes, LayerBand, LoadedRun, Mismatch, Mode, Platform, Playback,
+    PointSeries, RunClock, ScenarioPreset, ScientificView, Scrubber, SideView, StressScale,
+    WindOverlay, MAX_CAPTIONS, PLAIN_WORDS, SEA_SURFACE_RGB, STEP_BUDGET,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{Loader, PendingRun};
@@ -157,6 +157,14 @@ pub struct VisualizerApp {
     /// moved between them would split one run across both panels.
     #[cfg(not(target_arch = "wasm32"))]
     drop_side: Side,
+    /// Which of the two readings of a run is on screen (`crate::mode`).
+    ///
+    /// Held here rather than in [`BasinMap`] because it decides what the whole
+    /// shell shows — the header row, the ways a run is loaded and the
+    /// comparison as much as the views under the map — and because it is the
+    /// one piece of state in the shell that is about the *reader* rather than
+    /// about a run: it survives every run being closed.
+    mode: Mode,
     /// The frame chooser both panels share, and what each of them last drew.
     basin_map: BasinMap,
 }
@@ -170,16 +178,73 @@ impl Default for VisualizerApp {
             comparing: false,
             #[cfg(not(target_arch = "wasm32"))]
             drop_side: Side::Left,
+            mode: Mode::opening_on(Platform::of_target()),
             basin_map: BasinMap::default(),
         }
     }
 }
 
 impl VisualizerApp {
-    /// A shell with nothing loaded.
+    /// A shell with nothing loaded, opening as this build's platform opens
+    /// (`crate::mode`).
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A shell as `platform` starts it: in the mode that platform opens on
+    /// and, in a browser, already computing.
+    ///
+    /// The two entry points differ in exactly this call — `src/web.rs` passes
+    /// [`Platform::Browser`] and `src/main.rs` passes [`Platform::Desktop`] —
+    /// so *what a reader arrives at* is one function of one value rather than
+    /// two start-up sequences that could drift apart. It is also why the rule
+    /// is testable from either build: nothing here reads `cfg!`.
+    ///
+    /// A browser starts the default scenario because per [ADR-0012] there is
+    /// nothing there to open: a visitor arrives to a run already developing
+    /// rather than to an empty window and a button. A desktop does not,
+    /// because whoever started it may be about to name a run on the command
+    /// line, and computing a scenario they did not ask for would be work
+    /// thrown away.
+    ///
+    /// [ADR-0012]: ../../docs/planning/adr/0012-the-browser-runs-the-engine.md
+    #[must_use]
+    pub fn opening_on(platform: Platform) -> Self {
+        let mut app = Self {
+            mode: Mode::opening_on(platform),
+            ..Self::default()
+        };
+        if platform == Platform::Browser {
+            app.compute_default_run();
+        }
+        app
+    }
+
+    /// Which reading of a run is on screen.
+    #[must_use]
+    pub const fn mode(&self) -> Mode {
+        self.mode
+    }
+
+    /// Show `mode` instead.
+    ///
+    /// Nothing is forgotten and nothing is rebuilt: both readings are drawn
+    /// from the same [`LoadedRun`] and out of the same frame cache, so a
+    /// reader who switches to check a number and switches back is where they
+    /// were, on the frame they were on.
+    pub const fn set_mode(&mut self, mode: Mode) {
+        self.mode = mode;
+    }
+
+    /// Whether two runs are being drawn side by side.
+    ///
+    /// The comparison is a scientific view, so the teaching mode draws one
+    /// panel however many the reader has open — and the second panel's run is
+    /// kept rather than closed, because switching back must not cost them the
+    /// run they loaded.
+    const fn showing_comparison(&self) -> bool {
+        self.comparing && self.mode.draws(ScientificView::RunComparison)
     }
 
     /// Start computing the first panel's scenario, as the browser does on
@@ -297,7 +362,10 @@ impl VisualizerApp {
     #[cfg(not(target_arch = "wasm32"))]
     fn absorb_dropped_files(&mut self, ctx: &egui::Context) {
         let dropped = ctx.input(|input| input.raw.dropped_files.clone());
-        let side = if self.comparing {
+        // The panel a reader can see: the drop target is only theirs to choose
+        // while the second panel is on screen, and the teaching mode draws one
+        // however many are open.
+        let side = if self.showing_comparison() {
             self.drop_side
         } else {
             Side::Left
@@ -431,7 +499,7 @@ impl VisualizerApp {
     /// beside a finished one grows the pair's extent one frame at a time.
     fn shown_frame_count(&self) -> u64 {
         let runs = self.panels.each_ref().map(|panel| panel.shown.run());
-        match (self.comparing, runs) {
+        match (self.showing_comparison(), runs) {
             (true, [Some(left), Some(right)]) => left.frame_count().min(right.frame_count()),
             (true, _) => 0,
             (false, [left, _]) => left.map_or(0, LoadedRun::frame_count),
@@ -448,10 +516,18 @@ impl VisualizerApp {
     fn draw_controls(&mut self, ui: &mut egui::Ui) -> bool {
         let mut url_has_keyboard = false;
         for side in Side::BOTH {
-            if side == Side::Right && !self.comparing {
+            if side == Side::Right && !self.showing_comparison() {
                 continue;
             }
             url_has_keyboard |= self.draw_side_controls(ui, side);
+        }
+        if !self.mode.draws(ScientificView::RunComparison) {
+            // The teaching mode's whole bar is the scenarios and what they
+            // say about themselves. The comparison switch and the frame
+            // budget below it are facts about the instrument — a reader who
+            // has come for the story is not owed them, and the cost of the
+            // scenario they picked is already under the buttons.
+            return url_has_keyboard;
         }
         let toggled = ui
             .checkbox(&mut self.comparing, "Compare two runs")
@@ -494,7 +570,7 @@ impl VisualizerApp {
         ui.vertical(|ui| {
             let url_has_keyboard = ui
                 .horizontal(|ui| {
-                    if self.comparing {
+                    if self.showing_comparison() {
                         ui.label(RichText::new(format!("Run {}", side.label())).strong());
                     }
                     // One button per scenario, and pressing one runs it: a
@@ -515,13 +591,45 @@ impl VisualizerApp {
                             self.compute_preset(side, preset);
                         }
                     }
-                    self.draw_loading_controls(ui, side)
+                    // The ways a written run reaches a panel are the
+                    // instrument's: a reader in the teaching mode is being
+                    // shown a scenario, and a directory picker beside it
+                    // would be an affordance for a file they do not have.
+                    if self.mode == Mode::Scientific {
+                        self.draw_loading_controls(ui, side)
+                    } else {
+                        false
+                    }
                 })
                 .inner;
             draw_preset_notes(ui, self.panels[side.index()].scenario);
             url_has_keyboard
         })
         .inner
+    }
+
+    /// The one control that moves between the two readings of a run.
+    ///
+    /// Discoverable without being noisy is the criterion, and what satisfies
+    /// it here is that there is exactly *one* of it, in the place a reader
+    /// already looks: the top-right of the title row, where an application
+    /// puts the thing that changes what the window is. It is a small button
+    /// rather than a pair of tabs or a labelled switch, so the story is not
+    /// framed as one half of a choice a visitor has to make before reading
+    /// anything; and it names its destination
+    /// ([`Mode::switch_label`]) rather than its own state, so someone who
+    /// came for the instrument finds the word they are looking for on it.
+    /// What is on the other side is spelled out on hover
+    /// ([`Mode::switch_hover`]) — a whole row of view names would be the noise
+    /// the criterion rules out, and no name at all would be a mystery button.
+    fn draw_mode_switch(&mut self, ui: &mut egui::Ui) {
+        if ui
+            .small_button(self.mode.switch_label())
+            .on_hover_text(self.mode.switch_hover())
+            .clicked()
+        {
+            self.set_mode(self.mode.other());
+        }
     }
 
     /// A browser has no written run to reach for, so this row is empty there
@@ -537,7 +645,7 @@ impl VisualizerApp {
     /// serve the run format to the browser at all.
     #[cfg(not(target_arch = "wasm32"))]
     fn draw_loading_controls(&mut self, ui: &mut egui::Ui, side: Side) -> bool {
-        if self.comparing {
+        if self.showing_comparison() {
             ui.radio_value(&mut self.drop_side, side, "Drops")
                 .on_hover_text("Dropped files load into this panel");
         }
@@ -617,7 +725,12 @@ impl eframe::App for VisualizerApp {
         let url_has_keyboard = egui::TopBottomPanel::top("controls")
             .show(ctx, |ui| {
                 ui.add_space(4.0);
-                ui.heading(crate::APP_NAME);
+                ui.horizontal(|ui| {
+                    ui.heading(crate::APP_NAME);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        self.draw_mode_switch(ui);
+                    });
+                });
                 let url_has_keyboard = self.draw_controls(ui);
                 ui.add_space(4.0);
                 url_has_keyboard
@@ -627,17 +740,25 @@ impl eframe::App for VisualizerApp {
 
         // Disjoint borrows: the panels read their runs while the maps they
         // draw cache a texture of one frame each.
+        let showing_comparison = self.showing_comparison();
         let Self {
             panels,
             basin_map,
-            comparing,
+            mode,
             ..
         } = self;
+        let mode = *mode;
         egui::CentralPanel::default().show(ctx, |ui| {
-            if *comparing {
+            if showing_comparison {
                 draw_comparison(ui, panels, basin_map, keyboard_free);
             } else {
-                draw_single(ui, &panels[Side::Left.index()], basin_map, keyboard_free);
+                draw_single(
+                    ui,
+                    &panels[Side::Left.index()],
+                    basin_map,
+                    keyboard_free,
+                    mode,
+                );
             }
         });
 
@@ -656,15 +777,35 @@ impl eframe::App for VisualizerApp {
 
 /// The one open panel: its metadata, and under it the basin map of the chosen
 /// frame.
-fn draw_single(ui: &mut egui::Ui, panel: &Panel, basin_map: &mut BasinMap, keyboard_free: bool) {
-    if let Some(run) = panel.shown.run() {
+fn draw_single(
+    ui: &mut egui::Ui,
+    panel: &Panel,
+    basin_map: &mut BasinMap,
+    keyboard_free: bool,
+    mode: Mode,
+) {
+    let Some(run) = panel.shown.run() else {
+        draw_waiting(ui, panel);
+        return;
+    };
+    // Asked as a question about the basin map, because that is what the two
+    // readings differ by: the instrument is the map and everything drawn
+    // under, over and beside it, and the story is the ocean the map is of.
+    if mode.draws(ScientificView::Heatmap) {
         draw_run_header(ui, Side::Left, run);
         draw_compute_progress(ui, &panel.shown);
         ui.add_space(12.0);
         ui.separator();
         basin_map.draw(ui, run, keyboard_free);
     } else {
-        draw_waiting(ui, panel);
+        // No metadata grid: the grid shape, the format version and the cadence
+        // are what a reader checks a run *is*, and the scenario's own account
+        // of itself is above this already. How far the run has got stays in
+        // both, because frames still arriving is the one thing a reader cannot
+        // get from the picture.
+        draw_compute_progress(ui, &panel.shown);
+        ui.add_space(8.0);
+        basin_map.draw_teaching(ui, run, keyboard_free);
     }
 }
 
@@ -1435,6 +1576,61 @@ impl BasinMap {
         }
     }
 
+    /// Draw the story of one run: when it is, the ocean seen from the side,
+    /// and what that ocean is doing in sentences.
+    ///
+    /// The same run, the same frame and the same cache as [`BasinMap::draw`] —
+    /// the frame a mode switch lands on is the frame the other mode was on,
+    /// and nothing is rebuilt to arrive there ([`drawn_in`]). What differs is
+    /// what is drawn *of* it: no map, no colour bar, no arrows, no charts, and
+    /// no metadata. Every one of those is a reading of the ocean in a unit, and
+    /// the four things this draws instead — a month, a picture of the water
+    /// column at real depths, the coasts it runs between, and the captions —
+    /// are the same facts in words a visitor already has (Epic 13).
+    ///
+    /// The two that stay are the scrubber and the clock. They are not readings
+    /// of the ocean at all but ways of moving through time, and a story that
+    /// cannot be replayed is one a reader sees once, and only if they were
+    /// already looking when it happened (`crate::mode`).
+    fn draw_teaching(&mut self, ui: &mut egui::Ui, run: &LoadedRun, keyboard_free: bool) {
+        // As in `draw`: the frames the run *holds*, not the frames its header
+        // promises, because one still being computed has fewer (ADR-0012).
+        let Some(index) = self.time_controls(ui, run.frame_count(), keyboard_free) else {
+            ui.label("This scenario has no frames to draw yet.");
+            return;
+        };
+        let chosen = Chosen {
+            index,
+            scale: run.anomaly_scale(),
+            stress_scale: run.wind_stress_scale(),
+        };
+        // When, in the run's own months and days (`crate::clock`), and nothing
+        // about which frame that is: the index is what the scrubber moves, not
+        // something the ocean is doing.
+        ui.label(RunClock::of_run(run.header().output).moment(chosen.index));
+        let panel = &mut self.panels[Side::Left.index()];
+        match panel.drawn(ui, run, chosen) {
+            Ok(drawn) => {
+                // The ocean is as wide as the panel here. In the scientific
+                // mode the side view is cut to the basin map's rectangle so a
+                // longitude sits under the column of the map it came from;
+                // with no map above it there is nothing to line it up with,
+                // and a narrower ocean would only be a smaller picture.
+                let across = ui.available_rect_before_wrap();
+                draw_side_view(ui, &drawn.side_view, &drawn.captions, across);
+            }
+            Err(message) => {
+                ui.label(
+                    RichText::new("This frame could not be drawn")
+                        .color(Color32::LIGHT_RED)
+                        .strong(),
+                );
+                ui.label(message);
+            }
+        }
+        draw_plain_words(ui);
+    }
+
     /// Draw the frame chooser and, side by side, the map each of the two runs
     /// has of the frame it names.
     ///
@@ -1509,15 +1705,7 @@ impl BasinMap {
     /// Draw the frame chooser over a run of `frame_count` frames and say which
     /// frame it names, or `None` when there are none to choose between.
     fn chooser(&mut self, ui: &mut egui::Ui, frame_count: u64, keyboard_free: bool) -> Option<u64> {
-        self.scrubber.fit_to(frame_count);
-        self.scrubber.last()?;
-        // The clock before the controls: the frame this repaint draws is the
-        // one whatever time has passed since the last one has bought, and
-        // every affordance below writes the same index it does.
-        self.playback
-            .advance(&mut self.scrubber, f64::from(ui.input(|i| i.stable_dt)));
-        self.scrubber.draw(ui, keyboard_free);
-        self.playback.draw(ui, &mut self.scrubber, keyboard_free);
+        let index = self.time_controls(ui, frame_count, keyboard_free)?;
         // The layers are drawn over and under the map, never into it: nothing
         // the map is built from depends on these.
         ui.horizontal(|ui| {
@@ -1527,6 +1715,32 @@ impl BasinMap {
             ui.checkbox(&mut self.layers.series, "Point time series");
         });
         draw_plain_words(ui);
+        Some(index)
+    }
+
+    /// The two affordances that move through time, and the frame they name —
+    /// or `None` when the run holds no frames to choose between.
+    ///
+    /// The one piece of the chooser both readings of a run draw
+    /// ([`ScientificView::Scrubber`] and [`ScientificView::Playback`] are the
+    /// two the teaching mode keeps), so it is one function rather than the
+    /// same five lines in each: a scrubber that fitted itself to the run in
+    /// one mode and not the other would be two clocks.
+    fn time_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        frame_count: u64,
+        keyboard_free: bool,
+    ) -> Option<u64> {
+        self.scrubber.fit_to(frame_count);
+        self.scrubber.last()?;
+        // The clock before the controls: the frame this repaint draws is the
+        // one whatever time has passed since the last one has bought, and
+        // every affordance below writes the same index it does.
+        self.playback
+            .advance(&mut self.scrubber, f64::from(ui.input(|i| i.stable_dt)));
+        self.scrubber.draw(ui, keyboard_free);
+        self.playback.draw(ui, &mut self.scrubber, keyboard_free);
         Some(self.scrubber.index())
     }
 
@@ -2353,7 +2567,9 @@ mod tests {
     };
 
     use super::{BasinMap, DrawnFrame, LoadedRun, Shown, Side, VisualizerApp};
-    use crate::{BasinPoint, Comparison, RunBytes, RunClock, ScenarioPreset, SeriesSample};
+    use crate::{
+        BasinPoint, Comparison, Mode, Platform, RunBytes, RunClock, ScenarioPreset, SeriesSample,
+    };
 
     /// Steps taken before the reader is imagined to look away: enough of the
     /// control preset for frames to exist and the chooser to have somewhere to
@@ -2507,6 +2723,94 @@ mod tests {
                 map.draw_comparison(ui, &comparison, true);
             });
         });
+    }
+
+    /// Repaint `map` in the teaching mode once, and say which texture it drew
+    /// the run with.
+    ///
+    /// The map texture rather than the ocean, because the ocean is a mesh
+    /// built per repaint from a [`SideView`] value: what is asserted through
+    /// this is that the *frame* was not rebuilt, and the frame is the thing
+    /// both modes hold in one cache.
+    fn repaint_teaching(
+        ctx: &egui::Context,
+        map: &mut BasinMap,
+        run: &LoadedRun,
+    ) -> egui::TextureId {
+        let _painted = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| map.draw_teaching(ui, run, true));
+        });
+        panel_frame(map, Side::Left).map.id()
+    }
+
+    /// T-13.5: the web build opens in the teaching mode with a scenario
+    /// already computing, and nothing was pressed to get there.
+    #[test]
+    fn a_browser_opens_on_the_story_with_a_scenario_already_computing() {
+        let app = VisualizerApp::opening_on(Platform::Browser);
+        assert_eq!(app.mode(), Mode::Teaching);
+        let Shown::Computing(computed) = &app.panels[Side::Left.index()].shown else {
+            panic!("a browser starts a run without being asked");
+        };
+        assert_eq!(
+            computed.run().source(),
+            ScenarioPreset::default_preset().name(),
+            "the scenario computing is the one the panel opens on"
+        );
+        assert!(
+            !computed.is_finished(),
+            "a two-year run is not over before the first repaint"
+        );
+    }
+
+    /// T-13.5: and the desktop's default is the other one, with no scenario
+    /// started — whoever launched it may be about to name a run.
+    #[test]
+    fn a_desktop_opens_on_the_instrument_with_nothing_computed() {
+        let app = VisualizerApp::opening_on(Platform::Desktop);
+        assert_eq!(app.mode(), Mode::Scientific);
+        assert!(matches!(
+            app.panels[Side::Left.index()].shown,
+            Shown::Nothing
+        ));
+    }
+
+    /// T-13.5: the toggle is a change of what is drawn and of nothing else, so
+    /// a reader who switches to check a number and switches back pays for one
+    /// frame rather than three.
+    #[test]
+    fn switching_between_the_two_readings_rebuilds_nothing() {
+        let (ctx, run) = (egui::Context::default(), run());
+        let mut map = BasinMap::default();
+        let instrument = repaint(&ctx, &mut map, &run);
+        assert_eq!(repaint_teaching(&ctx, &mut map, &run), instrument.0);
+        assert_eq!(repaint(&ctx, &mut map, &run), instrument);
+    }
+
+    /// T-13.5: switching to the story hides the second panel without closing
+    /// the run in it. Closing it is what the *comparison switch* does, and a
+    /// reader who wanted the story for a moment did not ask for that.
+    #[test]
+    fn showing_the_story_hides_a_comparison_rather_than_closing_it() {
+        let mut app = VisualizerApp::opening_on(Platform::Desktop);
+        for side in Side::BOTH {
+            app.panels[side.index()].shown = Shown::Run(Box::new(run()));
+        }
+        app.comparing = true;
+        assert!(app.showing_comparison());
+
+        app.set_mode(Mode::Teaching);
+        assert!(!app.showing_comparison(), "the story draws one panel");
+        assert!(
+            app.panels[Side::Right.index()].shown.run().is_some(),
+            "the second run is still loaded"
+        );
+
+        app.set_mode(Mode::Scientific);
+        assert!(
+            app.showing_comparison(),
+            "and the comparison is there again, unasked"
+        );
     }
 
     #[test]
