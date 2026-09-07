@@ -11,7 +11,9 @@
 //! is *computed*: per [ADR-0012] the visualizer links the engine, holds a
 //! scenario and steps it, because the file format is not served to the web at
 //! all — 941 MB of control run is not a download. [`ComputedRun`] is that
-//! loop.
+//! loop, and [`ScenarioPreset`] is what it is handed: the scenarios the
+//! teaching panel offers as buttons, assembled in code out of the engine's own
+//! types so that nobody learning has to meet a configuration file.
 //!
 //! Both origins end in the same [`LoadedRun`], which is why the heatmap, the
 //! scrubber, playback, the wind overlay, the cross-section, the equatorial
@@ -44,6 +46,7 @@ mod loading;
 #[cfg(not(target_arch = "wasm32"))]
 mod pending;
 mod playback;
+mod presets;
 mod run;
 mod scrubber;
 mod side_view;
@@ -55,8 +58,7 @@ pub use app::VisualizerApp;
 pub use clock::RunClock;
 pub use comparison::{Comparison, Difference, Mismatch, Side};
 pub use compute::{
-    BrowserScenario, BudgetExceeded, ComputeError, ComputedRun, FrameBudget, InMegabytes,
-    STEP_BUDGET,
+    BudgetExceeded, ComputeError, ComputedRun, FrameBudget, InMegabytes, STEP_BUDGET,
 };
 pub use cross_section::{CrossSection, CrossSectionPoint};
 pub use geography::{Coast, LongitudeTick, Wall};
@@ -68,6 +70,7 @@ pub use loading::{native::read_run_directory, Loader};
 #[cfg(not(target_arch = "wasm32"))]
 pub use pending::PendingRun;
 pub use playback::{Playback, MAX_STALL_S, PLAYBACK_SPEEDS_FPS};
+pub use presets::{PresetCost, ScenarioPreset};
 pub use run::{FrameAppendError, LoadedRun, MetadataRow, RunBytes};
 pub use scrubber::Scrubber;
 pub use side_view::{

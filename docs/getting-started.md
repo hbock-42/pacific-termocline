@@ -193,14 +193,24 @@ bar counts the frames, and the frame chooser follows the newest one until you
 scrub back into the run. Nothing is downloaded and nothing is dropped on the
 page: the run on screen was produced by the same engine `termocline run` is.
 
-The scenarios the page offers are in `visualizer/scenarios/`, and they are the
-engine's own coarsened to fit a tab: 80 × 25 cells at 2°, a frame every three
-days, 244 frames — 19.9 MB of frames against the control run's 941 MB. That
-limit is enforced rather than hoped for: a scenario whose frames would not fit
-is refused before the first step, with the size it would have needed. Two
+The scenarios the page offers are presets built in code, in
+`visualizer/src/presets.rs`: there is no file to find, and each button states
+its own grid, length, memory and compute time before you press it. They are the
+engine's own scenarios coarsened to fit a tab — 80 × 25 cells at 2°, 244 frames
+three days apart for the two-year stories and 366 daily frames for the wind
+burst, which is 19.9 MB and 29.9 MB of frames against the control run's 941 MB.
+That limit is enforced rather than hoped for: a scenario whose frames would not
+fit is refused before the first step, with the size it would have needed. Two
 degrees still resolves the equatorial waveguide (`Le` ≈ 361 km), but a
 *validated* run is a native run of `engine/scenarios/` — nothing scientific
 rests on the browser.
+
+One of the presets is the El Niño story — the trade winds relax and the warm
+water slides back east — and it is captioned for what it is: a *forced*
+response to a wind change the preset imposes, not this model producing ENSO.
+The coupled model's own oscillation runs at 1.03 years, outside the observed
+2–7 year band, and [`docs/enso-oscillation-report.md`](enso-oscillation-report.md)
+records that acceptance criterion as unmet.
 
 Tick **Compare two runs** and each panel gets its own scenario picker, so the
 trades and the trades-plus-a-westerly-burst compute side by side on one frame
