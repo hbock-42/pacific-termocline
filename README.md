@@ -19,6 +19,13 @@ The project is split into two independent components:
   types: indexing and staggering, no physics
   ([ADR-0003](docs/planning/adr/0003-numerical-scheme.md)).
 
+## Try it in your browser
+
+**[hbock-42.github.io/pacific-termocline](https://hbock-42.github.io/pacific-termocline/)**
+— nothing to install, nothing to download. The page links the engine and
+computes a run in the tab, so the thermocline starts tilting under the alizés
+as soon as it loads ([ADR-0012](docs/planning/adr/0012-the-browser-runs-the-engine.md)).
+
 The scientific model, architecture, and full backlog were specified up front
 under `docs/planning/`, and the backlog now lives as
 [GitHub issues](https://github.com/hbock-42/pacific-termocline/issues).
