@@ -175,7 +175,7 @@ pub use wind_response::{
 /// a scenario in a browser never meets a file (ADR-0012).
 pub use scenario::{
     BasinSection, PhysicsSection, RunSection, Scenario, ScenarioConfig, ScenarioError,
-    ScenarioWind, SstSection, WindSection,
+    ScenarioWind, WindSection,
 };
 
 /// Re-exported so binaries and the visualizer agree on one format version, on

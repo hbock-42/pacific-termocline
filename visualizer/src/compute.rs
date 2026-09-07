@@ -135,12 +135,11 @@ impl FrameBudget {
     /// to recover.
     #[must_use]
     pub fn bytes_of(header: &RunHeader) -> u64 {
-        let per_frame: u64 = header
-            .variables
-            .iter()
-            .map(|spec| header.grid.field_len(spec.variable) as u64 * BYTES_PER_VALUE)
-            .sum();
-        per_frame * header.output.frame_count
+        bytes_of_fields(
+            header.grid,
+            header.variables.iter().map(|spec| spec.variable),
+            header.output.frame_count,
+        )
     }
 
     /// The same, for a run that has not started: `frame_count` frames over
@@ -154,11 +153,7 @@ impl FrameBudget {
     /// [`FrameBudget::bytes_of`] of the header each preset actually produces.
     #[must_use]
     pub fn bytes_of_linear_core(grid: GridSpec, frame_count: u64) -> u64 {
-        let per_frame: u64 = Variable::LINEAR_CORE
-            .iter()
-            .map(|variable| grid.field_len(*variable) as u64 * BYTES_PER_VALUE)
-            .sum();
-        per_frame * frame_count
+        bytes_of_fields(grid, Variable::LINEAR_CORE.into_iter(), frame_count)
     }
 
     /// Whether a run with this header fits, and by how much it does not.
@@ -180,6 +175,24 @@ impl FrameBudget {
             ny: header.grid.ny(),
         })
     }
+}
+
+/// Bytes of encoded frame data in `frame_count` frames over `grid` carrying
+/// `variables`.
+///
+/// The one place the format's arithmetic is done — a sum over the variables of
+/// one `f64` per point of that variable's staggered position — so the size a
+/// run is admitted on and the size a preset states before it starts cannot be
+/// two different counts.
+fn bytes_of_fields(
+    grid: GridSpec,
+    variables: impl Iterator<Item = Variable>,
+    frame_count: u64,
+) -> u64 {
+    let per_frame: u64 = variables
+        .map(|variable| grid.field_len(variable) as u64 * BYTES_PER_VALUE)
+        .sum();
+    per_frame * frame_count
 }
 
 /// A scenario whose frames would not fit in the tab that was asked to compute

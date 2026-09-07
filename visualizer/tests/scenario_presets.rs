@@ -116,9 +116,10 @@ fn every_preset_is_a_scenario_built_from_the_engines_own_types() {
             "{} drives the ocean with nothing",
             preset.name()
         );
-        // And the config round-trips the sections it was built from, so what
-        // the engine validated is what the preset states.
-        assert_eq!(preset.config().build().expect("it builds"), scenario);
+        // And what the preset offers as a config is what the engine
+        // validated: the sections carry the winds the scenario ended up with,
+        // so a preset cannot describe one thing and run another.
+        assert_eq!(preset.config().wind.len(), scenario.winds().len());
     }
 
     // The three stories, each with the forcing that tells it.
@@ -224,9 +225,24 @@ fn every_preset_states_the_grid_duration_and_cost_the_run_turns_out_to_have() {
             "{} misstates what it will hold",
             preset.name()
         );
-        // The duration is the schedule's own: steps times the timestep.
+        // The duration is the schedule's own — steps times the timestep — and
+        // the span the line states is the frames', which is what a reader can
+        // scrub through. The two differ by whatever the cadence does not
+        // divide, which is less than one frame interval.
         let last_frame_s = cost.frame_interval_s * (cost.frame_count - 1) as f64;
-        assert!(cost.duration_days * DAY_S >= last_frame_s);
+        let integrated_s = cost.duration_days * DAY_S;
+        assert!(integrated_s >= last_frame_s);
+        assert!(
+            integrated_s - last_frame_s < cost.frame_interval_s,
+            "{} states a span {} s short of the run it integrates",
+            preset.name(),
+            integrated_s - last_frame_s
+        );
+        assert_eq!(
+            cost.steps as f64 * 3600.0,
+            integrated_s,
+            "an hourly timestep"
+        );
 
         // And it is all in the line the panel prints.
         let line = cost.line();

@@ -16,11 +16,17 @@
 //! ADR-0012 makes memory the binding constraint on a run in a tab, and
 //! [`crate::FrameBudget`] enforces it — but enforcement is a refusal, and a
 //! refusal is the wrong place for a visitor to learn how big a scenario is. So
-//! every preset states its grid, its length and what it will cost to compute
-//! *before* it is pressed ([`PresetCost`]), and `tests/scenario_presets.rs`
-//! holds each of those statements against the run the preset actually
-//! produces. The budget is then a backstop rather than the first thing a
-//! reader hears about.
+//! every preset states its grid, its length and what it will cost *before* it
+//! is pressed ([`PresetCost`]). Three of the four are facts about the run and
+//! are held against the run itself by `tests/scenario_presets.rs` — the grid,
+//! the frame count and the bytes those frames occupy, checked against the
+//! header the engine writes. The fourth, the compute time, is an *estimate*:
+//! one measurement scaled by cells and steps
+//! ([`NATIVE_COST_S_PER_CELL_STEP`]), bounded by a test rather than timed by
+//! one, because a wall clock in a test suite measures the machine CI happened
+//! to run on. It is labelled as an estimate on screen for the same reason.
+//! The budget is then a backstop rather than the first thing a reader hears
+//! about.
 //!
 //! # A preset says what it is not
 //!
@@ -42,10 +48,8 @@ use engine::{
 use termocline_format::{GridSpec, OutputTiming};
 
 use crate::compute::FrameBudget;
+use crate::run::SECONDS_PER_DAY as DAY_S;
 use crate::RunClock;
-
-/// Seconds in a day.
-const DAY_S: f64 = 86_400.0;
 
 /// Zonal stress `τ₀` the steady trade winds put on the equator, in Pa.
 ///
@@ -234,7 +238,13 @@ pub struct PresetCost {
     pub ny: usize,
     /// Solver steps the run takes.
     pub steps: u64,
-    /// Model time the run covers, in days.
+    /// Model time the run integrates, in days.
+    ///
+    /// Up to one frame interval longer than the span of the frames it saves,
+    /// which is what [`PresetCost::line`] states and what a reader can scrub
+    /// through: the last step is saved only when the cadence divides it. The
+    /// two are held within an interval of each other by
+    /// `tests/scenario_presets.rs`.
     pub duration_days: f64,
     /// Frames it saves.
     pub frame_count: u64,
@@ -263,13 +273,17 @@ impl PresetCost {
     }
 
     /// The whole cost in one line: `80 × 25 cells · 729 days (2 years) · 244
-    /// frames, 19.9 MB of 33.6 MB · about 0.7 s to compute natively`.
+    /// frames, 19.9 MB of the 33.6 MB a tab holds · about 0.7 s to compute
+    /// natively`.
     ///
     /// The three things the ticket asks a preset to state — grid, duration,
     /// expected compute time — plus the memory, because that is the limit a
-    /// tab actually dies on. The duration is [`RunClock`]'s phrase rather than
-    /// a second way of writing a span in days, so the picker and the caption
-    /// under the ocean cannot come to disagree about how long a run is.
+    /// tab actually dies on. The duration is [`RunClock`]'s phrase over the
+    /// *frames*, which is the span a reader can scrub through and the same
+    /// phrase the caption under the ocean uses, rather than a second way of
+    /// writing a run length here. The compute time says "natively" out loud:
+    /// it is [`NATIVE_COST_S_PER_CELL_STEP`] scaled, and a browser is slower
+    /// by a factor nothing here has measured.
     #[must_use]
     pub fn line(&self) -> String {
         format!(
