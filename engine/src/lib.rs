@@ -24,22 +24,54 @@
 //! than helpers local to a `benches/` or `examples/` target, so that a test
 //! can assert on them — which for a measurement is the difference between a
 //! number and a claim.
+//!
+//! # The `fs` feature
+//!
+//! [ADR-0012] puts this crate in the browser: on the web the visualizer links
+//! the engine and computes runs itself, so the engine has to build for
+//! `wasm32-unknown-unknown`, where there is no filesystem. What a filesystem
+//! buys is behind the `fs` feature — [`Scenario::load`], [`RunWriter::create`],
+//! [`run`], [`inspect`] and [`benchmark`] — and the browser does not enable it.
+//! Nothing physical is: [`solver`], [`shallow_water`], [`coriolis`],
+//! [`boundary`], [`forcing`], [`state`] and [`params`] are compiled either way,
+//! so a browser run and a native run are the same computation, which is what
+//! makes ADR-0012's reproducibility argument hold. The portable path is
+//! [`Scenario::from_toml`] over TOML *text*, [`Solver::new`], and
+//! [`Solver::step_with_forcing`]; `engine/tests/filesystem_free_api.rs` walks
+//! it, and CI builds the crate for `wasm32` with the feature off so it cannot
+//! rot.
+//!
+//! Two modules compile for the browser without being usable there:
+//! [`progress`] and [`profiling`] read the clock, and `Instant::now` panics on
+//! `wasm32-unknown-unknown`. They are native instruments — a progress bar and a
+//! timing probe — rather than filesystem access, so the `fs` feature is the
+//! wrong name to hide them behind; what keeps them out of a browser build is
+//! that the browser has no reason to call them.
+//!
+//! The `termocline` binary's own dependencies are the separate `cli` feature,
+//! because an argument parser is not a filesystem. Both are on by default, so
+//! a native build and the CLI are exactly what they were.
+//!
+//! [ADR-0012]: ../../docs/planning/adr/0012-the-browser-runs-the-engine.md
 
 // The acceptance criterion of T-02.1 is that every field states its unit; the
 // lint is what keeps that true as the crate grows.
 #![warn(missing_docs)]
 
 pub mod basin;
+#[cfg(feature = "fs")]
 pub mod benchmark;
 pub mod boundary;
 pub mod coriolis;
 pub mod forcing;
+#[cfg(feature = "fs")]
 pub mod inspect;
 pub mod integrator;
 pub mod params;
 pub mod precision;
 pub mod profiling;
 pub mod progress;
+#[cfg(feature = "fs")]
 pub mod run;
 pub mod run_writer;
 pub mod scenario;
@@ -54,21 +86,24 @@ pub use integrator::{Rk4, StateVector};
 
 /// Re-exported so the `inspect` command and its tests name one rendering of a
 /// run's header.
+#[cfg(feature = "fs")]
 pub use inspect::{inspect_run, render_header};
 
 /// Re-exported so the `run` command, its tests and any other caller name one
 /// scenario runner: [`run::run_scenario_file`] is the whole command — load,
 /// run, write — and [`run::run_scenario`] the same run from a scenario already
 /// in hand.
+#[cfg(feature = "fs")]
 pub use run::{
     run_scenario, run_scenario_file, run_scenario_file_observed, run_scenario_observed, RunError,
-    RunReport,
 };
 
 /// Re-exported so the `run` command and its tests name one progress reporter:
 /// [`progress::RunObserver`] is what a run tells, and [`progress::RunProgress`]
 /// the reporter that turns it into a progress line and structured logs.
-pub use progress::{LogLevel, ProgressReport, ProgressStyle, RunObserver, RunProgress, Verbosity};
+pub use progress::{
+    LogLevel, ProgressReport, ProgressStyle, RunObserver, RunProgress, RunReport, Verbosity,
+};
 
 pub use run_writer::{OutputSchedule, OutputScheduleError, RunWriteError, RunWriter};
 

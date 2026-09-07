@@ -56,14 +56,19 @@
 //! [ADR-0006]: ../../docs/planning/adr/0006-web-visualizer.md
 
 use std::fmt;
+#[cfg(feature = "fs")]
 use std::fs::{self, File};
-use std::io::{BufWriter, Write};
+#[cfg(feature = "fs")]
+use std::io::BufWriter;
+use std::io::Write;
+#[cfg(feature = "fs")]
 use std::path::Path;
 
 use termocline_format::{
     frame_encoding, FormatError, Frame, GridSpec, OutputTiming, RunHeader, Variable,
-    FRAME_FILE_NAME, HEADER_FILE_NAME,
 };
+#[cfg(feature = "fs")]
+use termocline_format::{FRAME_FILE_NAME, HEADER_FILE_NAME};
 
 use crate::basin::BasinBounds;
 use crate::forcing::WindStressField;
@@ -513,6 +518,12 @@ impl<W: Write> RunWriter<W> {
     }
 }
 
+/// The native convenience: a run as two files in a directory.
+///
+/// Behind the `fs` feature because the browser has neither (ADR-0012). What it
+/// adds is where the bytes go, not what they are — a run assembled over any
+/// other pair of sinks by [`RunWriter::new`] is the same run.
+#[cfg(feature = "fs")]
 impl RunWriter<BufWriter<File>> {
     /// Open a run as two files in `directory`, creating it if it does not
     /// exist: [`HEADER_FILE_NAME`] and [`FRAME_FILE_NAME`].

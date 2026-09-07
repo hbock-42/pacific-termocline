@@ -57,6 +57,21 @@ jobs:
       - name: Build the visualizer for the browser
         run: cargo build -p visualizer --target wasm32-unknown-unknown
 
+      # ADR-0012: the browser runs the engine, so the engine has to compile for
+      # it. This is what proves the `fs` split holds — the day a `std::fs` call
+      # leaks into the simulation core, or an ungated module reaches for one,
+      # this step is what says so.
+      - name: Build the engine for the browser, without its filesystem feature
+        run: cargo build -p engine --no-default-features --target wasm32-unknown-unknown
+
+      # The build above compiles the library, not the test targets, and the
+      # test run above compiles this one with every feature on. So the
+      # acceptance test for the split is also run in the configuration it is
+      # about: natively, so it can execute, with `fs` off, so an item behind
+      # the feature creeping into it is a compile error rather than a silence.
+      - name: Run the engine's filesystem-free tests without that feature
+        run: cargo test -p engine --no-default-features --test filesystem_free_api
+
   # Non-blocking by design (T-10.1): a benchmark is a measurement, and a
   # measurement taken on a shared runner whose neighbours we do not control is
   # not a thing to fail a pull request on. `continue-on-error` keeps a slow or
