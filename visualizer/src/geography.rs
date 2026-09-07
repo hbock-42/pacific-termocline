@@ -23,6 +23,8 @@
 
 use termocline_format::BasinExtent;
 
+use crate::chart::axis_ticks;
+
 /// A full turn of longitude, in degrees — the modulus a zonal span is measured
 /// in, as [`crate::chart`] names it for the same reason.
 const FULL_TURN_DEG: f64 = 360.0;
@@ -31,11 +33,9 @@ const FULL_TURN_DEG: f64 = 360.0;
 /// which runs from 180°W to 180°E.
 const HALF_TURN_DEG: f64 = FULL_TURN_DEG / 2.0;
 
-/// The tick spacings an axis of longitude may use, in degrees, coarsest last.
-///
-/// The round numbers a printed atlas rules its meridians at. The first one
-/// that fits the basin in [`MAX_TICKS`] is the one used, so a wide basin gets a
-/// coarse axis and a narrow one a fine axis without either being told which.
+/// The tick spacings an axis of longitude may use, in degrees, coarsest last:
+/// the round numbers a printed atlas rules its meridians at. Which one an
+/// axis uses is [`axis_ticks`]'s to decide.
 const TICK_STEPS_DEG: [f64; 5] = [10.0, 20.0, 30.0, 45.0, 60.0];
 
 /// The most ticks an axis of longitude is drawn with.
@@ -126,24 +126,34 @@ impl Coast {
         self.land
     }
 
-    /// The wall as a label: the coast's name where it has one, and where it
-    /// is, always.
-    ///
-    /// The longitude is on it either way, so the name and the axis under the
-    /// picture cannot come to say different things.
+    /// What to call this end of the basin in a sentence: the land it stands
+    /// on, or — where the scenario truncated the basin in open water — the end
+    /// of the basin it is.
     #[must_use]
-    pub fn label(&self) -> String {
-        let place = longitude_text(self.longitude_deg_east);
+    pub fn name(&self) -> String {
         match self.land {
-            Some(name) => format!("{name} ({place})"),
+            Some(name) => name.to_owned(),
             None => {
                 let side = match self.wall {
                     Wall::West => "western",
                     Wall::East => "eastern",
                 };
-                format!("the {side} edge of the basin ({place})")
+                format!("the {side} edge of the basin")
             }
         }
+    }
+
+    /// The wall as a label: what it is called, and where it is.
+    ///
+    /// The longitude is on it either way, so the name and the axis under the
+    /// picture cannot come to say different things.
+    #[must_use]
+    pub fn label(&self) -> String {
+        format!(
+            "{} ({})",
+            self.name(),
+            longitude_text(self.longitude_deg_east)
+        )
     }
 }
 
@@ -218,24 +228,17 @@ impl LongitudeTick {
 pub fn longitude_ticks(extent: BasinExtent) -> Vec<LongitudeTick> {
     let west_deg_east = extent.west_deg_east;
     let span_deg = (extent.east_deg_east - west_deg_east).rem_euclid(FULL_TURN_DEG);
-    let step_deg = TICK_STEPS_DEG
-        .iter()
-        .copied()
-        .find(|&step| tick_count(west_deg_east, span_deg, step) <= MAX_TICKS);
-    let ticks: Vec<LongitudeTick> = step_deg
-        .map(|step| {
-            let first_deg = first_tick_deg(west_deg_east, step);
-            (0..tick_count(west_deg_east, span_deg, step))
-                .map(|index| {
-                    #[allow(clippy::cast_precision_loss)]
-                    let absolute_deg = (index as f64).mul_add(step, first_deg);
-                    tick(west_deg_east, span_deg, absolute_deg)
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    if ticks.len() >= 2 {
-        return ticks;
+    let meridians_deg = axis_ticks(
+        west_deg_east,
+        west_deg_east + span_deg,
+        &TICK_STEPS_DEG,
+        MAX_TICKS,
+    );
+    if meridians_deg.len() >= 2 {
+        return meridians_deg
+            .into_iter()
+            .map(|absolute_deg| tick(west_deg_east, span_deg, absolute_deg))
+            .collect();
     }
     [west_deg_east, west_deg_east + span_deg]
         .into_iter()
@@ -253,22 +256,6 @@ fn tick(west_deg_east: f64, span_deg: f64, absolute_deg: f64) -> LongitudeTick {
         },
         longitude_deg_east: fold(absolute_deg),
     }
-}
-
-/// How many meridians a spacing of `step_deg` puts across the basin.
-fn tick_count(west_deg_east: f64, span_deg: f64, step_deg: f64) -> usize {
-    let first = first_tick_deg(west_deg_east, step_deg);
-    if first > west_deg_east + span_deg {
-        return 0;
-    }
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let count = ((west_deg_east + span_deg - first) / step_deg).floor() as usize + 1;
-    count
-}
-
-/// The first multiple of `step_deg` at or east of the basin's western wall.
-fn first_tick_deg(west_deg_east: f64, step_deg: f64) -> f64 {
-    (west_deg_east / step_deg).ceil() * step_deg
 }
 
 /// `deg_east` folded into the `[-180, 180)` the basin's bounds are written in.

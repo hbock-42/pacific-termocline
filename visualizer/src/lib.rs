@@ -52,14 +52,14 @@ mod wind;
 mod wording;
 
 pub use app::VisualizerApp;
-pub use clock::{plain_duration, RunClock};
+pub use clock::RunClock;
 pub use comparison::{Comparison, Difference, Mismatch, Side};
 pub use compute::{
     BrowserScenario, BudgetExceeded, ComputeError, ComputedRun, FrameBudget, InMegabytes,
     STEP_BUDGET,
 };
 pub use cross_section::{CrossSection, CrossSectionPoint};
-pub use geography::{coasts, longitude_ticks, Coast, LongitudeTick, Wall};
+pub use geography::{Coast, LongitudeTick, Wall};
 pub use heatmap::{DivergingScale, Heatmap};
 /// Reading a *written* run is native-only since ADR-0012: the browser computes
 /// its runs, and the file format is not served to it at all.

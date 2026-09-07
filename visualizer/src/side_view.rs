@@ -47,9 +47,10 @@
 
 use termocline_format::BasinExtent;
 
+use crate::chart::axis_ticks;
 use crate::cross_section::CrossSection;
 use crate::geography::{coasts, latitude_phrase, longitude_ticks, Coast, LongitudeTick};
-use crate::wording::{THERMOCLINE, TRADE_WINDS};
+use crate::wording::THERMOCLINE;
 
 /// The colour of the warm upper layer.
 ///
@@ -180,11 +181,9 @@ pub struct LayerBand {
     pub bottom_fraction: f64,
 }
 
-/// The tick spacings the depth axis may use, in metres, coarsest last.
-///
-/// Round depths a reader counts in. The first that fits the panel in
-/// [`MAX_DEPTH_TICKS`] is the one used, so a shallow scenario gets a fine axis
-/// and a deep one a coarse axis without either being told which.
+/// The tick spacings the depth axis may use, in metres, coarsest last: the
+/// round depths a reader counts in. Which one the axis uses is
+/// [`axis_ticks`]'s to decide.
 const DEPTH_STEPS_M: [f64; 5] = [25.0, 50.0, 100.0, 200.0, 500.0];
 
 /// The most ticks the depth axis is drawn with, counting the sea surface.
@@ -226,6 +225,13 @@ impl DepthTick {
 }
 
 /// One frame's ocean along the equator, drawn side-on.
+///
+/// It says what it is in words as well as in colour: the sentences a panel
+/// puts around the picture are built here, out of the terms
+/// [`crate::wording`] defines, because each of them states something only this
+/// view knows — the depth it drew the interface at, the basin it read, the
+/// coasts it ends at. The terms have one home; the sentences that use them
+/// belong with the thing they describe.
 #[derive(Debug, Clone)]
 pub struct SideView {
     /// One column per cell of the basin's zonal axis, west to east.
@@ -319,12 +325,6 @@ impl SideView {
         self.latitude_deg_north
     }
 
-    /// The basin this ocean was read across, as the run's header declares it.
-    #[must_use]
-    pub const fn extent(&self) -> BasinExtent {
-        self.extent
-    }
-
     /// The two ends of the basin, west first: which coast each is, and where.
     ///
     /// Derived from the header's basin rather than named here, because the
@@ -345,28 +345,20 @@ impl SideView {
     ///
     /// Round depths rather than the interface's own: the axis exists so a
     /// reader can read a depth *off* it, which needs numbers they can
-    /// interpolate between.
+    /// interpolate between. Which round depths is
+    /// [`crate::chart::axis_ticks`]'s to decide, the same arithmetic that
+    /// rules the meridians under the ocean.
     #[must_use]
     pub fn depth_ticks(&self) -> Vec<DepthTick> {
         let deepest_m = self.deepest_drawn_depth_m;
         if !deepest_m.is_finite() || deepest_m <= 0.0 {
             return Vec::new();
         }
-        let Some(step_m) = DEPTH_STEPS_M
-            .iter()
-            .copied()
-            .find(|&step| depth_tick_count(deepest_m, step) <= MAX_DEPTH_TICKS)
-        else {
-            return Vec::new();
-        };
-        (0..depth_tick_count(deepest_m, step_m))
-            .map(|index| {
-                #[allow(clippy::cast_precision_loss)]
-                let depth_m = index as f64 * step_m;
-                DepthTick {
-                    depth_m,
-                    fraction: depth_m / deepest_m,
-                }
+        axis_ticks(0.0, deepest_m, &DEPTH_STEPS_M, MAX_DEPTH_TICKS)
+            .into_iter()
+            .map(|depth_m| DepthTick {
+                depth_m,
+                fraction: depth_m / deepest_m,
             })
             .collect()
     }
@@ -402,49 +394,36 @@ impl SideView {
         )
     }
 
-    /// What the wind has done to the ocean in this picture, in plain words and
-    /// with the number it is read off the picture with.
+    /// How deep the thermocline is at each coast, in metres below the sea
+    /// surface: `… is 188 m below the surface at Indonesia / New Guinea and
+    /// 122 m at South America`.
     ///
-    /// Measured rather than asserted: the tilt is the difference between the
-    /// two ends of *this frame's* drawn interface, so the note cannot claim a
-    /// warm pool piled in the west while the panel shows a level ocean. The
-    /// easterly trade winds are what piles it (`CONTEXT.md`, *Thermocline
-    /// tilt*), and they are named — and explained — wherever the ocean is
-    /// tilted the way they tilt it.
+    /// The depth a reader is owed. Every scientific view of this run states
+    /// `h`, an anomaly of tens of metres about a mean depth it does not print
+    /// (`CONTEXT.md`), and a stranger cannot turn "+38 m" into a depth without
+    /// knowing `H`. This states `H + h` where the picture draws it, at the two
+    /// places the picture is easiest to read.
     ///
-    /// A frame whose ends are not both drawn — the model has broken down at
-    /// one of them (`SideViewColumn::interface_fraction`) — gets no note at
-    /// all rather than a tilt measured across a gap.
+    /// It describes and does not explain: what put the ocean in this shape is
+    /// a caption, and captions derived from run state are T-13.4's. A frame
+    /// whose ends are not both drawn — the model has broken down at one of
+    /// them ([`SideViewColumn::interface_fraction`]) — gets no note rather
+    /// than a depth read across a gap.
     #[must_use]
-    pub fn tilt_note(&self) -> Option<String> {
+    pub fn coast_depth_note(&self) -> Option<String> {
         let (west, east) = (self.columns.first()?, self.columns.last()?);
-        // Both ends have to be drawn: a tilt measured across a column where
-        // the model has broken down is not a tilt of anything.
+        // Both ends have to be drawn: a depth stated for a column the model
+        // has broken down in is not a depth of anything.
         west.interface_fraction()?;
         east.interface_fraction()?;
-        let drop_m = west.interface_depth_m() - east.interface_depth_m();
-        // Rounded to the metre first, because the metre is what the note
-        // states: a difference that prints as "0 m deeper" is a level ocean as
-        // far as this sentence is concerned.
-        let stated_m = drop_m.round();
-        if stated_m > 0.0 {
-            return Some(format!(
-                "The {} push the warm water westward: here it is piled up against the western \
-                 coast, where the boundary is {stated_m:.0} m deeper than at the eastern coast",
-                TRADE_WINDS.glossed()
-            ));
-        }
-        if stated_m < 0.0 {
-            return Some(format!(
-                "Here the boundary is {:.0} m deeper at the eastern coast than at the western — \
-                 the warm water is not piled up in the west",
-                stated_m.abs()
-            ));
-        }
+        let [west_coast, east_coast] = self.coasts();
         Some(format!(
-            "The {} push the warm water westward; in this frame the boundary is level from coast \
-             to coast",
-            TRADE_WINDS.glossed()
+            "The {} is {:.0} m below the surface at {} and {:.0} m at {}",
+            THERMOCLINE.glossed(),
+            west.interface_depth_m(),
+            west_coast.name(),
+            east.interface_depth_m(),
+            east_coast.name(),
         ))
     }
 
@@ -459,14 +438,6 @@ impl SideView {
         let count = self.columns.len() as f64;
         1.0 / count
     }
-}
-
-/// How many round depths of `step_m` fit on a panel `deepest_m` deep,
-/// counting the sea surface at zero.
-fn depth_tick_count(deepest_m: f64, step_m: f64) -> usize {
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let count = (deepest_m / step_m).floor() as usize + 1;
-    count
 }
 
 /// Where an interface `interface_depth_m` below the surface sits on a panel

@@ -36,20 +36,20 @@ const DAYS_PER_YEAR: f64 = TROPICAL_YEAR_S / SECONDS_PER_DAY;
 /// the start of the run.
 const DAYS_PER_MONTH: f64 = DAYS_PER_YEAR / 12.0;
 
-/// Below this many days elapsed, a duration is said in days.
+/// Up to this many days, a duration is said in days rather than in months.
 ///
 /// Two months of a tropical year, to the day: past that the day count is a
 /// number a reader has to divide, and below it "2 months" throws away the
 /// difference between a run at day 31 and one at day 59.
-const DAYS_SAID_IN_DAYS: f64 = 2.0 * DAYS_PER_MONTH;
+const DAYS_UNTIL_SAID_IN_MONTHS: f64 = 2.0 * DAYS_PER_MONTH;
 
-/// And below this many, in months rather than in years.
+/// And up to this many, in months rather than in years.
 ///
 /// Eighteen months. A year and a half is where a count of months stops being a
 /// number a reader holds — "24 months" is arithmetic, "2 years" is a fact — and
 /// it is above the twelve months at which a run is not yet a year old, so a
 /// run part-way through its first year is still said in the months it has run.
-const DAYS_SAID_IN_MONTHS: f64 = 18.0 * DAYS_PER_MONTH;
+const DAYS_UNTIL_SAID_IN_YEARS: f64 = 18.0 * DAYS_PER_MONTH;
 
 /// The clock of one run: how far apart its frames are in model time, and how
 /// many of them there are.
@@ -94,8 +94,8 @@ impl RunClock {
         self.day_of_frame(self.frame_count.saturating_sub(1))
     }
 
-    /// Where in the run frame `index` is, in words: `Day 396 of 730 — 13
-    /// months in`.
+    /// Where in the run frame `index` is, in words: `Day 396 of a run of 730
+    /// days (2 years) — 13 months in`.
     ///
     /// The months are dropped for a run still in its first weeks, where they
     /// would only repeat the day count in a coarser unit.
@@ -105,11 +105,12 @@ impl RunClock {
     }
 
     /// The same for a day of the run named directly rather than by a frame:
-    /// `Day 396 of 730 — 13 months in`.
+    /// a frame carries its own model time, and a run continued from another
+    /// one dates its first frame at the day it resumed.
     #[must_use]
     pub fn day_phrase(&self, day: f64) -> String {
-        let head = format!("Day {} of {}", days_text(day), days_text(self.last_day()));
-        if day < DAYS_SAID_IN_DAYS {
+        let head = format!("Day {} of a run of {}", days_text(day), self.span_phrase());
+        if day < DAYS_UNTIL_SAID_IN_MONTHS {
             return head;
         }
         format!("{head} — {} in", plain_duration(day))
@@ -119,12 +120,14 @@ impl RunClock {
     ///
     /// Both units, because the days are what the frames are counted in and the
     /// years are what a reader has intuition about. A run too short for the
-    /// second to say anything new says only the first.
+    /// second to say anything new says only the first. It is the tail of every
+    /// [`RunClock::moment`], so a reader is told the length of what they are
+    /// watching without going to look for it.
     #[must_use]
     pub fn span_phrase(&self) -> String {
         let days = self.last_day();
         let head = format!("{} days", days_text(days));
-        if days < DAYS_SAID_IN_DAYS {
+        if days < DAYS_UNTIL_SAID_IN_MONTHS {
             return head;
         }
         format!("{head} ({})", plain_duration(days))
@@ -133,12 +136,11 @@ impl RunClock {
 
 /// `days` of model time in the coarsest unit that still says something: days
 /// for the first two months, then months, then years.
-#[must_use]
-pub fn plain_duration(days: f64) -> String {
-    if days < DAYS_SAID_IN_DAYS {
+fn plain_duration(days: f64) -> String {
+    if days < DAYS_UNTIL_SAID_IN_MONTHS {
         return format!("{} days", days_text(days));
     }
-    if days < DAYS_SAID_IN_MONTHS {
+    if days < DAYS_UNTIL_SAID_IN_YEARS {
         return format!("{:.0} months", days / DAYS_PER_MONTH);
     }
     let years = days / DAYS_PER_YEAR;

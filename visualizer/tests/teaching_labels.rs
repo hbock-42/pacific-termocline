@@ -39,7 +39,6 @@ use common::{
 use termocline_format::{BasinExtent, GridSpec, OutputTiming, RunHeader};
 use visualizer::{
     BrowserScenario, CrossSection, LoadedRun, RunBytes, RunClock, SideView, Wall, PLAIN_WORDS,
-    TRADE_WINDS,
 };
 
 /// How far a tick's computed position may sit from the fraction of the basin
@@ -277,7 +276,7 @@ fn time_is_days_and_months_taken_from_the_runs_own_cadence() {
 
     let moment = clock.moment(396);
     assert!(
-        moment.contains("Day 396 of 730"),
+        moment.contains("Day 396") && moment.contains("730 days"),
         "the day, out of the run's own length: {moment}"
     );
     // 396 days is 13.01 months of a tropical year's twelfth, 30.4368 days.
@@ -303,10 +302,10 @@ fn a_run_written_at_another_cadence_is_dated_by_that_cadence() {
 
     assert!((twice_daily.last_day() - 30.0).abs() < DAY_TOLERANCE);
     assert!((twice_daily.day_of_frame(20) - 10.0).abs() < DAY_TOLERANCE);
+    let moment = twice_daily.moment(20);
     assert!(
-        twice_daily.moment(20).contains("Day 10 of 30"),
-        "{}",
-        twice_daily.moment(20)
+        moment.contains("Day 10") && moment.contains("30 days"),
+        "{moment}"
     );
     // A month of run is a month, however many frames it took to write it.
     let span = twice_daily.span_phrase();
@@ -324,7 +323,7 @@ fn the_teaching_panel_glosses_every_word_it_uses_that_a_visitor_may_not_have() {
     // on the panel sends a reader elsewhere to find out what it means.
     let view = pacific_side_view();
     let mut prose = vec![view.caption(), view.depth_axis_note()];
-    prose.extend(view.tilt_note());
+    prose.extend(view.coast_depth_note());
     prose.extend(view.coasts().iter().map(|coast| coast.label()));
 
     for text in &prose {
@@ -366,37 +365,37 @@ fn tilted_side_view() -> SideView {
 }
 
 #[test]
-fn the_wind_is_named_in_plain_words_and_only_where_the_ocean_shows_it() {
-    // "Trade winds" replaces the project's own "alizés" (`CONTEXT.md`), and
-    // like every word on the panel it arrives with its meaning attached. What
-    // the sentence *claims* is measured off the frame it is drawn beside: the
-    // equilibrium tilt of the control run is 66.4 m between the walls, which
-    // is the warm water the trades pile in the west.
-    let tilted = tilted_side_view().tilt_note().expect("both ends are drawn");
-    assert!(tilted.contains("trade winds"), "{tilted}");
-    assert!(
-        tilted.contains(TRADE_WINDS.plain()),
-        "the wind is explained where it is named: {tilted}"
-    );
-    // 66.4 m across the walls, a little less between the outermost cell
-    // centres, and the note states it to the metre.
-    assert!(
-        tilted.contains("66 m deeper") || tilted.contains("65 m deeper"),
-        "the tilt is the one the run has: {tilted}"
-    );
-
-    // And an ocean with no tilt in it is not told it has a warm pool piled in
-    // the west: the field here is uniform, so the boundary is level.
-    let level = pacific_side_view()
-        .tilt_note()
+fn the_thermocline_is_stated_as_a_depth_in_metres_at_each_coast() {
+    // The rest of the third criterion, in the ticket's own example: "thermocline
+    // at 152 m" rather than "h = +38 m". Every scientific view of the run plots
+    // the anomaly and none of them prints the mean depth it is an anomaly
+    // *about*, so a stranger cannot turn one into the other. The teaching panel
+    // states the depth itself, at each coast, in metres.
+    let note = tilted_side_view()
+        .coast_depth_note()
         .expect("both ends are drawn");
+
+    // T-07.4's equilibrium under `H` = 150 m: 188 m down in the west and 122 m
+    // in the east, to the metre (188.2 and 121.8, less the half-cell offset of
+    // the outermost cell centres).
     assert!(
-        level.contains("level from coast to coast"),
-        "a level ocean is described as level: {level}"
+        note.contains("188 m") && note.contains("122 m"),
+        "the depths are the ones the model puts the interface at: {note}"
     );
     assert!(
-        !level.contains("piled up"),
-        "nothing is claimed that the picture does not show: {level}"
+        note.contains("below the surface"),
+        "measured from the sea surface: {note}"
+    );
+    // And each depth is attached to the coast it was read at.
+    assert!(
+        note.contains("Indonesia / New Guinea") && note.contains("South America"),
+        "each depth is placed: {note}"
+    );
+    // It is a depth, not the anomaly the charts plot: +38.2 m and −28.2 m
+    // appear nowhere in it.
+    assert!(
+        !note.contains("38") && !note.contains("28 m"),
+        "the anomaly is not what a reader is shown here: {note}"
     );
 }
 
