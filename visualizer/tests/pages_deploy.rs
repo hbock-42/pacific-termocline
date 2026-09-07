@@ -19,8 +19,6 @@
 //! What these cannot check is that the deployed page renders — that is a
 //! browser looking at the site, and the pull request reports it.
 
-use std::path::{Path, PathBuf};
-
 /// The deploy workflow under test.
 const WORKFLOW: &str = include_str!("../../.github/workflows/pages.yml");
 
@@ -37,34 +35,29 @@ const DIST_DIR: &str = "visualizer/dist";
 /// The workspace manifest, the independent source for where the site lives.
 const WORKSPACE_MANIFEST: &str = include_str!("../../Cargo.toml");
 
-/// The repository root, from this test's own location.
-fn repository_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("the visualizer crate sits inside the repository")
-        .to_path_buf()
-}
-
-/// The `owner/name` of the repository, read off `repository = "…"` in the
-/// workspace manifest.
+/// The `owner/name` of the repository, read off `workspace.package.repository`
+/// in the workspace manifest.
 ///
 /// The point of reading it rather than writing it down: every expectation
 /// below is derived from this pair, so the base path, the site URL and the
-/// workflow cannot drift apart from the repository they are for.
+/// workflow cannot drift apart from the repository they are for. Parsed
+/// rather than matched by substring, so a manifest that is reformatted, or
+/// that grows a second `repository` key, does not quietly change what the
+/// tests are asserting against.
 fn repository_slug() -> (String, String) {
-    const PREFIX: &str = "repository = \"https://github.com/";
-    let start = WORKSPACE_MANIFEST
-        .find(PREFIX)
-        .expect("the workspace manifest names the repository");
-    let rest = &WORKSPACE_MANIFEST[start + PREFIX.len()..];
-    let slug = rest
-        .split('"')
-        .next()
-        .expect("the repository URL is a closed string");
+    let manifest: toml::Table =
+        toml::from_str(WORKSPACE_MANIFEST).expect("the workspace manifest is TOML");
+    let url = manifest["workspace"]["package"]["repository"]
+        .as_str()
+        .expect("workspace.package.repository is a URL");
+    let slug = url
+        .strip_prefix("https://github.com/")
+        .expect("the repository is on GitHub, which is where Pages serves from")
+        .trim_end_matches('/');
     let (owner, name) = slug
         .split_once('/')
         .expect("a GitHub repository URL is owner/name");
-    (owner.to_owned(), name.trim_end_matches('/').to_owned())
+    (owner.to_owned(), name.to_owned())
 }
 
 /// Where GitHub serves this repository's project site from: a subpath named
@@ -80,20 +73,16 @@ fn site_url() -> String {
     format!("https://{owner}.github.io/{name}/")
 }
 
-/// The lines of the workflow that are inside the block introduced by `key` at
-/// the given indentation — a mapping's body, by indentation, which is what
-/// YAML nesting is.
-fn block_under(key: &str, indent: usize) -> Vec<&'static str> {
-    let opener = format!("{}{key}:", " ".repeat(indent));
+/// The body of the workflow's top-level `key:` mapping — its indented lines,
+/// which is what YAML nesting is.
+fn top_level_block(key: &str) -> String {
+    let opener = format!("{key}:");
     let mut lines = WORKFLOW.lines().skip_while(|line| **line != opener);
     lines.next().expect("the block's own line");
     lines
-        .take_while(|line| {
-            line.trim().is_empty()
-                || line.starts_with(&" ".repeat(indent + 1))
-                || line.trim_start().starts_with('#')
-        })
-        .collect()
+        .take_while(|line| line.starts_with(' ') || line.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[test]
@@ -114,7 +103,7 @@ fn the_site_is_built_for_the_subpath_pages_serves_it_from() {
 
 #[test]
 fn the_workflow_carries_the_permissions_deploy_pages_requires() {
-    let permissions = block_under("permissions", 0).join("\n");
+    let permissions = top_level_block("permissions");
     for required in ["pages: write", "id-token: write"] {
         assert!(
             permissions.contains(required),
@@ -151,7 +140,7 @@ fn the_workflow_uploads_what_trunk_built_and_deploys_it() {
 
 #[test]
 fn the_workflow_republishes_the_site_when_main_moves() {
-    let triggers = block_under("on", 0).join("\n");
+    let triggers = top_level_block("on");
     assert!(
         triggers.contains("push:") && triggers.contains("main"),
         "the deliverable is a workflow that keeps the site current, so a push to `main` \
@@ -179,12 +168,14 @@ fn the_readme_offers_the_live_site_before_it_asks_for_a_toolchain() {
          first build instruction, because since ADR-0012 there is nothing to install and \
          nothing to download to see a run"
     );
-    let opening = &README[..link];
+    let first_section = README.find("\n## ").expect("the README has sections");
+    let second_section = README[first_section + 1..]
+        .find("\n## ")
+        .map_or(README.len(), |offset| first_section + 1 + offset);
     assert!(
-        opening.lines().count() < 30,
-        "the live-site link is {} lines into the README, which is past the opening: it was \
-         asked for right after the description of the project",
-        opening.lines().count()
+        link < second_section,
+        "the live site belongs in the README's first section, right after what the project \
+         is; it is currently further down, where a visitor meets the build instructions first"
     );
 }
 
@@ -199,12 +190,21 @@ fn the_getting_started_guide_links_the_live_site() {
 }
 
 #[test]
-fn the_workflow_the_tests_read_is_the_one_github_runs() {
-    let path = repository_root().join(".github/workflows/pages.yml");
+fn the_workflow_checks_the_bundle_it_built_before_publishing_it() {
     assert!(
-        path.is_file(),
-        "the deploy workflow lives at {} — GitHub runs what is in .github/workflows, and a \
-         test that read a file from anywhere else would pass against a site that never deploys",
-        path.display()
+        WORKFLOW.contains("dist/index.html"),
+        "the flag is checked against the artifact, not only against this file: the workflow \
+         greps the built `index.html` for the base path, so a `trunk` that stopped honouring \
+         `--public-url` fails the build rather than publishing a blank page"
+    );
+    assert!(
+        WORKFLOW.contains("GITHUB_STEP_SUMMARY"),
+        "the bundle's size is reported by the run that built it — a number the ticket asks \
+         for, and one that goes stale the first time it is written down by hand"
+    );
+    assert!(
+        WORKFLOW.contains("--fail") && WORKFLOW.contains("page_url"),
+        "the deployed site is fetched after the deploy: `it built` is not `it loads`, and a \
+         404 on the wasm is what a wrong base path looks like from outside"
     );
 }

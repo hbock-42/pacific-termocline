@@ -23,6 +23,11 @@ const CANVAS_ID: &str = "termocline_canvas";
 
 /// The app, plus the one measurement ADR-0012 is answerable for.
 ///
+/// A decorator rather than a change to [`VisualizerApp`]: the measurement is a
+/// property of the *browser* build, and the shell is the same shell natively.
+/// Every hook of [`eframe::App`] is forwarded, so what the inner app does — or
+/// comes to do — is what happens.
+///
 /// The trade the ADR made is a download for a compile and a few steps, and
 /// what says whether that was a good trade is the wall-clock time between the
 /// page being asked for and something being on screen. It is a property of the
@@ -32,9 +37,10 @@ const CANVAS_ID: &str = "termocline_canvas";
 struct TimedFirstFrame {
     /// The shell being timed.
     app: VisualizerApp,
-    /// The graphics backend `wgpu` actually got — `BrowserWebGpu`, or `Gl`
-    /// where the browser has no WebGPU and the WebGL2 fallback took over
-    /// (ADR-0006). Reported alongside the timing because which one is in use
+    /// The graphics backend `wgpu` actually got — `"webgpu"`, or `"gl"` where
+    /// the browser's WebGPU is missing or refuses an adapter and the WebGL2
+    /// fallback takes over (ADR-0006). Firefox 145 reports the two apart: it
+    /// defines `navigator.gpu` and still lands on `"gl"`. Reported alongside the timing because which one is in use
     /// is otherwise invisible, and the two are not the same machine.
     backend: &'static str,
     /// Whether the first frame has been reported; the measurement is of the
@@ -50,6 +56,30 @@ impl eframe::App for TimedFirstFrame {
             report_first_frame(self.backend);
         }
     }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.app.save(storage);
+    }
+
+    fn auto_save_interval(&self) -> std::time::Duration {
+        self.app.auto_save_interval()
+    }
+
+    fn on_exit(&mut self) {
+        self.app.on_exit();
+    }
+
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        self.app.clear_color(visuals)
+    }
+
+    fn persist_egui_memory(&self) -> bool {
+        self.app.persist_egui_memory()
+    }
+
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.app.raw_input_hook(ctx, raw_input);
+    }
 }
 
 /// Log how long the first frame took to arrive, in milliseconds since the
@@ -57,10 +87,17 @@ impl eframe::App for TimedFirstFrame {
 ///
 /// `performance.now()`'s origin is the navigation, not the module's
 /// instantiation, so what this reports includes fetching the bundle and
-/// compiling it — the number a visitor experiences. It is taken after
-/// [`eframe::App::update`] has returned, so the frame is composed and
-/// submitted; presentation is a compositor's frame later, which is below the
-/// resolution of the thing being reported.
+/// compiling it — the number a visitor experiences. `web_time::Instant`, which
+/// the compute loop uses, cannot say this: its epoch is whenever the first
+/// `Instant` was taken, and the interesting half of this measurement is over
+/// before any Rust runs.
+///
+/// It is taken after [`eframe::App::update`] has returned, so the frame is
+/// composed and submitted; presentation is a compositor's frame later, which
+/// is below the resolution of the thing being reported. And that first frame
+/// already holds run: [`VisualizerApp::update`] steps the computation before
+/// it draws, so what is timed is a thermocline on screen, not an empty shell
+/// with one on the way.
 fn report_first_frame(backend: &str) {
     let Some(elapsed_ms) = web_sys::window()
         .and_then(|window| window.performance())

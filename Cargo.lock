@@ -3244,6 +3244,7 @@ dependencies = [
  "serde_json",
  "termocline-format",
  "termocline-grid",
+ "toml",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
